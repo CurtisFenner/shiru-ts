@@ -1,4 +1,5 @@
 import * as interpreter_test from "./interpreter_test";
+import * as parser_test from "./parser_test";
 
 export type Run = PassRun | FailRun;
 
@@ -63,21 +64,54 @@ export class TestRunner {
 	}
 }
 
-export function assert<T>(a: T, op: "is equal to", b: T) {
-	if (a !== b) {
-		let sa = "`" + a + "`";
-		let sb = "`" + b + "`";
-		if (sa == sb) {
-			sa += " (" + typeof a + ")";
-			sb += " (" + typeof b + ")";
+function deepEqual(a: any, b: any) {
+	if (a === b) {
+		return true;
+	} else if (typeof a !== typeof b) {
+		return false;
+	} else if (typeof a === "object") {
+		let checked: any = {};
+		for (let k in a) {
+			if (!deepEqual(a[k], b[k])) {
+				return false;
+			}
+			checked[k] = true;
 		}
-
-		throw new Error("Expected " + sa + " to be equal to " + sb);
+		for (let k in b) {
+			if (!checked[k]) {
+				return false;
+			}
+		}
+		return true;
+	} else {
+		return false;
 	}
 }
 
 
+export function assert<A, B extends A>(a: A, op: "is equal to", b: B): asserts a is B;
+export function assert<A, B extends A>(a: any, op: "is array"): asserts a is any[];
+
+export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"]/*  a: A, op: "is equal to", b: B*/) {
+	if (args[1] === "is equal to") {
+		const [a, op, b] = args;
+		if (!deepEqual(a, b)) {
+			let sa = "`" + JSON.stringify(a, null, "\t") + "`";
+			let sb = "`" + JSON.stringify(b, null, "\t") + "`";
+			throw new Error("Expected " + sa + " to be equal to " + sb);
+		}
+	} else if (args[1] === "is array") {
+		const [a, op] = args;
+		if (!Array.isArray(a)) {
+			throw new Error("Expected `" + JSON.stringify(a, null, "\t") + "` to be an array.");
+		}
+	} else {
+		throw new Error("unhandled assertion type `" + JSON.stringify(args[1]) + "`");
+	}
+}
+
 const testRunner = new TestRunner();
 
 testRunner.runTests(interpreter_test.tests);
+testRunner.runTests(parser_test.tests);
 testRunner.printReport();

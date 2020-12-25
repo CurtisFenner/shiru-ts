@@ -1,5 +1,6 @@
 import * as interpreter_test from "./interpreter_test";
 import * as parser_test from "./parser_test";
+import * as smt_tests from "./smt_tests";
 
 export type Run = PassRun | FailRun;
 
@@ -27,9 +28,9 @@ export class TestRunner {
 		}
 	}
 
-	runTests(obj: { [k: string]: () => void }) {
+	runTests(title: string, obj: { [k: string]: () => void }) {
 		for (let k in obj) {
-			this.runTest(k, obj[k]);
+			this.runTest(title + "." + k, obj[k]);
 		}
 	}
 
@@ -112,6 +113,7 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 
 const testRunner = new TestRunner();
 
-testRunner.runTests(interpreter_test.tests);
-testRunner.runTests(parser_test.tests);
+testRunner.runTests("interpreter_test", interpreter_test.tests);
+testRunner.runTests("parser_test", parser_test.tests);
+testRunner.runTests("smt_tests", smt_tests.tests);
 testRunner.printReport();

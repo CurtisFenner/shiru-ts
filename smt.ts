@@ -105,9 +105,8 @@ export class SATSolver {
 	/// For a term assigned "freely" (rather than as a result of BCP), the value
 	/// is `-1`.
 	private antecedentClause: (ClauseID | -1)[] = [];
-
 	initTerms(term: number) {
-		for (let i = this.assignments.length + 1; i <= term; i++) {
+		for (let i = this.assignments.length; i <= term; i++) {
 			this.assignments[i] = 0;
 			this.assignmentStackPosition[i] = -1;
 			this.antecedentClause[i] = 0;
@@ -164,28 +163,20 @@ export class SATSolver {
 			ordering[i - 1] = i;
 		}
 
-		// console.log("## SOLVING MAIN LOOP");
+		// Start the main CDCL loop.
+		// Repeat assignments until an assigment has been made to every term.
 		let cursor = 0;
-		while (true) {
-			// console.log("\nDECISION LEVEL: " + this.decisionLevel);
-			// console.log("The current stack is", this.getAssignment());
+		while (this.assignmentStack.length < this.assignments.length - 1) {
 			let decisionTerm = ordering[cursor];
 			cursor += 1;
 			cursor %= ordering.length;
 
-			// console.log("Attempting term", decisionTerm);
-
 			if (this.assignments[decisionTerm] !== 0) {
-				// console.log("Skipping because already assigned.");
-				// console.log("Progress:", this.assignmentStack.length, "of", this.assignments.length - 1);
-				if (this.assignmentStack.length === this.assignments.length - 1) {
-					// One assignment has been made for each variable.
-					return this.getAssignment();
-				}
+				// This variable has already been assigned.
 				continue;
+
 			}
 
-			// invariant: unitLiterals.size() == 0
 			if (unitLiterals.size() !== 0) {
 				throw new Error("invariant violation");
 			}
@@ -199,15 +190,10 @@ export class SATSolver {
 
 			// Propagate unit consequences of that free decision.
 			for (let [unitLiteral, antecedent] of unitLiterals) {
-				// console.log("* assigning", unitLiteral, "@", antecedent);
 				const newUnitClauses = this.assign(unitLiteral, antecedent);
 				const conflict = unitLiterals.pushAllOrFindConflict(newUnitClauses);
 				if (conflict !== null) {
-					// console.log("* Conflict!", conflict[0], "@", conflict[1], "and", -conflict[0], "@", conflict[2]);
-					// console.log("The current stack is ", this.getAssignment());
 					const conflictClause = this.diagnoseConflict(conflict[0], conflict[1], conflict[2]);
-					// console.log("The conflict clause is", conflictClause);
-
 					let maxDecisionLevel = 0;
 					for (let i = 0; i < conflictClause.length; i++) {
 						const conflictLiteral = conflictClause[i];
@@ -221,9 +207,23 @@ export class SATSolver {
 						return "unsatisfiable";
 					}
 
+					// Find the decision level at which the conflict clause 
+					// becomes a unit clause.
+					let conflictUnsatisfied = new Set(conflictClause);
+					let stopDecisionLevel = 0;
+					for (let i = 0; i <= this.assignmentStack.length; i++) {
+						if (conflictUnsatisfied.size === 1) {
+							// N.B.: This loop should never finish normally!
+							break;
+						}
+
+						conflictUnsatisfied.delete(-this.assignmentStack[i]);
+						stopDecisionLevel = this.termDecisionLevel[Math.abs(this.assignmentStack[i])];
+					}
+
+
 					// Rewind at least one decision in the conflict clause.
-					this.rollbackToDecisionLevel(maxDecisionLevel - 1);
-					// console.log("After rollback, assignment stack is", this.getAssignment());
+					this.rollbackToDecisionLevel(stopDecisionLevel);
 
 					// Then, add the clause, bearing in mind it SHOULD be a unit
 					// clause (asserting clause), which should expand 
@@ -258,12 +258,8 @@ export class SATSolver {
 				}
 			}
 		}
-	}
 
-	private rollbackToDecisionLevel(level: number) {
-		while (this.decisionLevel > level) {
-			this._popAssignment();
-		}
+		return this.getAssignment();
 	}
 
 	addClause(clause: Literal[]): ClauseID {
@@ -313,10 +309,9 @@ export class SATSolver {
 		return clauseID;
 	}
 
+	/// Validates that certain internal invariants hold. Useful for debugging.
 	_validateWatches() {
-		// console.log("\n// validating //////");
 		const happyLiterals = this.assignments.map((v, i) => v * i);
-		// console.log("Assignment:", happyLiterals);
 		const watches: number[][] = this.clauses.map(x => []);
 		for (let i = 1; i < this.watchedNegative.length; i++) {
 			for (let clauseID of this.watchedNegative[i]) {
@@ -341,9 +336,6 @@ export class SATSolver {
 			}
 
 			const w = watches[i];
-
-			// console.log("Clause", i, clause);
-			// console.log("\tis watched by", w);
 			if (w.length > 2) {
 				throw new Error("Too many watched literals in this clause!");
 			} else if (w.length < 2) {
@@ -361,10 +353,12 @@ export class SATSolver {
 							throw new Error("Watched literal `" + k + "` has been falsified!");
 						}
 					}
+				} 
+				if (w.length === 0) {
+					throw new Error("Clause " + clause + " is not being watched by any literals, but isn't satisfied!");
 				}
 			}
 		}
-		// console.log("^^^^^^^^^^^^^^^^^^^^\n");
 	}
 
 	/// REQUIRES the given term is currently unassigned.
@@ -383,7 +377,6 @@ export class SATSolver {
 		const watchers = assignedLiteral > 0 ? this.watchedNegative[assignedTerm] : this.watchedPositive[assignedTerm];
 		for (let watchingClauseID of watchers) {
 			const watchingClause = this.clauses[watchingClauseID];
-			// console.log("...literal", assignedLiteral, "is watching", watchingClause, "@", watchingClauseID);
 
 			let satisfied = false;
 			let unfalsfiedCount = 0;
@@ -418,7 +411,9 @@ export class SATSolver {
 				// `this.assignments` is not yet updated; thus the only 
 				// falsified literal is the one being deleted; so this is a
 				// conflicting unit-clause.
-				throw new Error("This assignment falsfifies an entire clause.");
+				throw new Error("This assignment falsifies an entire clause.\n(adding assignment "
+					+ assignedLiteral + " to assignment stack " + this.assignmentStack
+					+ ";\nwatchingClause = " + watchingClause + " with id " + watchingClauseID + ")");
 			} else if (unfalsfiedCount == 2) {
 				// `watchingClause` is not yet satisfied, and has no unfalsified 
 				// literals other than its two watched literals.
@@ -508,7 +503,7 @@ export class SATSolver {
 				antecedent = this.antecedentClause[term];
 			}
 
-			if (antecedent < 0 || this.termDecisionLevel[term] < this.decisionLevel) {
+			if (antecedent < 0 || (this.termDecisionLevel[term] < this.decisionLevel && literal !== conflictLiteral && literal !== -conflictLiteral)) {
 				conflictClause.push(literal);
 			} else {
 				const clause = this.clauses[antecedent];
@@ -524,7 +519,13 @@ export class SATSolver {
 		return conflictClause;
 	}
 
-	_popAssignment() {
+	private rollbackToDecisionLevel(level: number) {
+		while (this.decisionLevel > level) {
+			this.popAssignment();
+		}
+	}
+
+	popAssignment() {
 		// N.B.: The two-watched-literal scheme requires no bookkeeping updates
 		// upon unassignment.
 		const literal = this.assignmentStack.pop();

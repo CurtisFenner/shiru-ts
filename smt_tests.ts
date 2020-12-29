@@ -31,6 +31,18 @@ export const tests = {
 			+9,
 		]));
 	},
+	simpleUnsatisfiable() {
+		const sat = new SATSolver();
+		sat.initTerms(3);
+		sat.addClause([+1, +2, -3]);
+		sat.addClause([+1, -2, -3]);
+		sat.addClause([-1, +2, -3]);
+		sat.addClause([-1, -2, -3]);
+		sat.addClause([+3]);
+
+		const model = sat.solve();
+		assert(model, "is equal to", "unsatisfiable");
+	}
 };
 
 function sorted(t: number[]) {

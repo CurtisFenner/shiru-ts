@@ -1,6 +1,6 @@
 import * as interpreter_test from "./interpreter_test";
 import * as parser_test from "./parser_test";
-import * as smt_tests from "./smt_tests";
+import * as sat_tests from "./sat_tests";
 
 export type Run = PassRun | FailRun;
 
@@ -93,7 +93,7 @@ function deepEqual(a: any, b: any) {
 export function assert<A, B extends A>(a: A, op: "is equal to", b: B): asserts a is B;
 export function assert<A, B extends A>(a: any, op: "is array"): asserts a is any[];
 
-export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"]/*  a: A, op: "is equal to", b: B*/) {
+export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"]) {
 	if (args[1] === "is equal to") {
 		const [a, op, b] = args;
 		if (!deepEqual(a, b)) {
@@ -115,5 +115,5 @@ const testRunner = new TestRunner();
 
 testRunner.runTests("interpreter_test", interpreter_test.tests);
 testRunner.runTests("parser_test", parser_test.tests);
-testRunner.runTests("smt_tests", smt_tests.tests);
+testRunner.runTests("sat_tests", sat_tests.tests);
 testRunner.printReport();

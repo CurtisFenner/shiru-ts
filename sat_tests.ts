@@ -1,4 +1,4 @@
-import { SATSolver } from "./smt";
+import { SATSolver } from "./sat";
 import { assert } from "./test";
 
 export const tests = {

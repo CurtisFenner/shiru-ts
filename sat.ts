@@ -82,10 +82,10 @@ export class SATSolver {
 	/// Unsatisfied clauses watch two unfalsified literals within them.
 	/// A watched literal is always one of the first two literals in the clause
 	/// array.
-	private watchedPositive: Set<ClauseID>[] = [];
+	private watchedPositive: ClauseID[][] = [];
 
 	/// `watchedPositive[n]`: see `watchedPositive`.
-	private watchedNegative: Set<ClauseID>[] = [];
+	private watchedNegative: ClauseID[][] = [];
 
 	private assignments: (-1 | 0 | 1)[] = [];
 	private assignmentStack: number[] = [];
@@ -110,8 +110,8 @@ export class SATSolver {
 			this.assignments[i] = 0;
 			this.assignmentStackPosition[i] = -1;
 			this.antecedentClause[i] = 0;
-			this.watchedPositive[i] = new Set();
-			this.watchedNegative[i] = new Set();
+			this.watchedPositive[i] = [];
+			this.watchedNegative[i] = [];
 		}
 	}
 
@@ -300,9 +300,9 @@ export class SATSolver {
 		for (let i = 0; i < 2 && i < clause.length; i++) {
 			const literal = clause[i];
 			if (literal > 0) {
-				this.watchedPositive[literal].add(clauseID);
+				this.watchedPositive[literal].push(clauseID);
 			} else {
-				this.watchedNegative[-literal].add(clauseID);
+				this.watchedNegative[-literal].push(clauseID);
 			}
 		}
 
@@ -375,7 +375,9 @@ export class SATSolver {
 		}
 
 		const watchers = assignedLiteral > 0 ? this.watchedNegative[assignedTerm] : this.watchedPositive[assignedTerm];
-		for (let watchingClauseID of watchers) {
+		let watchersKeepIndex = 0;
+		for (let wi = 0; wi < watchers.length; wi++) {
+			const watchingClauseID = watchers[wi];
 			const watchingClause = this.clauses[watchingClauseID];
 
 			let satisfied = false;
@@ -399,7 +401,11 @@ export class SATSolver {
 			}
 
 			if (satisfied) {
-				// If already satisfied, can remain.
+				// If already satisfied, can remain watching.
+				// Everything not maintained here will be cleared from the array
+				// at the end of the loop.
+				watchers[watchersKeepIndex] = watchingClauseID;
+				watchersKeepIndex += 1;
 				continue;
 			}
 
@@ -421,21 +427,25 @@ export class SATSolver {
 				// watched literal.
 				discoveredUnitLiterals.push(watchingClause[1 - destination]);
 				discoveredAntecedents.push(watchingClauseID);
+
+				// Keep the literal watched, since there isn't another literal 
+				// to watch it.
+				watchers[watchersKeepIndex] = watchingClauseID;
+				watchersKeepIndex += 1;
 			} else {
 				// There remains an unfalsified literal, other than the two 
 				// watched literals, in this unsatisfied watchingClause.
-				watchers.delete(watchingClauseID);
 				const newWatchedLiteral = watchingClause[latestUnfalsfiedLiteralIndex];
-				const newWatchedTerm = newWatchedLiteral > 0 ? newWatchedLiteral : -newWatchedLiteral;
 				if (newWatchedLiteral > 0) {
-					this.watchedPositive[newWatchedTerm].add(watchingClauseID);
+					this.watchedPositive[newWatchedLiteral].push(watchingClauseID);
 				} else {
-					this.watchedNegative[newWatchedTerm].add(watchingClauseID);
+					this.watchedNegative[-newWatchedLiteral].push(watchingClauseID);
 				}
 
 				swap(watchingClause, destination, latestUnfalsfiedLiteralIndex);
 			}
 		}
+		watchers.length = watchersKeepIndex;
 
 		this.assignments[assignedTerm] = assignedLiteral > 0 ? +1 : -1;
 		this.assignmentStackPosition[assignedTerm] = this.assignmentStack.length;

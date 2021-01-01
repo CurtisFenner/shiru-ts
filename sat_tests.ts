@@ -6,30 +6,33 @@ export const tests = {
 		const sat = new SATSolver();
 		sat.initTerms(9);
 
-		sat.addClause([+7, +4, +6]);
-		sat.addClause([+1, -7, +5]);
-		sat.addClause([-5, -2, +7]);
-		sat.addClause([-1, -6, +4]);
-		sat.addClause([+5, +4, -2]);
-		sat.addClause([-1, -9, +2]);
-		sat.addClause([-9, -4, -5]);
-		sat.addClause([+2, -8, -4]);
-		sat.addClause([-3, -7, +9]);
-		sat.addClause([-4, +2, +5]);
+		const instance = [
+			[+7, +4, +6],
+			[+1, -7, +5],
+			[-5, -2, +7],
+			[-1, -6, +4],
+			[+5, +4, -2],
+			[-1, -9, +2],
+			[-9, -4, -5],
+			[+2, -8, -4],
+			[-3, -7, +9],
+			[-4, +2, +5],
+		];
+
+		for (let clause of instance) {
+			sat.addClause(clause);
+		}
 
 		const model = sat.solve();
 		assert(model, "is array");
-		assert(sorted(model), "is equal to", sorted([
-			+1,
-			+2,
-			+3,
-			+4,
-			-5,
-			+6,
-			+7,
-			+8,
-			+9,
-		]));
+		for (let clause of instance) {
+			let satisfied = false;
+			for (let literal of clause) {
+				assert(model.indexOf(literal) < 0 || model.indexOf(-literal) < 0, "is equal to", true);
+				satisfied = satisfied || model.indexOf(literal) >= 0;
+			}
+			assert(satisfied, "is equal to", true);
+		}
 	},
 	simpleUnsatisfiable() {
 		const sat = new SATSolver();

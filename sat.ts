@@ -163,6 +163,29 @@ export class SATSolver {
 			ordering[i - 1] = i;
 		}
 
+		// Set up state for cVSIDS variable ordering heuristic.
+		let termWeights: number[] = [];
+		for (let i = 0; i < this.assignmentStackPosition.length; i++) {
+			termWeights.push(0);
+		}
+		for (let clause of this.clauses) {
+			if (clause.length < 2) {
+				continue;
+			}
+
+			// The initial number of occurrences of a variable is a very rough
+			// indication of the "centrality" of the variable.
+			for (let literal of clause) {
+				let term = literal > 0 ? literal : -literal;
+				termWeights[term] += 1;
+			}
+		}
+
+		const termWeightComparator = (termA: number, termB: number) => {
+			return termWeights[termB] - termWeights[termA];
+		};
+		ordering.sort(termWeightComparator);
+
 		// Start the main CDCL loop.
 		// Repeat assignments until an assigment has been made to every term.
 		let cursor = 0;
@@ -257,6 +280,21 @@ export class SATSolver {
 
 					unitLiterals.clear();
 					unitLiterals.pushOrFindConflict(assertingLiteral, conflictClauseID);
+
+					// Use "cVSIDS" strategy for clause ordering.
+					for (let term = 0; term < termWeights.length; term++) {
+						if (conflictClauseTermSet[term]) {
+							termWeights[term] += 1;
+						} else {
+							termWeights[term] *= 0.99;
+						}
+					}
+					ordering.sort(termWeightComparator);
+
+					// Ensure that variables are assigned in the same order.
+					// This means that subsequent conflicts are in the same
+					// "area" of the search space, and compound on each other.
+					cursor = 0;
 
 					// Continue in the unit-propagation loop.
 				}

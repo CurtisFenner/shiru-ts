@@ -192,8 +192,16 @@ export class BaseFailParser<T, M> extends Parser<T, M, any> {
   }
 
   parse(stream: Stream<T>, debugContext: DebugContext<T>): ParseError<M> {
+    let joined: M[] = [];
+    for (let fragment of this.fragments) {
+      if (Array.isArray(fragment)) {
+        joined.push(...fragment);
+      } else {
+        joined.push(fragment(stream, debugContext));
+      }
+    }
     return {
-      message: this.fragments.flatMap(fragment => Array.isArray(fragment) ? fragment : [fragment(stream, debugContext)])
+      message: joined,
     };
   }
 }

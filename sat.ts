@@ -195,10 +195,12 @@ export class SATSolver {
 				if (conflict !== null) {
 					const conflictClause = this.diagnoseConflict(conflict[0], conflict[1], conflict[2]);
 					let maxDecisionLevel = 0;
+					let conflictClauseTermSet = [];
 					for (let i = 0; i < conflictClause.length; i++) {
 						const conflictLiteral = conflictClause[i];
 						const conflictTerm = conflictLiteral > 0 ? conflictLiteral : -conflictLiteral;
 						maxDecisionLevel = Math.max(maxDecisionLevel, this.termDecisionLevel[conflictTerm]);
+						conflictClauseTermSet[conflictTerm] = true;
 					}
 					if (maxDecisionLevel == 0) {
 						// If the conflict-clause is all of terms prior to the 
@@ -207,23 +209,25 @@ export class SATSolver {
 						return "unsatisfiable";
 					}
 
-					// Find the decision level at which the conflict clause 
-					// becomes a unit clause.
-					let conflictUnsatisfied = new Set(conflictClause);
-					let stopDecisionLevel = 0;
-					for (let i = 0; i <= this.assignmentStack.length; i++) {
-						if (conflictUnsatisfied.size === 1) {
-							// N.B.: This loop should never finish normally!
-							break;
+					// Find the earliest decision level at which the conflict
+					// clause becomes a unit clause.
+					let countUnfalsified = conflictClause.length;
+					let decisionLevelBecomingUnit = 0;
+					for (let i = 0; i < this.assignmentStack.length; i++) {
+						const literal = this.assignmentStack[i];
+						const term = literal > 0 ? literal : -literal;
+						if (conflictClauseTermSet[term]) {
+							countUnfalsified -= 1;
+							if (countUnfalsified === 1) {
+								// UNIT CLAUSE.
+								decisionLevelBecomingUnit = this.termDecisionLevel[term];
+								break;
+							}
 						}
-
-						conflictUnsatisfied.delete(-this.assignmentStack[i]);
-						stopDecisionLevel = this.termDecisionLevel[Math.abs(this.assignmentStack[i])];
 					}
 
-
 					// Rewind at least one decision in the conflict clause.
-					this.rollbackToDecisionLevel(stopDecisionLevel);
+					this.rollbackToDecisionLevel(decisionLevelBecomingUnit);
 
 					// Then, add the clause, bearing in mind it SHOULD be a unit
 					// clause (asserting clause), which should expand 

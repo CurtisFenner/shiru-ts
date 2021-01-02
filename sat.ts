@@ -380,8 +380,8 @@ export class SATSolver {
 			const w = watches[i];
 			if (w.length > 2) {
 				throw new Error("Too many watched literals in this clause!");
-			} else if (w.length < 2) {
-				throw new Error("Too few watched literals in this clause!");
+			} else if (w.length < 2 && w.length < clause.length) {
+				throw new Error(`Too few watched literals in clause #${i} ${clause} watched only by ${w}`);
 			} else if (w[0] !== clause[0] && w[0] !== clause[1]) {
 				throw new Error("First watched literal " + w[0] + " is not one of first two literals!");
 			} else if (w[1] !== clause[0] && w[1] !== clause[1]) {
@@ -422,7 +422,7 @@ export class SATSolver {
 			const watchingClauseID = watchers[wi];
 			const watchingClause = this.clauses[watchingClauseID];
 
-			let satisfied = false;
+			let satisfiedIndex = -1;
 			let unfalsfiedCount = 0;
 			let latestUnfalsfiedLiteralIndex = -1;
 			for (let i = 0; i < watchingClause.length; i++) {
@@ -431,7 +431,7 @@ export class SATSolver {
 				const a = this.assignments[t];
 				const satisfyiedBy = l > 0 ? +1 : -1;
 				if (a === satisfyiedBy) {
-					satisfied = true;
+					satisfiedIndex = i;
 					break;
 				} else if (a === 0) {
 					unfalsfiedCount += 1;
@@ -442,18 +442,34 @@ export class SATSolver {
 				}
 			}
 
-			if (satisfied) {
-				// If already satisfied, can remain watching.
-				// Everything not maintained here will be cleared from the array
-				// at the end of the loop.
-				watchers[watchersKeepIndex] = watchingClauseID;
-				watchersKeepIndex += 1;
-				continue;
-			}
-
 			// Either find a new literal to watch,
 			// or recognize that this watchingClause is now a unit clause.
 			const destination = watchingClause[0] === -assignedLiteral ? 0 : 1;
+
+			if (satisfiedIndex >= 0) {
+				// If already satisfied, can remain watching.
+				// Everything not maintained here will be cleared from the array
+				// at the end of the loop.
+
+				if (satisfiedIndex <= 1) {
+					// (Have nothing to swap)
+					watchers[watchersKeepIndex] = watchingClauseID;
+					watchersKeepIndex += 1;
+				} else {
+					// Move this watch to the satisfied literal.
+					const satisfiedLiteral = watchingClause[satisfiedIndex];
+					swap(watchingClause, destination, satisfiedIndex);
+					if (satisfiedLiteral > 0) {
+						// Positive
+						this.watchedPositive[satisfiedLiteral].push(watchingClauseID);
+					} else {
+						// Negative
+						this.watchedNegative[-satisfiedLiteral].push(watchingClauseID);
+					}
+				}
+
+				continue;
+			}
 
 			if (unfalsfiedCount == 1) {
 				// `this.assignments` is not yet updated; thus the only 

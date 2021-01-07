@@ -121,9 +121,17 @@ export interface OpStaticCall {
 
 export interface OpDynamicCall {
 	tag: "op-dynamic-call",
-	constraint: ConstraintParameter,
-	constraint_implementer: Type,
+	interface: InterfaceID,
+	interface_arguments: Type[],
+
+	// The index of the function to call within the interface's signature list.
 	signature_id: number,
+
+	// TODO: The type parameters as declared in the interface's signature.
+	// Note that the v-table closure may ultimately pass different constraints
+	// to the underlying implementation.
+	signature_type_arguments: Type[],
+
 	arguments: VariableID[],
 	destinations: VariableID[],
 };
@@ -189,9 +197,8 @@ export type Op = OpBlock | OpBranch | OpProof | LeafOp;
 
 export interface IRInterface {
 	// type_parameters.length is the number of type arguments.
-	// An empty array is used for an unconstraint (totally parametric) type
-	// parameter.
-	type_parameters: ConstraintParameter[][],
+	// The names in this array are currently unused.
+	type_parameters: string[],
 
 	/// N.B.: The type_parameters method of each is the same as the inteface's.
 	signatures: FunctionSignature[],
@@ -199,12 +206,20 @@ export interface IRInterface {
 
 export interface ConstraintParameter {
 	interface: InterfaceID,
-	interface_arguments: Type[],
+	interface_parameters: Type[],
 };
 
 export interface FunctionSignature {
 	parameters: Type[],
-	type_parameters: ConstraintParameter[][],
+
+	/// The length of `type_parameters` indicates the number of type parameters.
+	/// The names in this array are currently unused.
+	type_parameters: string[],
+
+	/// A v-table is passed at runtime for each constraint in 
+	/// `constraint_parameters`.
+	constraint_parameters: ConstraintParameter[],
+
 	return_types: Type[],
 
 	/// The first `parameters.length` variables are the arguments.
@@ -229,7 +244,8 @@ export interface ClassDefinition {
 	/// N.B.: Classes are NOT existential types; while they have type
 	/// parameters, they do NOT hold constraint implementations. Instead, those
 	/// are passed by callers of methods.
-	parameters: Type[],
+	// The names in this array are currently unused.
+	parameters: string[],
 
 	/// The fields defined by this class.
 	fields: {
@@ -237,7 +253,32 @@ export interface ClassDefinition {
 	},
 };
 
-/// `Program` represents a Smol program: a collection of function definitions
+export interface VTableFactory {
+	// The interface that this v-table factory is for.
+	interface: InterfaceID,
+
+	// The number of type arguments that the v-table factory takes.
+	// These are instantiated in `interface_arguments`.
+	for_any: TypeVariable[],
+
+	// The arguments to this interface. At least one must be provided.
+	// This array may reference variables in the `for_any` field.
+	interface_arguments: Type[],
+
+	// The functions to call for the corresponding signatures in the interface.
+	implementations: VTableEntry[],
+};
+
+export interface VTableEntry {
+	implementation: FunctionID,
+
+	// These constraint parameters are captured as "closures" at time of 
+	// construction of the v-table. They may reference variables in the 
+	// `for_any` parameterization.
+	constraint_parameters: ConstraintParameter[],
+};
+
+/// `Program` represents a Shiru program: a collection of function definitions
 /// and type and constraint definitions. This description is intended to allow
 /// efficient and straightforward typechecking, verification, and runtime
 /// execution.
@@ -247,6 +288,8 @@ export interface Program {
 	classes: Record<string, ClassDefinition>,
 
 	foreign: Record<string, FunctionSignature>,
+
+	globalVTableFactories: Record<string, VTableFactory>,
 };
 
 type Problem = {
@@ -278,4 +321,45 @@ function typecheckFunction(program: Program, fid: string): Problem[] {
 function typecheckInterface(program: Program, iid: string): Problem[] {
 	const iDef = program.interfaces[iid];
 	throw new Error("TODO");
+}
+
+export function equalTypes(pattern: Type, passed: Type): boolean {
+	if (pattern.tag === "type-variable") {
+		// TODO: Switch to unification?
+		return passed.tag === "type-variable"
+			&& passed.id.type_variable_id === pattern.id.type_variable_id;
+	} else if (pattern.tag === "type-class" && passed.tag === "type-class") {
+		if (pattern.class.class_id !== passed.class.class_id) {
+			return false;
+		}
+		for (let i = 0; i < pattern.parameter.length; i++) {
+			if (!equalTypes(pattern.parameter[i], passed.parameter[i])) {
+				return false;
+			}
+		}
+		return true;
+	} else if (pattern.tag === "type-primitive" && passed.tag === "type-primitive") {
+		return pattern.primitive === passed.primitive;
+	}
+
+	return false;
+}
+
+export function typeSubstitute(t: Type, map: Map<number, Type>): Type {
+	if (t.tag === "type-class") {
+		return {
+			tag: t.tag,
+			class: t.class,
+			parameter: t.parameter.map(a => typeSubstitute(a, map)),
+		};
+	} else if (t.tag === "type-primitive") {
+		return t;
+	} else if (t.tag === "type-variable") {
+		const existing = map.get(t.id.type_variable_id);
+		if (existing !== undefined) {
+			return existing;
+		}
+		return t;
+	}
+	throw new Error(`unhandled type tag \`${t}\`.`);
 }

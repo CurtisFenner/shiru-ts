@@ -18,7 +18,13 @@ export interface FailRun {
 export class TestRunner {
 	runs: Run[] = [];
 
+	constructor(private testNameFilter?: string) { }
+
 	runTest(name: string, body: () => void) {
+		if (name.indexOf(this.testNameFilter || "") < 0) {
+			return;
+		}
+
 		try {
 			body();
 			this.runs.push({ name, type: "pass" });
@@ -111,7 +117,7 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 	}
 }
 
-const testRunner = new TestRunner();
+const testRunner = new TestRunner(process.argv[2]);
 
 testRunner.runTests("interpreter_test", interpreter_test.tests);
 testRunner.runTests("parser_test", parser_test.tests);

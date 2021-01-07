@@ -11,7 +11,7 @@ export function generateInstance(numTerms: number, numClauses: number): string {
 
 	let stream = "";
 
-	stream += "p cnf " + numTerms + " " + numClauses + " ";
+	stream += "p cnf " + numTerms + " " + numClauses + "\n";
 	for (let i = 0; i < numClauses; i++) {
 		let a = Math.floor(Math.random() * numTerms);
 		let b = a;
@@ -25,7 +25,7 @@ export function generateInstance(numTerms: number, numClauses: number): string {
 			randomSign() * (c + 1),
 		];
 
-		stream += (clause.join(" ") + " 0 ");
+		stream += clause.join(" ") + " 0\n";
 	}
 
 	return stream;

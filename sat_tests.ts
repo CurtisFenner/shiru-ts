@@ -2,7 +2,7 @@ import { SATSolver } from "./sat";
 import { assert } from "./test";
 
 export const tests = {
-	simpleSatisfiable() {
+	"simple-satisfiable"() {
 		const sat = new SATSolver();
 		sat.initTerms(9);
 
@@ -34,7 +34,7 @@ export const tests = {
 			assert(satisfied, "is equal to", true);
 		}
 	},
-	simpleUnsatisfiable() {
+	"simple-unsatisfiable"() {
 		const sat = new SATSolver();
 		sat.initTerms(3);
 		sat.addClause([+1, +2, -3]);
@@ -45,9 +45,36 @@ export const tests = {
 
 		const model = sat.solve();
 		assert(model, "is equal to", "unsatisfiable");
-	}
-};
+	},
+	"conflicting-unit-clauses"() {
+		const sat = new SATSolver();
+		sat.initTerms(1);
+		sat.addClause([+1]);
+		sat.addClause([-1]);
+		const model = sat.solve();
+		assert(model, "is equal to", "unsatisfiable");
+	},
+	"conflict-in-initial-unit-propagation"() {
+		const sat = new SATSolver();
+		sat.initTerms(5);
 
-function sorted(t: number[]) {
-	return t.slice(0).sort();
-}
+		// Initial unit propagation leads to a conflict.
+		const instance = [
+			[1, 2],
+			[3],
+			[4],
+			[-2, -1, -4, -3],
+			[5],
+			[2, -1, -5, -4, -3],
+			[-1, -5, -4, -3],
+			[-2, 1, -5, -4, -3],
+		];
+
+		for (let clause of instance) {
+			sat.addClause(clause);
+		}
+
+		const result = sat.solve();
+		assert(result, "is equal to", "unsatisfiable");
+	},
+};

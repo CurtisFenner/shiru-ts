@@ -121,7 +121,7 @@ export class SATSolver {
 
 	/// solve solves this instance.
 	solve(): DefiniteSATResult {
-		if (this.decisionLevel !== 0) {
+		if (this.decisionLevel > 0) {
 			throw new Error("SATSolver.solve() requires decision level must be at 0");
 		} else if (this.assignments.length === 0) {
 			throw new Error("SATSolver.solve() requires at least one term");
@@ -136,20 +136,21 @@ export class SATSolver {
 			if (clause.length === 1) {
 				const literal = clause[0];
 				const conflict = unitLiterals.pushOrFindConflict(literal, i);
-				if (conflict) {
+				if (conflict !== null) {
 					// There are two contradicting unit-clauses.
 					return "unsatisfiable";
 				}
 			}
 		}
 
+		this.decisionLevel = 0;
 		for (let [unitLiteral, antecedent] of unitLiterals) {
 			// Invariant: the literal "not unitLiteral" is not in
 			// `unitLiterals`.
 			const [newUnitLiterals, newAntecedents] = this.assign(unitLiteral, antecedent);
 			for (let i = 0; i < newUnitLiterals.length; i++) {
 				const conflict = unitLiterals.pushOrFindConflict(newUnitLiterals[i], newAntecedents[i]);
-				if (conflict) {
+				if (conflict !== null) {
 					// There are two contradicting unit-clauses; we are still 
 					// prior to any decisions, so the formula overall must be
 					// unsatisfiable.
@@ -377,7 +378,17 @@ export class SATSolver {
 				}
 			}
 
+
 			const w = watches[i];
+			if (!satisfied) {
+				const unwatchedUnfalsified = unfalsifiedLiterals.filter(x => w.indexOf(x) < 0);
+				for (let watcher of w) {
+					const term = Math.abs(watcher);
+					if (this.assignments[term] * watcher < 0 && unwatchedUnfalsified.length >= 1) {
+						throw new Error(`Watched term ${term} in unsatisfied clause #${i} [${clause}] has been assigned ${this.assignments[term]}, and ${unwatchedUnfalsified} are available.`);
+					}
+				}
+			}
 			if (w.length > 2) {
 				throw new Error("Too many watched literals in this clause!");
 			} else if (w.length < 2 && w.length < clause.length) {
@@ -446,17 +457,20 @@ export class SATSolver {
 			// or recognize that this watchingClause is now a unit clause.
 			const destination = watchingClause[0] === -assignedLiteral ? 0 : 1;
 
+			// As an optimization, try to prevent more useless wake-ups by
+			// swapping this watch with an earlier assigned that satisfied the
+			// clause.
 			if (satisfiedIndex >= 0) {
-				// If already satisfied, can remain watching.
-				// Everything not maintained here will be cleared from the array
-				// at the end of the loop.
-
 				if (satisfiedIndex <= 1) {
-					// (Have nothing to swap)
+					// There are no unwatched satisfied literals in this clause, 
+					// so this literal will remain the watcher.
+					// N.B.: without this, this watcher would be cleared at the
+					// end of this loop.
 					watchers[watchersKeepIndex] = watchingClauseID;
 					watchersKeepIndex += 1;
 				} else {
-					// Move this watch to the satisfied literal.
+					// This clause is already satisfied, and does not require
+					// any further updates or inspection.
 					const satisfiedLiteral = watchingClause[satisfiedIndex];
 					swap(watchingClause, destination, satisfiedIndex);
 					if (satisfiedLiteral > 0) {
@@ -475,9 +489,9 @@ export class SATSolver {
 				// `this.assignments` is not yet updated; thus the only 
 				// falsified literal is the one being deleted; so this is a
 				// conflicting unit-clause.
-				throw new Error("This assignment falsifies an entire clause.\n(adding assignment "
-					+ assignedLiteral + " to assignment stack " + this.assignmentStack
-					+ ";\nwatchingClause = " + watchingClause + " with id " + watchingClauseID + ")");
+				throw new Error(`This assignment falsifies the clause #${watchingClauseID}.`
+					+ `\n(adding assignment ${assignedLiteral} to stack [${this.assignmentStack}];`
+					+ `\nwatchingClause =#${watchingClauseID} ${watchingClause})`);
 			} else if (unfalsfiedCount == 2) {
 				// `watchingClause` is not yet satisfied, and has no unfalsified 
 				// literals other than its two watched literals.
@@ -587,9 +601,14 @@ export class SATSolver {
 		return conflictClause;
 	}
 
-	private rollbackToDecisionLevel(level: number) {
-		while (this.decisionLevel > level) {
+	rollbackToDecisionLevel(level: number) {
+		while (this.decisionLevel > level && this.assignmentStack.length > 0) {
 			this.popAssignment();
+		}
+		if (this.assignmentStack.length === 0) {
+			if (level > 0) {
+				throw new Error(`bad level argument ${level}`);
+			}
 		}
 	}
 

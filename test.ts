@@ -1,6 +1,7 @@
 import * as interpreter_test from "./interpreter_test";
 import * as parser_test from "./parser_test";
 import * as sat_tests from "./sat_tests";
+import * as smt_tests from "./smt_tests";
 
 export type Run = PassRun | FailRun;
 
@@ -77,6 +78,10 @@ function deepEqual(a: any, b: any) {
 	} else if (typeof a !== typeof b) {
 		return false;
 	} else if (typeof a === "object") {
+		if (a === null || b === null) {
+			return false;
+		}
+
 		let checked: any = {};
 		for (let k in a) {
 			if (!deepEqual(a[k], b[k])) {
@@ -122,4 +127,5 @@ const testRunner = new TestRunner(process.argv[2]);
 testRunner.runTests("interpreter_test", interpreter_test.tests);
 testRunner.runTests("parser_test", parser_test.tests);
 testRunner.runTests("sat_tests", sat_tests.tests);
+testRunner.runTests("smt_tests", smt_tests.tests);
 testRunner.printReport();

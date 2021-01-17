@@ -1,12 +1,11 @@
 {
 	"scripts": {
-		"test": "node -r source-map-support/register built/test.js",
-		"dimacs": "node -r source-map-support/register built/dimacs.js",
+		"test": "node --enable-source-maps built/test.js",
+		"dimacs": "node --enable-source-maps built/dimacs.js",
 		"build": "tsc"
 	},
 	"dependencies": {
-		"@types/node": "^14.6.4",
-		"source-map-support": "^0.5.19"
+		"@types/node": "^14.6.4"
 	},
 	"license": "LGPL-3.0-only"
 }

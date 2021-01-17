@@ -47,9 +47,6 @@ class BoundedTheory extends SMTTheory<BoundedRelation[], BoundedConfig, Record<s
 	}
 
 	rejectModel(concrete: number[]): number[] | Record<string, number> {
-		console.log("rejectModel?", concrete);
-		console.log("\t", concrete.map(x => [x, this.constraints[Math.abs(x)]]));
-
 		let environments: Record<string, number>[] = [{}];
 		for (let v in this.variables) {
 			const domain = this.variables[v];

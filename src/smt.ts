@@ -127,8 +127,6 @@ export class SMTSolver<E, Config, Counterexample> {
 					// TODO: theoryClause should be an asserting clause, so the
 					// logic in backtracking should be able to replace this.
 					this.sat.rollbackToDecisionLevel(-1);
-					console.log("prior to add theory clause:", this.sat);
-					console.log("!!", "add theory clause", theoryClause);
 					this.sat.addClause(theoryClause);
 				} else {
 					// TODO: Instantiation may need to take place here.

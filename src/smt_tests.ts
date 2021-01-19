@@ -1,4 +1,4 @@
-import { SMTSolver, SMTTheory } from "./smt";
+import { SMTSolver, UFPredicate, UFTheory } from "./smt";
 import { assert } from "./test";
 
 
@@ -10,7 +10,7 @@ type BoundedConfig = [string, number[]];
 
 /// Defines a simple SMTTheory where string variables can take on values from a
 /// finite set of numbers, and can have simple arithmetic expressions evaluated.
-class BoundedTheory extends SMTTheory<BoundedRelation[], BoundedConfig, Record<string, number>> {
+class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>> {
 	private variables: Record<string, number[]> = {};
 	private constraints: Record<number, BoundedRelation> = {};
 	private constraintKey: Record<string, number> = {};
@@ -42,7 +42,7 @@ class BoundedTheory extends SMTTheory<BoundedRelation[], BoundedConfig, Record<s
 		}
 	}
 
-	configure(configuration: BoundedConfig): void {
+	defineVariable(configuration: BoundedConfig): void {
 		this.variables[configuration[0]] = configuration[1];
 	}
 
@@ -96,10 +96,10 @@ class BoundedTheory extends SMTTheory<BoundedRelation[], BoundedConfig, Record<s
 
 export const tests = {
 	"simple-smt-bounded-refutable"() {
-		const smt = new SMTSolver(new BoundedTheory());
-		smt.configure(["a", [-2, -1, 0, 1, 2]]);
-		smt.configure(["b", [-2, -1, 0, 1, 2]]);
-		smt.configure(["c", [-2, -1, 0, 1, 2]]);
+		const smt = new BoundedTheory();
+		smt.defineVariable(["a", [-2, -1, 0, 1, 2]]);
+		smt.defineVariable(["b", [-2, -1, 0, 1, 2]]);
+		smt.defineVariable(["c", [-2, -1, 0, 1, 2]]);
 		smt.addConstraint([
 			[["a", "+", "b"], "=", 4],
 			[["a", "+", "b"], "=", -4],
@@ -123,5 +123,97 @@ export const tests = {
 
 		const refute3 = smt.attemptRefutation();
 		assert(refute3, "is equal to", "refuted");
-	}
+	},
+	"UFTheory-basic-equality-refuted"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x1", 1);
+		smt.defineVariable("y1", 1);
+		smt.defineVariable("z1", 1);
+
+		smt.addConstraint([
+			["=", "x1", "y1"],
+		]);
+		smt.addConstraint([
+			["=", "x1", "z1"],
+		]);
+		smt.addConstraint([
+			["not", ["=", "y1", "z1"]],
+		]);
+
+		const result = smt.attemptRefutation();
+		assert(result, "is equal to", "refuted");
+	},
+	"UFTheory-basic-satisfiable"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x1", 1);
+		smt.defineVariable("x2", 1);
+		smt.defineFunction("f", [1, 1], 2);
+
+		smt.addConstraint([
+			["=", "x1", "x2"],
+			["not", ["=", ["app", "f", ["x1"]], ["app", "f", ["x2"]]]],
+		]);
+
+		const result = smt.attemptRefutation();
+		assert(result, "is equal to", {});
+	},
+	"UFTheory-basic-function-refuted"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x1", 1);
+		smt.defineVariable("x2", 1);
+		smt.defineFunction("f", [1, 1], 2);
+
+		smt.addConstraint([
+			["=", "x1", "x2"],
+		]);
+		smt.addConstraint([
+			["not", ["=", ["app", "f", ["x1"]], ["app", "f", ["x2"]]]],
+		]);
+
+		console.log("ATTEMPTING REFUTATION");
+		const result = smt.attemptRefutation();
+		assert(result, "is equal to", "refuted");
+	},
+	"UFTheory-excluded-middle-variables"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x1", "bool");
+		smt.defineVariable("x2", "bool");
+		smt.defineVariable("x3", "bool");
+
+		smt.addConstraint([
+			["not", ["=", "x1", "x2"]],
+		]);
+		smt.addConstraint([
+			["not", ["=", "x1", "x3"]],
+		]);
+		smt.addConstraint([
+			["not", ["=", "x2", "x3"]],
+		]);
+
+		// Three booleans cannot all be unequal.
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFTheory-excluded-middle-predicates"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x1", 0);
+		smt.defineVariable("x2", 0);
+		smt.defineVariable("x3", 0);
+		smt.defineFunction("p", [0], "bool");
+
+		const p1: UFPredicate = ["app", "p", ["x1"]];
+		const p2: UFPredicate = ["app", "p", ["x2"]];
+		const p3: UFPredicate = ["app", "p", ["x3"]];
+		smt.addConstraint([
+			["not", ["=", p1, p2]],
+		]);
+		smt.addConstraint([
+			["not", ["=", p1, p3]],
+		]);
+		smt.addConstraint([
+			["not", ["=", p2, p3]],
+		]);
+
+		// Three booleans cannot all be unequal.
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
 };

@@ -2,6 +2,8 @@ import * as interpreter_test from "./interpreter_test";
 import * as parser_test from "./parser_test";
 import * as sat_tests from "./sat_tests";
 import * as smt_tests from "./smt_tests";
+import * as data_tests from "./data_tests";
+import util = require("util");
 
 export type Run = PassRun | FailRun;
 
@@ -77,6 +79,22 @@ function deepEqual(a: any, b: any) {
 		return true;
 	} else if (typeof a !== typeof b) {
 		return false;
+	} else if (a instanceof Set && b instanceof Set) {
+		for (let v of a) {
+			if (!b.has(v)) {
+				return false;
+			}
+		}
+		for (let v of b) {
+			if (!a.has(v)) {
+				return false;
+			}
+		}
+		return true;
+	} else if (a instanceof Set || b instanceof Set) {
+		return false;
+	} else if (a instanceof Map || b instanceof Map) {
+		return false;
 	} else if (typeof a === "object") {
 		if (a === null || b === null) {
 			return false;
@@ -100,17 +118,16 @@ function deepEqual(a: any, b: any) {
 	}
 }
 
-
 export function assert<A, B extends A>(a: A, op: "is equal to", b: B): asserts a is B;
-export function assert<A, B extends A>(a: any, op: "is array"): asserts a is any[];
+export function assert<A>(a: A, op: A extends any[] ? "is array" : never): asserts a is any[] & A;
 
 export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"]) {
 	if (args[1] === "is equal to") {
 		const [a, op, b] = args;
 		if (!deepEqual(a, b)) {
-			let sa = "`" + JSON.stringify(a, null, "\t") + "`";
-			let sb = "`" + JSON.stringify(b, null, "\t") + "`";
-			throw new Error("Expected " + sa + " to be equal to " + sb);
+			const sa = util.inspect(a, { depth: 16, colors: true });
+			const sb = util.inspect(b, { depth: 16, colors: true });
+			throw new Error(`Expected \n\t${sa}\nto be equal to\n\t${sb}`);
 		}
 	} else if (args[1] === "is array") {
 		const [a, op] = args;
@@ -124,6 +141,7 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 
 const testRunner = new TestRunner(process.argv[2]);
 
+testRunner.runTests("data_tests", data_tests.tests);
 testRunner.runTests("interpreter_test", interpreter_test.tests);
 testRunner.runTests("parser_test", parser_test.tests);
 testRunner.runTests("sat_tests", sat_tests.tests);

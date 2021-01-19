@@ -1,107 +1,31 @@
+import { TrieMap, DisjointSet } from "./data";
 import { Literal, SATSolver } from "./sat";
-
-export class UnionFind {
-	parents: number[] = [];
-	ranks: number[] = [];
-
-	expandTo(n: number) {
-		for (let i = this.parents.length; i <= n; i++) {
-			this.parents.push(i);
-			this.ranks.push(0);
-		}
-	}
-
-	/// representative returns a "representative" element of the given object's
-	/// equivalence class, such that two elements are members of the same 
-	/// equivalence class if and only if their representatives are the same.
-	representative(n: number): number {
-		while (this.parents[n] !== n) {
-			// "Path halving"
-			this.parents[n] = this.parents[this.parents[n]];
-			n = this.parents[n];
-		}
-		return n;
-	}
-
-	/// compareEqual returns whether or not the two objects are members of the
-	/// same equivalence class.
-	compareEqual(a: number, b: number): boolean {
-		return this.representative(a) === this.representative(b);
-	}
-
-	/// union updates this datastructure to join the equivalence classes of 
-	/// objects a and b.
-	/// RETURNS false when the objects were already members of the same 
-	///         equivalence class.
-	union(a: number, b: number): boolean {
-		const ra = this.representative(a);
-		const rb = this.representative(b);
-		if (ra == rb) {
-			return false;
-		}
-
-		let child: number;
-		let parent: number;
-
-		if (this.ranks[ra] < this.ranks[rb]) {
-			child = ra;
-			parent = rb;
-		} else {
-			child = rb;
-			parent = ra;
-		}
-
-		this.parents[child] = parent;
-		if (this.ranks[child] === this.ranks[parent]) {
-			this.ranks[parent] += 1;
-		}
-		return true;
-	}
-
-	/// RETURNS the set of equivalence classes managed by this data structure.
-	components(): number[][] {
-		let components: number[][] = [];
-		for (let i = 0; i < this.parents.length; i++) {
-			components.push([]);
-		}
-		for (let i = 0; i < this.parents.length; i++) {
-			components[this.parents[i]].push(i);
-		}
-		let out: number[][] = [];
-		for (let i = 0; i < components.length; i++) {
-			if (components[i].length !== 0) {
-				out.push(components[i]);
-			}
-		}
-		return out;
-	}
-}
 
 /// SMTSolver represents an "satisfiability modulo theories" instance, with 
 /// support for quantifier instantiation.
 /// With respect to refutation, SMTSolver is sound but not complete -- some
 /// returned "satisfactions" do not actually satisfy the instance, but all
 /// refutation results definitely refute the instance.
-export class SMTSolver<E, Config, Counterexample> {
-	sat: SATSolver;
-	constructor(private theory: SMTTheory<E, Config, Counterexample>) {
+export abstract class SMTSolver<E, Counterexample> {
+	private sat: SATSolver;
+	constructor() {
 		this.sat = new SATSolver();
 	}
 
-	configure(configuration: Config) {
-		this.theory.configure(configuration);
-	}
-
 	addConstraint(constraint: E) {
-		for (let clause of this.theory.clausify(constraint)) {
-			let maxTerm = 0;
-			for (let literal of clause) {
-				const term = literal > 0 ? literal : -literal;
-				maxTerm = Math.max(maxTerm, term);
-			}
-			this.sat.initTerms(maxTerm);
-			this.sat.addClause(clause);
+		for (let clause of this.clausify(constraint)) {
+			this.addClausified(clause);
 		}
+	}
+	
+	protected addClausified(clause: Literal[]) {
+		let maxTerm = 0;
+		for (let literal of clause) {
+			const term = literal > 0 ? literal : -literal;
+			maxTerm = Math.max(maxTerm, term);
+		}
+		this.sat.initTerms(maxTerm);
+		this.sat.addClause(clause);
 	}
 
 	/// RETURNS "refuted" when the given constraints can provably not be
@@ -121,7 +45,7 @@ export class SMTSolver<E, Config, Counterexample> {
 				// clauses which merely preserve satisfiability and not logical 
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
-				const theoryClause = this.theory.rejectModel(booleanModel);
+				const theoryClause = this.rejectModel(booleanModel);
 				if (Array.isArray(theoryClause)) {
 					// Completely undo the assignment.
 					// TODO: theoryClause should be an asserting clause, so the
@@ -137,23 +61,291 @@ export class SMTSolver<E, Config, Counterexample> {
 			}
 		}
 	}
-}
 
-export abstract class SMTTheory<E, Config, Counterexample> {
-
-	abstract configure(configuration: Config): void;
 
 	/// rejectModel returns a new clause to add to the SAT solver which 
 	/// rejects this concrete assignment.
 	/// The returned clause should be an asserting clause in reference to the
 	/// concrete assignment.
-	abstract rejectModel(concrete: Literal[]): Counterexample | Literal[];
+	protected abstract rejectModel(concrete: Literal[]): Counterexample | Literal[];
 
 	/// clausify returns a set of clauses to add to the underlying SAT solver.
 	/// This modifies state, associating literals (and other internal variables)
 	/// with the pieces of this constraint, possibly for instantiation.
-	abstract clausify(constraint: E): Literal[][];
+	protected abstract clausify(constraint: E): Literal[][];
 
 	/// TODO: Instantiation of quantifiers, which is sometimes done in the place
 	/// of making decisions in the SATSolver.
+}
+
+export interface UFCounter { }
+export type UFVariable = string
+export type UFFunction = string
+export type UFValue = UFVariable | ["app", UFFunction, UFValue[]];
+
+// A UFPredicate is a UFValue with sort `"bool"`.
+export type UFPredicate = UFValue;
+
+export type UFConstraint = ["=", UFValue, UFValue] | UFPredicate | ["not", UFConstraint];
+
+/// Types are identified by opaque numbers (or the special type "bool").
+export type UFType = number | "bool";
+
+type UFSATTermData = { tag: "app", f: UFFunction, argsDS: number[] }
+	| { tag: "=", leftDS: number, rightDS: number }
+	| { tag: "var", v: string }
+
+/// UFTheory implements the "theory of uninterpreted functions".
+/// This theory understands the properties of equality
+/// (symmetric, reflective, and transitive)
+/// as well as the "extensionality"/"congruence" of function application:
+/// a == b implies f(a) == f(b)
+export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
+
+	// The next index to use for a new value to be tracked in the DisjointSet
+	// instance.
+	private byDSIndex: Map<number, { sort: UFType, value: UFValue }> = new Map();
+	private _nextDisjointSetIndex = 0;
+	private vendDSIndex(obj: { sort: UFType, value: UFValue }): number {
+		const out = this._nextDisjointSetIndex;
+		this.byDSIndex.set(out, obj);
+		this._nextDisjointSetIndex += 1;
+		return out;
+	}
+
+	// The next term to be used in the underlying sat solver.
+	private bySatTerm: Record<number, UFSATTermData> = {};
+	private _nextSatTerm = 1;
+	private vendSatTerm(termData: UFSATTermData): number {
+		const out = this._nextSatTerm;
+		this.bySatTerm[out] = termData;
+		this._nextSatTerm += 1;
+		return out;
+	}
+
+	private variables: Record<UFVariable, { t: UFType, index: number, satTerm: number | null }> = {};
+	private functions: Record<UFFunction, {
+		parameters: UFType[], returns: UFType,
+		/// mapping from arguments => identity of application within DisjointSet & SAT (when returns bool)
+		apps: TrieMap<number, { dsIndex: number, satTerm: number | null }>,
+		/// mapping from identify within DisjointSet => arguments
+		argsByDSIndex: Record<number, number[]>,
+	}> = {};
+
+	/// mapping from lhs/rhs uf-index to map.
+	private equalitySatTerms: TrieMap<number, number> = new TrieMap();
+
+	defineVariable(variable: UFVariable, t: UFType) {
+		if (variable in this.variables) {
+			throw new Error(`variable \`${variable}\` is already defined`);
+		}
+		const dsIndex = this.vendDSIndex({ sort: t, value: variable });
+		let satTerm = null;
+		if (t === "bool") {
+			satTerm = this.vendSatTerm({ tag: "var", v: variable });
+		}
+		this.variables[variable] = { t: t, index: dsIndex, satTerm };
+	}
+
+	defineFunction(f: UFFunction, parameters: UFType[], returns: UFType) {
+		if (f in this.functions) {
+			throw new Error(`function \`${f}\` is already defined`);
+		}
+		let terms = null;
+		if (returns === "bool") {
+			terms = new TrieMap<number, number>();
+		}
+
+		this.functions[f] = {
+			parameters: parameters,
+			returns,
+			apps: new TrieMap(),
+			argsByDSIndex: {},
+		};
+	}
+
+	rejectModel(concrete: readonly Literal[]): Literal[] | UFCounter {
+		const ds: DisjointSet<number[]> = new DisjointSet();
+
+		// Union all positive equalities.
+		for (let literal of concrete) {
+			const term = literal > 0 ? literal : -literal;
+			const info = this.bySatTerm[term];
+
+			if (literal > 0) {
+				if (info.tag === "=") {
+					ds.union(info.leftDS, info.rightDS, [literal]);
+				}
+			}
+		}
+
+		while (true) {
+			// Find all function applications and "canonicalize" them, producing new
+			// union operations.
+			let congruenceEqualities = [];
+			for (let f in this.functions) {
+				let repByCanonArgs: TrieMap<number, { fDSID: number, args: number[] }> = new TrieMap();
+				const fInfo = this.functions[f];
+				for (let _id in fInfo.argsByDSIndex) {
+					const id = parseInt(_id);
+					const args = fInfo.argsByDSIndex[id];
+					const canonicalizedArgs = args.map(x => ds.representative(x));
+					const existing = repByCanonArgs.get(canonicalizedArgs);
+					if (existing !== undefined) {
+						if (!ds.compareEqual(id, existing.fDSID)) {
+							// Enqueue a congruence equality.
+							// Updating ds here would invalidate repByCanonArgs.
+							let reason = [];
+							for (let i = 0; i < args.length; i++) {
+								for (let e of ds.explainEquality(args[i], existing.args[i])) {
+									reason.push(...e);
+								}
+							}
+
+							// The reason for this equivalence is the 
+							// conjunction of the reasons for each argument 
+							// being equivalent.
+							congruenceEqualities.push({ left: id, right: existing, reason });
+						}
+					} else {
+						repByCanonArgs.put(canonicalizedArgs, { fDSID: id, args });
+					}
+				}
+			}
+
+			for (let { left, right, reason } of congruenceEqualities) {
+				ds.union(left, right.fDSID, reason);
+			}
+
+			if (congruenceEqualities.length === 0) {
+				break;
+			}
+		}
+
+		let disequal: TrieMap<number, Literal> = new TrieMap();
+		for (let literal of concrete) {
+			const term = literal > 0 ? literal : -literal;
+			const info = this.bySatTerm[term];
+
+			if (literal < 0) {
+				if (info.tag === "=") {
+					const leftRep = ds.representative(info.leftDS);
+					const rightRep = ds.representative(info.rightDS);
+					if (leftRep === rightRep) {
+						// Some equality literals imply they are in the same 
+						// component, but this disequality implies they must be
+						// in different components.
+						const explanation = ds.explainEquality(info.leftDS, info.rightDS);
+						const conflictClause = [-literal];
+						for (let e of explanation) {
+							conflictClause.push(...e.map(x => -x));
+						}
+						return conflictClause;
+					}
+					disequal.put([Math.min(leftRep, rightRep), Math.max(leftRep, rightRep)], literal);
+				}
+			}
+		}
+
+		// Search for a "triangle" of inequalities in the boolean-sorted 
+		// components.
+		const components = ds.components();
+		for (let component of components) {
+			const rep = ds.representative(component[0]);
+			const repInfo = this.byDSIndex.get(rep);
+			if (repInfo?.sort !== "bool") {
+				continue;
+			}
+
+			for (let [edge, edgeLiteral] of disequal) {
+				const a = edge[0];
+				const b = edge[1];
+				const edgeARep = disequal.get([Math.min(a, rep), Math.max(a, rep)]);
+				const edgeBRep = disequal.get([Math.min(b, rep), Math.max(b, rep)]);
+				if (edgeARep !== undefined && edgeBRep !== undefined) {
+					// (a, b), (a, rep), (b, rep) form a triangle of
+					// inequalities between booleans.
+					return [-edgeLiteral, -edgeARep, -edgeBRep];
+				}
+			}
+		}
+
+		// No contradiction was found.
+		return {};
+	}
+
+	clausify(clause: UFConstraint[]): number[][] {
+		// Each clause is a disjunction of UFConstraints.
+		const satClause = [];
+		for (let alternative of clause) {
+			satClause.push(this.literalFor(alternative));
+		}
+		return [satClause];
+	}
+
+	private equalitySatTerm(leftDS: number, rightDS: number): Literal {
+		let eqTerm = this.equalitySatTerms.get([leftDS, rightDS]);
+		if (eqTerm === undefined) {
+			eqTerm = this.vendSatTerm({ tag: "=", leftDS, rightDS });
+			this.equalitySatTerms.put([leftDS, rightDS], eqTerm);
+		}
+		return eqTerm;
+	}
+
+	private literalFor(constraint: UFConstraint): Literal {
+		if (typeof constraint === "string") {
+			const vInfo = this.variables[constraint];
+			const satTerm = vInfo.satTerm;
+			if (satTerm === null) {
+				throw new Error(`varaible ${constraint} with non-bool type ${vInfo.t} cannot be used in a clause`);
+			}
+
+			return satTerm;
+		} else if (constraint[0] === "not") {
+			return -this.literalFor(constraint[1]);
+		} else if (constraint[0] === "=") {
+			const left = this.valueIndex(constraint[1]);
+			const right = this.valueIndex(constraint[2]);
+			return this.equalitySatTerm(left.dsIndex, right.dsIndex);
+		} else if (constraint[0] === "app") {
+			const app = this.valueIndex(constraint);
+			if (app.satTerm === null) {
+				throw new Error(`value ${constraint} with non-bool sort cannot be used in a clause`);
+			}
+			return app.satTerm;
+		}
+		throw new Error(`unhandled ${constraint}`);
+	}
+
+	/// RETURNS an index into a DisjointSet object.
+	private valueIndex(v: UFValue): { dsIndex: number, satTerm: number | null } {
+		if (typeof v === "string") {
+			const vInfo = this.variables[v];
+			if (vInfo === undefined) {
+				throw new Error(`variable ${v} has not been defined`);
+			}
+			return { dsIndex: vInfo.index, satTerm: vInfo.satTerm };
+		}
+		if (v[0] === "app") {
+			const args = v[2].map(a => this.valueIndex(a).dsIndex);
+			const f = v[1];
+			const fInfo = this.functions[f];
+			let app = fInfo.apps.get(args);
+			if (app === undefined) {
+				app = { dsIndex: this.vendDSIndex({ sort: fInfo.returns, value: v }), satTerm: null };
+				if (fInfo.returns === "bool") {
+					app.satTerm = this.vendSatTerm({
+						tag: "app",
+						f: f,
+						argsDS: args,
+					});
+				}
+				fInfo.apps.put(args, app);
+				fInfo.argsByDSIndex[app.dsIndex] = args;
+			}
+			return app;
+		}
+
+		throw new Error(`unhandled ${v}`);
+	}
 }

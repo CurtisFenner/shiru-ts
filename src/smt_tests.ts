@@ -131,13 +131,13 @@ export const tests = {
 		smt.defineVariable("z1", 1);
 
 		smt.addConstraint([
-			["=", "x1", "y1"],
+			{ tag: "=", left: "x1", right: "y1" },
 		]);
 		smt.addConstraint([
-			["=", "x1", "z1"],
+			{ tag: "=", left: "x1", right: "z1" },
 		]);
 		smt.addConstraint([
-			["not", ["=", "y1", "z1"]],
+			{ tag: "not", constraint: { tag: "=", left: "y1", right: "z1" } },
 		]);
 
 		const result = smt.attemptRefutation();
@@ -150,8 +150,8 @@ export const tests = {
 		smt.defineFunction("f", [1, 1], 2);
 
 		smt.addConstraint([
-			["=", "x1", "x2"],
-			["not", ["=", ["app", "f", ["x1"]], ["app", "f", ["x2"]]]],
+			{ tag: "=", left: "x1", right: "x2" },
+			{ tag: "not", constraint: { tag: "=", left: ["app", "f", ["x1"]], right: ["app", "f", ["x2"]] } },
 		]);
 
 		const result = smt.attemptRefutation();
@@ -164,13 +164,12 @@ export const tests = {
 		smt.defineFunction("f", [1, 1], 2);
 
 		smt.addConstraint([
-			["=", "x1", "x2"],
+			{ tag: "=", left: "x1", right: "x2" },
 		]);
 		smt.addConstraint([
-			["not", ["=", ["app", "f", ["x1"]], ["app", "f", ["x2"]]]],
+			{ tag: "not", constraint: { tag: "=", left: ["app", "f", ["x1"]], right: ["app", "f", ["x2"]] } },
 		]);
 
-		console.log("ATTEMPTING REFUTATION");
 		const result = smt.attemptRefutation();
 		assert(result, "is equal to", "refuted");
 	},
@@ -181,13 +180,13 @@ export const tests = {
 		smt.defineVariable("x3", "bool");
 
 		smt.addConstraint([
-			["not", ["=", "x1", "x2"]],
+			{ tag: "not", constraint: { tag: "=", left: "x1", right: "x2" } },
 		]);
 		smt.addConstraint([
-			["not", ["=", "x1", "x3"]],
+			{ tag: "not", constraint: { tag: "=", left: "x1", right: "x3" } },
 		]);
 		smt.addConstraint([
-			["not", ["=", "x2", "x3"]],
+			{ tag: "not", constraint: { tag: "=", left: "x2", right: "x3" } },
 		]);
 
 		// Three booleans cannot all be unequal.
@@ -204,13 +203,13 @@ export const tests = {
 		const p2: UFPredicate = ["app", "p", ["x2"]];
 		const p3: UFPredicate = ["app", "p", ["x3"]];
 		smt.addConstraint([
-			["not", ["=", p1, p2]],
+			{ tag: "not", constraint: { tag: "=", left: p1, right: p2 } },
 		]);
 		smt.addConstraint([
-			["not", ["=", p1, p3]],
+			{ tag: "not", constraint: { tag: "=", left: p1, right: p3 } },
 		]);
 		smt.addConstraint([
-			["not", ["=", p2, p3]],
+			{ tag: "not", constraint: { tag: "=", left: p2, right: p3 } },
 		]);
 
 		// Three booleans cannot all be unequal.

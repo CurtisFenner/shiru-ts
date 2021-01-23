@@ -86,7 +86,9 @@ export type UFValue = UFVariable | ["app", UFFunction, UFValue[]];
 // A UFPredicate is a UFValue with sort `"bool"`.
 export type UFPredicate = UFValue;
 
-export type UFConstraint = ["=", UFValue, UFValue] | UFPredicate | ["not", UFConstraint];
+export type UFConstraint = { tag: "=", left: UFValue, right: UFValue }
+	| { tag: "predicate", predicate: UFPredicate }
+	| { tag: "not", constraint: UFConstraint };
 
 /// Types are identified by opaque numbers (or the special type "bool").
 export type UFType = number | "bool";
@@ -127,13 +129,13 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 	private functions: Record<UFFunction, {
 		parameters: UFType[], returns: UFType,
 		/// mapping from arguments => identity of application within DisjointSet & SAT (when returns bool)
-		apps: TrieMap<number, { dsIndex: number, satTerm: number | null }>,
+		apps: TrieMap<number[], { dsIndex: number, satTerm: number | null }>,
 		/// mapping from identify within DisjointSet => arguments
 		argsByDSIndex: Record<number, number[]>,
 	}> = {};
 
 	/// mapping from lhs/rhs uf-index to map.
-	private equalitySatTerms: TrieMap<number, number> = new TrieMap();
+	private equalitySatTerms: TrieMap<[number, number], number> = new TrieMap();
 
 	defineVariable(variable: UFVariable, t: UFType) {
 		if (variable in this.variables) {
@@ -153,7 +155,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		}
 		let terms = null;
 		if (returns === "bool") {
-			terms = new TrieMap<number, number>();
+			terms = new TrieMap<number[], number>();
 		}
 
 		this.functions[f] = {
@@ -184,7 +186,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			// union operations.
 			let congruenceEqualities = [];
 			for (let f in this.functions) {
-				let repByCanonArgs: TrieMap<number, { fDSID: number, args: number[] }> = new TrieMap();
+				let repByCanonArgs: TrieMap<number[], { fDSID: number, args: number[] }> = new TrieMap();
 				const fInfo = this.functions[f];
 				for (let _id in fInfo.argsByDSIndex) {
 					const id = parseInt(_id);
@@ -222,7 +224,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			}
 		}
 
-		let disequal: TrieMap<number, Literal> = new TrieMap();
+		let disequal: TrieMap<number[], Literal> = new TrieMap();
 		for (let literal of concrete) {
 			const term = literal > 0 ? literal : -literal;
 			const info = this.bySatTerm[term];
@@ -301,14 +303,14 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			}
 
 			return satTerm;
-		} else if (constraint[0] === "not") {
-			return -this.literalFor(constraint[1]);
-		} else if (constraint[0] === "=") {
-			const left = this.valueIndex(constraint[1]);
-			const right = this.valueIndex(constraint[2]);
+		} else if (constraint.tag === "not") {
+			return -this.literalFor(constraint.constraint);
+		} else if (constraint.tag === "=") {
+			const left = this.valueIndex(constraint.left);
+			const right = this.valueIndex(constraint.right);
 			return this.equalitySatTerm(left.dsIndex, right.dsIndex);
-		} else if (constraint[0] === "app") {
-			const app = this.valueIndex(constraint);
+		} else if (constraint.tag === "predicate") {
+			const app = this.valueIndex(constraint.predicate);
 			if (app.satTerm === null) {
 				throw new Error(`value ${constraint} with non-bool sort cannot be used in a clause`);
 			}

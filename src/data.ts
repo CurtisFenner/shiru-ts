@@ -1,10 +1,11 @@
 /// TrieMap implements a map where keys are arrays.
 /// This is implemented using a "trie" of ES6 Map objects.
-export class TrieMap<K, V> {
-	private map: Map<K, TrieMap<K, V>> = new Map();
+export class TrieMap<KS extends readonly unknown[], V> {
+	// Unfortunately, more accurate typing of this very elaborate.
+	private map: Map<KS[number], TrieMap<KS, V>> = new Map();
 	private value: V | undefined = undefined;
 
-	get(key: readonly K[], from?: number): V | undefined {
+	get(key: KS, from?: number): V | undefined {
 		from = from || 0;
 
 		if (key.length === from) {
@@ -20,7 +21,7 @@ export class TrieMap<K, V> {
 		}
 	}
 
-	put(key: readonly K[], v: V, from?: number) {
+	put(key: KS, v: V, from?: number) {
 		from = from || 0;
 		if (key.length === from) {
 			this.value = v;
@@ -38,10 +39,9 @@ export class TrieMap<K, V> {
 	/// Iterate over [K[], V] pairs in this map.
 	/// N.B.: The key array is retained and mutated by this generator, so it 
 	// should not be retained or modified by the caller.
-	*[Symbol.iterator](progress?: K[]): Generator<[readonly K[], V]> {
-		progress = progress || [];
+	*[Symbol.iterator](progress: KS[number][] = []): Generator<[KS, V]> {
 		if (this.value !== undefined) {
-			yield [progress, this.value];
+			yield [progress as unknown as KS, this.value];
 		}
 		for (let [key, tree] of this.map) {
 			progress.push(key);

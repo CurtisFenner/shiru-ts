@@ -4,7 +4,7 @@ import { assert } from "./test";
 
 export const tests = {
 	"TrieMap-basic"() {
-		const map: TrieMap<number, string> = new TrieMap();
+		const map: TrieMap<number[], string> = new TrieMap();
 
 		assert(map.get([]), "is equal to", undefined);
 		assert(map.get([0]), "is equal to", undefined);

@@ -90,12 +90,133 @@ export type UFConstraint = { tag: "=", left: UFValue, right: UFValue }
 	| { tag: "predicate", predicate: UFPredicate }
 	| { tag: "not", constraint: UFConstraint };
 
-/// Types are identified by opaque numbers (or the special type "bool").
-export type UFType = number | "bool";
+/// Sorts are identified by opaque numbers (or the special type "bool").
+export type UFSort = number | "bool";
 
 type UFSATTermData = { tag: "app", f: UFFunction, argsDS: number[] }
 	| { tag: "=", leftDS: number, rightDS: number }
-	| { tag: "var", v: string }
+	| { tag: "var", v: string };
+
+// Data structure to track object identities to be used in a SATSolver and 
+// DisjointSet data structure.
+class UFValueTracker {
+	// Map from a function name to its return sort.
+	private functions: Record<string, {
+		applications: TrieMap<number[], { dsIndex: number, satTerm: number | null }>,
+		returnSort: UFSort
+	}> = {};
+
+	// Map from a variable name to its sort.
+	private variables: Record<string, { dsIndex: number, satTerm: null | number, sort: UFSort }> = {};
+
+	// Map from a DisjointSet object to data.
+	// A `string` represents a variable.
+	// A tuple represents a function application.
+	private dsObjects: (string | [string, ...number[]])[] = [];
+
+	// Map from a SATSolver term to data.
+	// A `string` represents a variable.
+	// A tuple represents a function application.
+	private satTerms: UFSATTermData[] = [null] as any;
+
+	private equalityVariables: TrieMap<[number, number], number> = new TrieMap();
+
+	defineVariable(name: string, sort: UFSort): { dsIndex: number, sort: UFSort } {
+		const existing = this.variables[name];
+		if (existing) {
+			throw new Error(`variable \`${name}\` has already been defined`);
+		}
+		const dsIndex = this.dsObjects.length;
+		this.dsObjects[dsIndex] = name;
+		this.variables[name] = {
+			dsIndex: dsIndex,
+			satTerm: null,
+			sort,
+		};
+		if (sort === "bool") {
+			const satTerm = this.satTerms.length;
+			this.variables[name].satTerm = satTerm;
+			this.satTerms[satTerm] = { tag: "var", v: name };
+		}
+		return this.variables[name];
+	}
+
+	getVariable(name: string) {
+		const existing = this.variables[name];
+		if (!existing) {
+			throw new Error(`no such variable \`${name}\``);
+		}
+		return existing;
+	}
+
+	defineFunction(name: string, returnSort: UFSort) {
+		if (this.functions[name] !== undefined) {
+			throw new Error(`function \`${name}\` is already defined`);
+		}
+		this.functions[name] = {
+			applications: new TrieMap(),
+			returnSort,
+		};
+	}
+
+	iterateApplications() {
+		const db = this;
+		return {
+			*[Symbol.iterator]() {
+				for (let f in db.functions) {
+					yield [f, db.functions[f].applications] as const;
+				}
+				db.functions;
+			}
+		}
+	}
+
+	getDSSort(ds: number): UFSort {
+		const definition = this.dsObjects[ds];
+		if (typeof definition === "string") {
+			return this.variables[definition].sort;
+		}
+		return this.functions[definition[0]].returnSort;
+	}
+
+	addApplication(f: string, argsDS: number[]) {
+		const fInfo = this.functions[f];
+		if (fInfo === undefined) {
+			throw new Error(`function \`${f}\` has not been defined`);
+		}
+		const existing = fInfo.applications.get(argsDS);
+		if (existing) {
+			return existing;
+		}
+
+		const dsIndex = this.dsObjects.length;
+		this.dsObjects[dsIndex] = [f, ...argsDS];
+		let satTerm = null;
+		if (fInfo.returnSort === "bool") {
+			satTerm = this.satTerms.length;
+			this.satTerms[satTerm] = { tag: "app", f, argsDS };
+		} else {
+		}
+		const application = { dsIndex, satTerm };
+		fInfo.applications.put(argsDS, application);
+		return application;
+	}
+
+	getEqualityVariable(leftDS: number, rightDS: number) {
+		const existing = this.equalityVariables.get([leftDS, rightDS]);
+		if (existing !== undefined) {
+			return existing;
+		}
+
+		const satTerm = this.satTerms.length;
+		this.satTerms[satTerm] = { tag: "=", leftDS, rightDS };
+		return satTerm;
+	}
+
+	describeSatTerm(term: number) {
+		return this.satTerms[term];
+	}
+}
 
 /// UFTheory implements the "theory of uninterpreted functions".
 /// This theory understands the properties of equality
@@ -103,67 +224,14 @@ type UFSATTermData = { tag: "app", f: UFFunction, argsDS: number[] }
 /// as well as the "extensionality"/"congruence" of function application:
 /// a == b implies f(a) == f(b)
 export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
+	valueTracker = new UFValueTracker();
 
-	// The next index to use for a new value to be tracked in the DisjointSet
-	// instance.
-	private byDSIndex: Map<number, { sort: UFType, value: UFValue }> = new Map();
-	private _nextDisjointSetIndex = 0;
-	private vendDSIndex(obj: { sort: UFType, value: UFValue }): number {
-		const out = this._nextDisjointSetIndex;
-		this.byDSIndex.set(out, obj);
-		this._nextDisjointSetIndex += 1;
-		return out;
+	defineVariable(name: string, sort: UFSort) {
+		this.valueTracker.defineVariable(name, sort);
 	}
 
-	// The next term to be used in the underlying sat solver.
-	private bySatTerm: Record<number, UFSATTermData> = {};
-	private _nextSatTerm = 1;
-	private vendSatTerm(termData: UFSATTermData): number {
-		const out = this._nextSatTerm;
-		this.bySatTerm[out] = termData;
-		this._nextSatTerm += 1;
-		return out;
-	}
-
-	private variables: Record<UFVariable, { t: UFType, index: number, satTerm: number | null }> = {};
-	private functions: Record<UFFunction, {
-		parameters: UFType[], returns: UFType,
-		/// mapping from arguments => identity of application within DisjointSet & SAT (when returns bool)
-		apps: TrieMap<number[], { dsIndex: number, satTerm: number | null }>,
-		/// mapping from identify within DisjointSet => arguments
-		argsByDSIndex: Record<number, number[]>,
-	}> = {};
-
-	/// mapping from lhs/rhs uf-index to map.
-	private equalitySatTerms: TrieMap<[number, number], number> = new TrieMap();
-
-	defineVariable(variable: UFVariable, t: UFType) {
-		if (variable in this.variables) {
-			throw new Error(`variable \`${variable}\` is already defined`);
-		}
-		const dsIndex = this.vendDSIndex({ sort: t, value: variable });
-		let satTerm = null;
-		if (t === "bool") {
-			satTerm = this.vendSatTerm({ tag: "var", v: variable });
-		}
-		this.variables[variable] = { t: t, index: dsIndex, satTerm };
-	}
-
-	defineFunction(f: UFFunction, parameters: UFType[], returns: UFType) {
-		if (f in this.functions) {
-			throw new Error(`function \`${f}\` is already defined`);
-		}
-		let terms = null;
-		if (returns === "bool") {
-			terms = new TrieMap<number[], number>();
-		}
-
-		this.functions[f] = {
-			parameters: parameters,
-			returns,
-			apps: new TrieMap(),
-			argsByDSIndex: {},
-		};
+	defineFunction(name: string, parameterSorts: number[], returnSort: UFSort) {
+		this.valueTracker.defineFunction(name, returnSort);
 	}
 
 	rejectModel(concrete: readonly Literal[]): Literal[] | UFCounter {
@@ -172,10 +240,9 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		// Union all positive equalities.
 		for (let literal of concrete) {
 			const term = literal > 0 ? literal : -literal;
-			const info = this.bySatTerm[term];
-
-			if (literal > 0) {
-				if (info.tag === "=") {
+			const info = this.valueTracker.describeSatTerm(term);
+			if (info.tag === "=") {
+				if (literal > 0) {
 					ds.union(info.leftDS, info.rightDS, [literal]);
 				}
 			}
@@ -185,38 +252,42 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			// Find all function applications and "canonicalize" them, producing new
 			// union operations.
 			let congruenceEqualities = [];
-			for (let f in this.functions) {
-				let repByCanonArgs: TrieMap<number[], { fDSID: number, args: number[] }> = new TrieMap();
-				const fInfo = this.functions[f];
-				for (let _id in fInfo.argsByDSIndex) {
-					const id = parseInt(_id);
-					const args = fInfo.argsByDSIndex[id];
-					const canonicalizedArgs = args.map(x => ds.representative(x));
-					const existing = repByCanonArgs.get(canonicalizedArgs);
-					if (existing !== undefined) {
-						if (!ds.compareEqual(id, existing.fDSID)) {
-							// Enqueue a congruence equality.
-							// Updating ds here would invalidate repByCanonArgs.
+			for (const [f, applications] of this.valueTracker.iterateApplications()) {
+				let canonicalByRepresentatives: TrieMap<number[], { dsIndex: number, argsDS: number[] }> = new TrieMap();
+				for (let [applicationArgs, applicationIdentity] of applications) {
+					const argRepresentatives = applicationArgs.map(x => ds.representative(x));
+					const equalTo = canonicalByRepresentatives.get(argRepresentatives);
+					if (equalTo !== undefined) {
+						if (!ds.compareEqual(applicationIdentity.dsIndex, equalTo.dsIndex)) {
+							// Enqueue a congruence equality:
+							// Eagerly updating ds here would invalidate canonicalByRepresentatives.
 							let reason = [];
-							for (let i = 0; i < args.length; i++) {
-								for (let e of ds.explainEquality(args[i], existing.args[i])) {
+							for (let i = 0; i < applicationArgs.length; i++) {
+								for (let e of ds.explainEquality(applicationArgs[i], equalTo.argsDS[i])) {
 									reason.push(...e);
 								}
 							}
 
 							// The reason for this equivalence is the 
 							// conjunction of the reasons for each argument 
-							// being equivalent.
-							congruenceEqualities.push({ left: id, right: existing, reason });
+							// being equal.
+							congruenceEqualities.push({
+								left: applicationIdentity.dsIndex,
+								right: equalTo.dsIndex,
+								reason,
+							});
 						}
-					} else {
-						repByCanonArgs.put(canonicalizedArgs, { fDSID: id, args });
+					 } else {
+						canonicalByRepresentatives.put(argRepresentatives, {
+							dsIndex: applicationIdentity.dsIndex,
+							argsDS: applicationArgs,
+						});
 					}
 				}
 			}
 
 			for (let { left, right, reason } of congruenceEqualities) {
-				ds.union(left, right.fDSID, reason);
+				ds.union(left, right, reason);
 			}
 
 			if (congruenceEqualities.length === 0) {
@@ -227,10 +298,10 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		let disequal: TrieMap<number[], Literal> = new TrieMap();
 		for (let literal of concrete) {
 			const term = literal > 0 ? literal : -literal;
-			const info = this.bySatTerm[term];
+			const info = this.valueTracker.describeSatTerm(term);
 
-			if (literal < 0) {
-				if (info.tag === "=") {
+			if (info.tag === "=") {
+				if (literal < 0) {
 					const leftRep = ds.representative(info.leftDS);
 					const rightRep = ds.representative(info.rightDS);
 					if (leftRep === rightRep) {
@@ -254,8 +325,8 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		const components = ds.components();
 		for (let component of components) {
 			const rep = ds.representative(component[0]);
-			const repInfo = this.byDSIndex.get(rep);
-			if (repInfo?.sort !== "bool") {
+			const sort = this.valueTracker.getDSSort(rep);
+			if (sort !== "bool") {
 				continue;
 			}
 
@@ -285,21 +356,12 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		return [satClause];
 	}
 
-	private equalitySatTerm(leftDS: number, rightDS: number): Literal {
-		let eqTerm = this.equalitySatTerms.get([leftDS, rightDS]);
-		if (eqTerm === undefined) {
-			eqTerm = this.vendSatTerm({ tag: "=", leftDS, rightDS });
-			this.equalitySatTerms.put([leftDS, rightDS], eqTerm);
-		}
-		return eqTerm;
-	}
-
 	private literalFor(constraint: UFConstraint): Literal {
 		if (typeof constraint === "string") {
-			const vInfo = this.variables[constraint];
+			const vInfo = this.valueTracker.getVariable(constraint);
 			const satTerm = vInfo.satTerm;
 			if (satTerm === null) {
-				throw new Error(`varaible ${constraint} with non-bool type ${vInfo.t} cannot be used in a clause`);
+				throw new Error(`varaible ${constraint} with non-bool type ${vInfo.sort} cannot be used in a clause`);
 			}
 
 			return satTerm;
@@ -308,7 +370,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		} else if (constraint.tag === "=") {
 			const left = this.valueIndex(constraint.left);
 			const right = this.valueIndex(constraint.right);
-			return this.equalitySatTerm(left.dsIndex, right.dsIndex);
+			return this.valueTracker.getEqualityVariable(left.dsIndex, right.dsIndex);
 		} else if (constraint.tag === "predicate") {
 			const app = this.valueIndex(constraint.predicate);
 			if (app.satTerm === null) {
@@ -322,32 +384,14 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 	/// RETURNS an index into a DisjointSet object.
 	private valueIndex(v: UFValue): { dsIndex: number, satTerm: number | null } {
 		if (typeof v === "string") {
-			const vInfo = this.variables[v];
-			if (vInfo === undefined) {
-				throw new Error(`variable ${v} has not been defined`);
-			}
-			return { dsIndex: vInfo.index, satTerm: vInfo.satTerm };
+			const vInfo = this.valueTracker.getVariable(v);
+			return { dsIndex: vInfo.dsIndex, satTerm: vInfo.satTerm };
 		}
 		if (v[0] === "app") {
 			const args = v[2].map(a => this.valueIndex(a).dsIndex);
 			const f = v[1];
-			const fInfo = this.functions[f];
-			let app = fInfo.apps.get(args);
-			if (app === undefined) {
-				app = { dsIndex: this.vendDSIndex({ sort: fInfo.returns, value: v }), satTerm: null };
-				if (fInfo.returns === "bool") {
-					app.satTerm = this.vendSatTerm({
-						tag: "app",
-						f: f,
-						argsDS: args,
-					});
-				}
-				fInfo.apps.put(args, app);
-				fInfo.argsByDSIndex[app.dsIndex] = args;
-			}
-			return app;
+			return this.valueTracker.addApplication(f, args);
 		}
-
 		throw new Error(`unhandled ${v}`);
 	}
 }

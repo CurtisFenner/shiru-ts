@@ -8,6 +8,8 @@ import { Literal, SATSolver } from "./sat";
 /// refutation results definitely refute the instance.
 export abstract class SMTSolver<E, Counterexample> {
 	private sat: SATSolver;
+	private addedAdditional = false;
+
 	constructor() {
 		this.sat = new SATSolver();
 	}
@@ -17,7 +19,13 @@ export abstract class SMTSolver<E, Counterexample> {
 			this.addClausified(clause);
 		}
 	}
-	
+
+	/// RETURNS any additional clauses, immediately before the first call to
+	/// solve.
+	protected additionalClauses(): Literal[][] {
+		return [];
+	}
+
 	protected addClausified(clause: Literal[]) {
 		let maxTerm = 0;
 		for (let literal of clause) {
@@ -34,6 +42,14 @@ export abstract class SMTSolver<E, Counterexample> {
 	/// not be a truly realizable counter-examples, as instantiation and the 
 	/// theory solver may be incomplete.
 	attemptRefutation(): "refuted" | Counterexample {
+		if (!this.addedAdditional) {
+			for (let clause of this.additionalClauses()) {
+				const maxTerm = Math.max(...clause.map(x => x > 0 ? x : -x));
+				this.sat.initTerms(maxTerm);
+				this.sat.addClause(clause);
+			}
+		}
+
 		while (true) {
 			const booleanModel = this.sat.solve();
 			if (booleanModel === "unsatisfiable") {
@@ -121,7 +137,7 @@ class UFValueTracker {
 
 	private equalityVariables: TrieMap<[number, number], number> = new TrieMap();
 
-	defineVariable(name: string, sort: UFSort): { dsIndex: number, sort: UFSort } {
+	defineVariable(name: string, sort: UFSort): { dsIndex: number, satTerm: number | null } {
 		const existing = this.variables[name];
 		if (existing) {
 			throw new Error(`variable \`${name}\` has already been defined`);
@@ -226,12 +242,37 @@ class UFValueTracker {
 export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 	valueTracker = new UFValueTracker();
 
+	falseObject: { dsIndex: number, satTerm: number };
+	trueObject: { dsIndex: number, satTerm: number };
+
+	constructor() {
+		super();
+
+		this.falseObject = this.valueTracker.defineVariable("$FALSE", "bool") as any;
+		this.trueObject = this.valueTracker.defineVariable("$TRUE", "bool") as any;
+	}
+
 	defineVariable(name: string, sort: UFSort) {
+		if (name[0] === "$") {
+			throw new Error("variables starting with $ are reserved by the implementation");
+		}
 		this.valueTracker.defineVariable(name, sort);
 	}
 
-	defineFunction(name: string, parameterSorts: number[], returnSort: UFSort) {
+	defineFunction(name: string, returnSort: UFSort) {
+		if (name[0] === "$") {
+			throw new Error("functions starting with $ are reserved by the implementation");
+		}
 		this.valueTracker.defineFunction(name, returnSort);
+	}
+
+	additionalClauses() {
+		// valueTracker registers a sat variable for each of these.
+		// Generate a unit clause for each to be the correct sign.
+		return [
+			[this.trueObject.satTerm],
+			[-this.falseObject.satTerm],
+		];
 	}
 
 	rejectModel(concrete: readonly Literal[]): Literal[] | UFCounter {
@@ -244,6 +285,20 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			if (info.tag === "=") {
 				if (literal > 0) {
 					ds.union(info.leftDS, info.rightDS, [literal]);
+				}
+			} else {
+				// For bool sorted objects, join them to the literals true and 
+				// false.
+				let obj: number;
+				if (info.tag === "app") {
+					obj = this.valueTracker.addApplication(info.f, info.argsDS).dsIndex;
+				} else {
+					obj = this.valueTracker.getVariable(info.v).dsIndex;
+				}
+				if (literal > 0) {
+					ds.union(this.trueObject.dsIndex, obj, [literal]);
+				} else {
+					ds.union(this.falseObject.dsIndex, obj, [literal]);
 				}
 			}
 		}
@@ -318,6 +373,11 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 					disequal.put([Math.min(leftRep, rightRep), Math.max(leftRep, rightRep)], literal);
 				}
 			}
+		}
+
+		// Ensure that "true != false".
+		if (ds.compareEqual(this.falseObject.dsIndex, this.trueObject.dsIndex)) {
+			return ds.explainEquality(this.falseObject.dsIndex, this.trueObject.dsIndex).map(x => -x);
 		}
 
 		// Search for a "triangle" of inequalities in the boolean-sorted 

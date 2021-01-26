@@ -147,7 +147,7 @@ export const tests = {
 		const smt = new UFTheory();
 		smt.defineVariable("x1", 1);
 		smt.defineVariable("x2", 1);
-		smt.defineFunction("f", [1, 1], 2);
+		smt.defineFunction("f", 2);
 
 		smt.addConstraint([
 			{ tag: "=", left: "x1", right: "x2" },
@@ -161,7 +161,7 @@ export const tests = {
 		const smt = new UFTheory();
 		smt.defineVariable("x1", 1);
 		smt.defineVariable("x2", 1);
-		smt.defineFunction("f", [1, 1], 2);
+		smt.defineFunction("f", 2);
 
 		smt.addConstraint([
 			{ tag: "=", left: "x1", right: "x2" },
@@ -197,7 +197,7 @@ export const tests = {
 		smt.defineVariable("x1", 0);
 		smt.defineVariable("x2", 0);
 		smt.defineVariable("x3", 0);
-		smt.defineFunction("p", [0], "bool");
+		smt.defineFunction("p", "bool");
 
 		const p1: UFPredicate = ["app", "p", ["x1"]];
 		const p2: UFPredicate = ["app", "p", ["x2"]];
@@ -213,6 +213,48 @@ export const tests = {
 		]);
 
 		// Three booleans cannot all be unequal.
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFTheory-bool-equality-ensures-same-sign"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x", "bool");
+		smt.defineVariable("y", "bool");
+		smt.defineVariable("z", "bool");
+		smt.addConstraint([
+			{ tag: "=", left: "x", right: "y" },
+		]);
+		smt.addConstraint([
+			{ tag: "=", left: "y", right: "z" },
+		]);
+		smt.addConstraint([
+			{ tag: "not", constraint: { tag: "predicate", predicate: "x" } },
+		]);
+		smt.addConstraint([
+			{ tag: "predicate", predicate: "z" },
+		]);
+
+		// Two booleans that are equal must have the same boolean assignment.
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFTheory-bool-inequality-ensures-opposite-sign"() {
+		const smt = new UFTheory();
+		smt.defineVariable("x", "bool");
+		smt.defineVariable("y", "bool");
+		smt.defineVariable("z", "bool");
+		smt.addConstraint([
+			{ tag: "not", constraint: { tag: "=", left: "x", right: "y" } },
+		]);
+		smt.addConstraint([
+			{ tag: "=", left: "y", right: "z" },
+		]);
+		smt.addConstraint([
+			{ tag: "predicate", predicate: "x" },
+		]);
+		smt.addConstraint([
+			{ tag: "predicate", predicate: "z" },
+		]);
+
+		// Two booleans that are inequal must have opposite boolean assignments.
 		assert(smt.attemptRefutation(), "is equal to", "refuted");
 	},
 };

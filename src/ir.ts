@@ -1,3 +1,16 @@
+/// `SourceLocation` represents a span of a file.
+export interface SourceLocation {
+	fileID: string,
+
+	// The offset from the first character, measured in UTF-16 code-units
+	// (JavaScript "characters").
+	offset: number,
+
+	// The length of the span, measured in UTF-16 code-units (JavaScript
+	// "characters")
+	length: number,
+}
+
 /// `TypePrimitive` represents one of the "built-in" primitive types:
 /// `"Bytes"` is the type of immutable finite sequences of octets.
 /// `"Unit"` is the type of a single value: "unit".
@@ -117,6 +130,8 @@ export interface OpStaticCall {
 	/// `return_types` of the `FunctionSignature` for this function call (with
 	/// appropriate instantiation of any `type_arguments`).
 	destinations: VariableID[],
+
+	diagnostic_callsite?: SourceLocation,
 };
 
 export interface OpDynamicCall {
@@ -134,6 +149,8 @@ export interface OpDynamicCall {
 
 	arguments: VariableID[],
 	destinations: VariableID[],
+
+	diagnostic_callsite?: SourceLocation;
 };
 
 export interface OpReturn {
@@ -150,7 +167,7 @@ export interface OpBlock {
 /// function calls) in the body of an OpProof must be total (terminate).
 export interface OpProof {
 	tag: "op-proof",
-	ops: Op[],
+	body: Op,
 };
 
 /// `OpUnreachable` indicates a point in the program which is unreachable 
@@ -160,6 +177,9 @@ export interface OpProof {
 /// behavior.
 export interface OpUnreachable {
 	tag: "op-unreachable",
+
+	diagnostic_kind: "contract" | "return" | "match";
+	diagnostic_location?: SourceLocation,
 };
 
 /// `OpForeign` represents a call to a pure function provided by the host of the 
@@ -222,16 +242,19 @@ export interface FunctionSignature {
 
 	return_types: Type[],
 
+	// TODO: Add terminationmeasure function.
+
 	/// The first `parameters.length` variables are the arguments.
-	/// Unreachable statements in preconditions are to be _checked_ to be
-	/// unreachable at callsites, and to be _assumed_ to be unreachable in 
-	/// implementations.
+	/// The Op returns a single boolean, which must be _verified_ to be true at
+	/// callsites, and may be _assumed_ to be true in subsequent preconditions
+	/// and measures, and the implementation.
 	preconditions: Op[],
 
 	/// The first `parameters.length` variables are the arguments.
 	/// The next `return_types.length` variables are the returned values.
-	/// Unreachable statements in postconditions are to be _assumed_ unreachable
-	/// at callsites, and to be _checked_ to be unreachable in implementations.
+	/// The Op returns a single boolean, which must be _verified_ to be true in
+	/// the implementation, and may be _assumed_ to be true in subsequent 
+	/// postconditions and at callsites.
 	postconditions: Op[],
 };
 

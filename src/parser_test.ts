@@ -1,22 +1,5 @@
 import { assert } from "./test";
-import { RecordParser, TokenParser, Stream, ParsersFor, RepeatParser, ChoiceParser, Parser, DebugContext } from "./parser";
-
-class ArrayStream<T> implements Stream<[T, number]> {
-	array: T[];
-	index: number;
-
-	constructor(array: T[], index = 0) {
-		this.array = array;
-		this.index = index;
-	}
-
-	read(): [[T, number] | null, ArrayStream<T>] {
-		if (this.index < this.array.length) {
-			return [[this.array[this.index], this.index], new ArrayStream(this.array, this.index + 1)];
-		}
-		return [null, this];
-	}
-}
+import { RecordParser, TokenParser, ParsersFor, RepeatParser, ChoiceParser, Parser, DebugContext, choice } from "./parser";
 
 interface OpenParen { }
 
@@ -44,32 +27,32 @@ type ASTs = {
 };
 
 type ErrorElement = string | number;
-type Token = [string, number];
+type Token = { s: string | null, i: number };
 
 function atReference(name: string) {
-	return (x: any, props: DebugContext<Token>) => {
+	return (x: Token[], from: number, props: DebugContext<Token>) => {
 		const token = props[name].first;
 		if (token === null) {
 			return -1;
 		} else {
-			return token[1];
+			return token.i;
 		}
 	}
 }
 
-const atHead = (x: Stream<Token>) => {
-	const token = x.read()[0];
+const atHead = (x: Token[], from: number) => {
+	const token = x[from];
 	if (token === null) {
 		return -1;
 	} else {
-		return token[1];
+		return token.i;
 	}
 }
 
 const grammar: ParsersFor<Token, ErrorElement, ASTs> = {
-	OpenParen: new TokenParser(([s]) => s == "(" ? {} : null),
-	CloseParen: new TokenParser(([s]) => s == ")" ? {} : null),
-	Atom: new TokenParser(([s]) => s != "(" && s != ")" ? { name: s, lexeme: s } : null),
+	OpenParen: new TokenParser(({ s }) => s === "(" ? {} : null),
+	CloseParen: new TokenParser(({ s }) => s === ")" ? {} : null),
+	Atom: new TokenParser(({ s }) => s !== null && s !== "(" && s !== ")" ? { name: s, lexeme: s } : null),
 	List: new RecordParser({
 		open: () => grammar.OpenParen,
 		elements: () => new RepeatParser(grammar.Expr),
@@ -80,40 +63,43 @@ const grammar: ParsersFor<Token, ErrorElement, ASTs> = {
 			atReference("open")
 		),
 	}),
-	Expr: new ChoiceParser<Token, ErrorElement, Expr>(() => grammar.Atom, () => grammar.List),
+	Expr: choice(() => grammar, "Atom", "List"),
 };
 
 export const tests = {
 	basic() {
-		const stream: Stream<[string, number]> = new ArrayStream(["(", "a", "b", "(", "c", ")", ")"]);
+		const stream = ["(", "a", "b", "(", "c", ")", ")", null]
+			.map((v, i) => ({ s: v, i }));
 
-		const expr = grammar.Expr.parse(stream, {});
+		const expr = grammar.Expr.parse(stream, 0, {});
 
-		assert(expr, "is array");
-		assert(expr[1].read(), "is equal to", [null, expr[1]]);
-		assert(expr[0], "is equal to", {
-			open: {},
-			elements: [
-				{ name: "a", lexeme: "a" },
-				{ name: "b", lexeme: "b" },
-				{
-					open: {},
-					elements: [{ name: "c", lexeme: "c" }],
-					close: {},
-				},
-			],
-			close: {},
+		assert(expr, "is equal to", {
+			object: {
+				open: {},
+				elements: [
+					{ name: "a", lexeme: "a" },
+					{ name: "b", lexeme: "b" },
+					{
+						open: {},
+						elements: [{ name: "c", lexeme: "c" }],
+						close: {},
+					},
+				],
+				close: {},
+			},
+			rest: stream.length - 1,
 		});
 	},
 
 	missingCloseParen() {
-		const stream: Stream<[string, number]> = new ArrayStream(["(", "a", "b", "(", "(", "c", ")"]);
+		const stream = ["(", "a", "b", "(", "(", "c", ")", null]
+			.map((v, i) => ({ s: v, i }));
 
-		const expr = grammar.Expr.parse(stream, {});
+		const expr = grammar.Expr.parse(stream, 0, {});
 		assert(expr, "is equal to", {
 			message: [
 				"Expected a `)` at",
-				-1,
+				7,
 				"to close the `(` at",
 				3,
 			]

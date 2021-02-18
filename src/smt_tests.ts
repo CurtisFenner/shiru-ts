@@ -1,4 +1,4 @@
-import { SMTSolver, UFPredicate, UFTheory } from "./smt";
+import { SMTSolver, UFPredicate, UFTheory, UFValue } from "./smt";
 import { assert } from "./test";
 
 
@@ -94,8 +94,12 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 	}
 }
 
+function app(f: string, ...args: UFValue[]): UFValue {
+	return { tag: "app", f, args };
+}
+
 export const tests = {
-	"simple-smt-bounded-refutable"() {
+	"BoundedTheory-basic"() {
 		const smt = new BoundedTheory();
 		smt.defineVariable(["a", [-2, -1, 0, 1, 2]]);
 		smt.defineVariable(["b", [-2, -1, 0, 1, 2]]);
@@ -151,7 +155,12 @@ export const tests = {
 
 		smt.addConstraint([
 			{ tag: "=", left: "x1", right: "x2" },
-			{ tag: "not", constraint: { tag: "=", left: ["app", "f", ["x1"]], right: ["app", "f", ["x2"]] } },
+			{
+				tag: "not",
+				constraint: {
+					tag: "=", left: app("f", "x1"), right: app("f", "x2"),
+				}
+			},
 		]);
 
 		const result = smt.attemptRefutation();
@@ -167,7 +176,7 @@ export const tests = {
 			{ tag: "=", left: "x1", right: "x2" },
 		]);
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: ["app", "f", ["x1"]], right: ["app", "f", ["x2"]] } },
+			{ tag: "not", constraint: { tag: "=", left: app("f", "x1"), right: app("f", "x2") } },
 		]);
 
 		const result = smt.attemptRefutation();
@@ -199,9 +208,9 @@ export const tests = {
 		smt.defineVariable("x3", 0);
 		smt.defineFunction("p", "bool");
 
-		const p1: UFPredicate = ["app", "p", ["x1"]];
-		const p2: UFPredicate = ["app", "p", ["x2"]];
-		const p3: UFPredicate = ["app", "p", ["x3"]];
+		const p1: UFPredicate = app("p", "x1");
+		const p2: UFPredicate = app("p", "x2");
+		const p3: UFPredicate = app("p", "x3");
 		smt.addConstraint([
 			{ tag: "not", constraint: { tag: "=", left: p1, right: p2 } },
 		]);
@@ -255,6 +264,31 @@ export const tests = {
 		]);
 
 		// Two booleans that are inequal must have opposite boolean assignments.
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFTheory-equality-between-same-constants"() {
+		const smt = new UFTheory();
+
+		// Create distinct symbols.
+		const alpha: UFValue = { tag: "const", value: "a", sort: 1 };
+		smt.addConstraint([
+			{ tag: "=", left: alpha, right: alpha },
+		]);
+
+		// A symbol may be equal to itself.
+		assert(smt.attemptRefutation(), "is equal to", {});
+	},
+	"UFTheory-equality-between-distinct-constants"() {
+		const smt = new UFTheory();
+
+		// Create distinct symbols.
+		const alpha: UFValue = { tag: "const", value: "a", sort: 1 };
+		const beta: UFValue = { tag: "const", value: "b", sort: 1 };
+		smt.addConstraint([
+			{ tag: "=", left: alpha, right: beta },
+		]);
+
+		// Two distinct symbols cannot be equal.
 		assert(smt.attemptRefutation(), "is equal to", "refuted");
 	},
 };

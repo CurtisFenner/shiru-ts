@@ -3,6 +3,9 @@ import * as parser_test from "./parser_test";
 import * as sat_tests from "./sat_tests";
 import * as smt_tests from "./smt_tests";
 import * as data_tests from "./data_tests";
+import * as verify_tests from "./verify_tests";
+import * as lexer_tests from "./lexer_tests";
+
 import util = require("util");
 
 export type Run = PassRun | FailRun;
@@ -59,6 +62,9 @@ export class TestRunner {
 				exception = failure.exception.stack + "";
 			} else {
 				exception = failure.exception + "";
+			}
+			if (failure.exception.constructor && failure.exception.constructor.name) {
+				exception = `(${failure.exception.constructor.name}) ${exception}`;
 			}
 			console.log(indent + exception.replace(/\t/g, "    ").replace(/\n/g, "\n" + indent));
 		}
@@ -120,8 +126,9 @@ function deepEqual(a: any, b: any) {
 
 export function assert<A, B extends A>(a: A, op: "is equal to", b: B): asserts a is B;
 export function assert<A>(a: A, op: A extends any[] ? "is array" : never): asserts a is any[] & A;
+export function assert(a: () => void, op: "throws", e: unknown): void;
 
-export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"]) {
+export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"] | [() => void, "throws", unknown]) {
 	if (args[1] === "is equal to") {
 		const [a, op, b] = args;
 		if (!deepEqual(a, b)) {
@@ -133,6 +140,18 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		const [a, op] = args;
 		if (!Array.isArray(a)) {
 			throw new Error("Expected `" + JSON.stringify(a, null, "\t") + "` to be an array.");
+		}
+	} else if (args[1] === "throws") {
+		const [f, op, expected] = args;
+		let threw = false;
+		try {
+			f();
+		} catch (e) {
+			assert(e, "is equal to", expected);
+			threw = true;
+		}
+		if (!threw) {
+			throw new Error(`Expected an error to be thrown.`);
 		}
 	} else {
 		throw new Error("unhandled assertion type `" + JSON.stringify(args[1]) + "`");
@@ -146,4 +165,6 @@ testRunner.runTests("interpreter_test", interpreter_test.tests);
 testRunner.runTests("parser_test", parser_test.tests);
 testRunner.runTests("sat_tests", sat_tests.tests);
 testRunner.runTests("smt_tests", smt_tests.tests);
+testRunner.runTests("verify_tests", verify_tests.tests);
+testRunner.runTests("lexer_tests", lexer_tests.tests);
 testRunner.printReport();

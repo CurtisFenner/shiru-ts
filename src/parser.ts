@@ -9,40 +9,37 @@ export type ParsersFor<Token, M, ASTs> = {
   [P in keyof ASTs]: Parser<Token, M, ASTs[P]>
 };
 
-/// `Stream` represents an immutable cursor into a (possibly lazily loaded)
-/// sequence of tokens.
-export interface Stream<Token> {
-  /// `read()` returns `null` when there are no more tokens in this string.
-  /// Otherwise, it returns the next token, and a cursor into the remainder of
-  /// the stream.
-  read(): [Token | null, Stream<Token>],
-}
-
 /// `TokenSpan` represents an contiguous range of tokens within a token stream.
 export interface TokenSpan<Token> {
   /// The first Token in this span.
-  first: Token | null,
+  first: Token,
 
   /// The Token which immediately follows this span.
-  following: Token | null,
+  following: Token,
 };
 
 
 export type DebugContext<Token> = Record<string, TokenSpan<Token>>;
 
+/// The result of a parsing operation.
+/// `null` represents non-fatal failure to match.
+/// `ParseError` represents an illegal program fragment was detected while
+/// attempting to parse this object.
+export type ParseResult<M, Result> = { object: Result, rest: number } | null | ParseError<M>;
+
 /// Parser represents a parser from a stream of `Token`s to a particular 
 /// `Result` AST.
 export abstract class Parser<Token, M, Result> {
-  abstract parse(stream: Stream<Token>, debugContext: DebugContext<Token>): [Result, Stream<Token>] | null | ParseError<M>;
+  abstract parse(stream: Token[], from: number, debugContext: DebugContext<Token>): ParseResult<M, Result>;
 
-  map<Q>(f: (r: Result) => Q) {
+  map<Q>(f: (r: Result) => Q): Parser<Token, M, Q> {
     return new MapParser<Token, M, Result, Q>(this, f);
   }
-
+  
   required(...fragments: (MessageFragment<Token, M> | M[])[]): Parser<Token, M, Result> {
-    return new ChoiceParser(() => this, () => new BaseFailParser(...fragments));
+    return new ChoiceParser(() => [this, new BaseFailParser(...fragments)]);
   }
-};
+}
 
 export class MapParser<T, M, A, B> extends Parser<T, M, B> {
   parser: Parser<T, M, A>;
@@ -54,11 +51,11 @@ export class MapParser<T, M, A, B> extends Parser<T, M, B> {
     this.f = f;
   }
 
-  parse(stream: Stream<T>, debugContext: DebugContext<T>): null | ParseError<M> | [B, Stream<T>] {
-    const result = this.parser.parse(stream, debugContext);
-    if (Array.isArray(result)) {
-      const mapped = this.f(result[0]);
-      return [mapped, result[1]];
+  parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<M, B> {
+    const result = this.parser.parse(stream, from, debugContext);
+    if (result && "object" in result) {
+      const mapped = this.f(result.object);
+      return { object: mapped, rest: result.rest };
     } else {
       return result;
     }
@@ -66,11 +63,21 @@ export class MapParser<T, M, A, B> extends Parser<T, M, B> {
 }
 
 export class EndOfStreamParser<T, M> extends Parser<T, M, {}> {
-  parse(stream: Stream<T>): [{}, Stream<T>] | null {
-    if (stream.read() === null) {
-      return [{}, stream];
+  parse(stream: T[], from: number): { object: {}, rest: number } | null {
+    if (from === stream.length) {
+      return { object: {}, rest: stream.length };
     }
     return null;
+  }
+}
+
+export class ConstParser<T, M, R> extends Parser<T, M, R> {
+  constructor(private value: R) {
+    super();
+  }
+
+  parse(stream: T[], from: number): { object: R, rest: number } {
+    return { object: this.value, rest: from };
   }
 }
 
@@ -82,12 +89,14 @@ export class TokenParser<T, M, R> extends Parser<T, M, R> {
     this.f = f;
   }
 
-  parse(stream: Stream<T>): null | [R, Stream<T>] {
-    const front = stream.read();
-    if (front[0] === null) return null;
-    const value = this.f(front[0]);
+  parse(stream: T[], from: number): null | { object: R, rest: number } {
+    if (from >= stream.length) {
+      return null;
+    }
+    const front = stream[from];
+    const value = this.f(front);
     if (value === null) return null;
-    return [value, front[1]];
+    return { object: value, rest: from + 1 };
   }
 }
 
@@ -103,29 +112,29 @@ export class RepeatParser<T, M, R> extends Parser<T, M, R[]> {
     this.max = max;
   }
 
-  parse(stream: Stream<T>, debugContext: DebugContext<T>): (ParseError<M> | null | [R[], Stream<T>]) {
+  parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<M, R[]> {
     const list: R[] = [];
-    while (!this.max || list.length < this.max) {
-      const result = this.element.parse(stream, debugContext);
+    while (this.max === undefined || list.length < this.max) {
+      const result = this.element.parse(stream, from, debugContext);
       if (result === null) {
         break;
-      } else if (Array.isArray(result)) {
-        list.push(result[0]);
-        stream = result[1];
-      } else {
+      } else if ("message" in result) {
         return result;
-      }
+      } else {
+        list.push(result.object);
+        from = result.rest;
+      } 
     }
 
-    if (this.min && list.length < this.min) {
+    if (this.min !== undefined && list.length < this.min) {
       return null;
     }
 
-    return [list, stream];
+    return { object: list, rest: from };
   }
 };
 
-type RecordParserDescription<T, M, R> = { [P in keyof R]: (() => Parser<T, M, R[P]>) };
+export type RecordParserDescription<T, M, R> = { [P in keyof R]: (() => Parser<T, M, R[P]>) };
 
 export class RecordParser<T, M, R> extends Parser<T, M, R> {
   description: RecordParserDescription<T, M, R>;
@@ -135,43 +144,44 @@ export class RecordParser<T, M, R> extends Parser<T, M, R> {
     this.description = description;
   }
 
-  parse(stream: Stream<T>, debugContext: DebugContext<T>): (ParseError<M> | null | [R, Stream<T>]) {
+  parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<M, R> {
     // Each RecordParser opens a new debug context.
     // TODO: Link the debug context to the parent context.
     debugContext = {};
 
-    let obj: R = {} as R;
-    let first = stream.read()[0];
+    let record: Partial<R> = {};
     for (let p in this.description) {
+      let firstToken = stream[from];
       const d = this.description[p];
       const parser = d();
-      let result = parser.parse(stream, debugContext);
+      let result = parser.parse(stream, from, debugContext);
       if (result === null) {
         return null;
-      } else if (!Array.isArray(result)) {
+      } else if ("message" in result) {
         return result;
       }
 
-      obj[p] = result[0];
-      stream = result[1];
-      const next = stream.read()[0];
-      debugContext[p] = { first, following: next };
-      first = next;
+      record[p] = result.object;
+      from = result.rest;
+      const followingToken = stream[from];
+      debugContext[p] = { first: firstToken, following: followingToken };
     }
-    return [obj, stream];
+    return { object: record as R, rest: from };
   }
 }
 
+/// ChoiceParser implements *ordered* choice. The first constituent parser that
+/// accepts the input results in a parse.
 export class ChoiceParser<T, M, U> extends Parser<T, M, U> {
-  parsers: (() => Parser<T, M, U>)[];
-  constructor(...parsers: (() => Parser<T, M, U>)[]) {
+  parsers: () => Parser<T, M, U>[];
+  constructor(parsers: () => Parser<T, M, U>[]) {
     super();
     this.parsers = parsers;
   }
 
-  parse(stream: Stream<T>, debugContext: DebugContext<T>): null | ParseError<M> | [U, Stream<T>] {
-    for (let parser of this.parsers) {
-      let result = parser().parse(stream, debugContext);
+  parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<M, U> {
+    for (let parser of this.parsers()) {
+      let result = parser.parse(stream, from, debugContext);
       if (result === null) {
         continue;
       }
@@ -181,7 +191,15 @@ export class ChoiceParser<T, M, U> extends Parser<T, M, U> {
   }
 }
 
-export type MessageFragment<T, M> = (head: Stream<T>, debugContext: DebugContext<T>) => M;
+/// choice is a convenience function for getting terse inference.
+export function choice<T, M, As, K extends keyof As>(grammar: () => ParsersFor<T, M, As>, ...keys: K[]) {
+  return new ChoiceParser<T, M, As[K]>(() => {
+    const g = grammar();
+    return keys.map(k => g[k]);
+  });
+}
+
+export type MessageFragment<T, M> = (head: T[], from: number, debugContext: DebugContext<T>) => M;
 
 export class BaseFailParser<T, M> extends Parser<T, M, any> {
   fragments: (MessageFragment<T, M> | M[])[];
@@ -191,13 +209,13 @@ export class BaseFailParser<T, M> extends Parser<T, M, any> {
     this.fragments = fragments;
   }
 
-  parse(stream: Stream<T>, debugContext: DebugContext<T>): ParseError<M> {
+  parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseError<M> {
     let joined: M[] = [];
     for (let fragment of this.fragments) {
       if (Array.isArray(fragment)) {
         joined.push(...fragment);
       } else {
-        joined.push(fragment(stream, debugContext));
+        joined.push(fragment(stream, from, debugContext));
       }
     }
     return {

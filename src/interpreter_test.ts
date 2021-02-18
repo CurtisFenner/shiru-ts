@@ -1,14 +1,12 @@
-
 import { assert } from "./test";
 import * as IR from "./ir";
-import type { IntValue, Value } from "./interpreter"
+import type { Value } from "./interpreter"
 import { interpret } from "./interpreter";
-import { clearLine } from "readline";
 
 const T_INT: IR.Type = { tag: "type-primitive", primitive: "Int" } as const;
 const T_BOOL: IR.Type = { tag: "type-primitive", primitive: "Boolean" } as const;
 
-type SOp = ["block", SOp[]]
+export type SOp = ["block", SOp[]]
 	| ["local", IR.Type, string | undefined]
 	| ["if", number, SOp[], SOp[]]
 	| ["bool", number, boolean]
@@ -19,7 +17,7 @@ type SOp = ["block", SOp[]]
 	| ["dyncall", { i: string, it: IR.Type[], f: number, dst: number[], arg: number[], ts: IR.Type[] }];
 
 
-function classType(name: string, ...args: IR.Type[]): IR.Type {
+export function classType(name: string, ...args: IR.Type[]): IR.Type {
 	return {
 		tag: "type-class",
 		class: { class_id: name },
@@ -27,14 +25,14 @@ function classType(name: string, ...args: IR.Type[]): IR.Type {
 	};
 }
 
-function variableType(n: number): IR.TypeVariable {
+export function variableType(n: number): IR.TypeVariable {
 	return {
 		tag: "type-variable",
 		id: { type_variable_id: n },
 	};
 }
 
-function op(...args: SOp): IR.Op {
+export function op(...args: SOp): IR.Op {
 	if (args[0] === "local") {
 		return {
 			tag: "op-var",

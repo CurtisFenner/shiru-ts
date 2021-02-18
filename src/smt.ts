@@ -97,7 +97,12 @@ export abstract class SMTSolver<E, Counterexample> {
 export interface UFCounter { }
 export type UFVariable = string
 export type UFFunction = string
-export type UFValue = UFVariable | ["app", UFFunction, UFValue[]];
+export type UFValue = UFVariable
+	| { tag: "app", f: UFFunction, args: UFValue[] }
+	| UFConstValue;
+
+// UFConstValue considers only the equality of the `value` field.
+export type UFConstValue = { tag: "const", value: unknown, sort: UFSort };
 
 // A UFPredicate is a UFValue with sort `"bool"`.
 export type UFPredicate = UFValue;
@@ -113,8 +118,12 @@ type UFSATTermData = { tag: "app", f: UFFunction, argsDS: number[] }
 	| { tag: "=", leftDS: number, rightDS: number }
 	| { tag: "var", v: string };
 
-// Data structure to track object identities to be used in a SATSolver and 
-// DisjointSet data structure.
+type DSObjectData = string
+	| { tag: "app", f: string, args: number[] }
+	| { tag: "const", value: unknown, sort: UFSort };
+
+/// Data structure to track object identities to be used in a SATSolver and 
+/// DisjointSet data structure.
 class UFValueTracker {
 	// Map from a function name to its return sort.
 	private functions: Record<string, {
@@ -122,17 +131,21 @@ class UFValueTracker {
 		returnSort: UFSort
 	}> = {};
 
-	// Map from a variable name to its sort.
+	/// Map from a variable name to its sort.
 	private variables: Record<string, { dsIndex: number, satTerm: null | number, sort: UFSort }> = {};
 
-	// Map from a DisjointSet object to data.
-	// A `string` represents a variable.
-	// A tuple represents a function application.
-	private dsObjects: (string | [string, ...number[]])[] = [];
+	/// Map from UFConstValue to its identifier in the disjoint-set data
+	/// structure.
+	private constants: Map<unknown, { dsIndex: number }> = new Map();
 
-	// Map from a SATSolver term to data.
-	// A `string` represents a variable.
-	// A tuple represents a function application.
+	/// Map from a DisjointSet object to data.
+	/// A `string` represents a variable.
+	/// A tuple represents a function application.
+	private dsObjects: DSObjectData[] = [];
+
+	/// Map from a SATSolver term to data.
+	/// A `string` represents a variable.
+	/// A tuple represents a function application.
 	private satTerms: UFSATTermData[] = [null] as any;
 
 	private equalityVariables: TrieMap<[number, number], number> = new TrieMap();
@@ -187,12 +200,32 @@ class UFValueTracker {
 		}
 	}
 
+	getDSDefinition(ds: number): DSObjectData {
+		return this.dsObjects[ds];
+	}
+
 	getDSSort(ds: number): UFSort {
 		const definition = this.dsObjects[ds];
 		if (typeof definition === "string") {
 			return this.variables[definition].sort;
+		} else if (definition.tag === "app") {
+			return this.functions[definition.f].returnSort;
+		} else {
+			return definition.sort;
 		}
-		return this.functions[definition[0]].returnSort;
+	}
+
+	addConst(value: unknown, sort: UFSort) {
+		if (!this.constants.has(value)) {
+			const dsIndex = this.dsObjects.length;
+			this.dsObjects[dsIndex] = { tag: "const", value, sort };
+			this.constants.set(value, { dsIndex });
+		}
+
+		return {
+			dsIndex: this.constants.get(value)!.dsIndex,
+			satTerm: null,
+		}
 	}
 
 	addApplication(f: string, argsDS: number[]) {
@@ -206,7 +239,7 @@ class UFValueTracker {
 		}
 
 		const dsIndex = this.dsObjects.length;
-		this.dsObjects[dsIndex] = [f, ...argsDS];
+		this.dsObjects[dsIndex] = { tag: "app", f, args: argsDS };
 		let satTerm = null;
 		if (fInfo.returnSort === "bool") {
 			satTerm = this.satTerms.length;
@@ -332,7 +365,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 								reason,
 							});
 						}
-					 } else {
+					} else {
 						canonicalByRepresentatives.put(argRepresentatives, {
 							dsIndex: applicationIdentity.dsIndex,
 							argsDS: applicationArgs,
@@ -380,25 +413,44 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			return ds.explainEquality(this.falseObject.dsIndex, this.trueObject.dsIndex).map(x => -x);
 		}
 
-		// Search for a "triangle" of inequalities in the boolean-sorted 
-		// components.
 		const components = ds.components();
 		for (let component of components) {
 			const rep = ds.representative(component[0]);
 			const sort = this.valueTracker.getDSSort(rep);
-			if (sort !== "bool") {
-				continue;
+
+			// Check for distinct symbols within the same component.
+			let symbol = null;
+			for (let x of component) {
+				const definition = this.valueTracker.getDSDefinition(x);
+				if (typeof definition === "object") {
+					if (definition.tag === "const") {
+						if (symbol === null) {
+							symbol = x;
+						} else {
+							// Two distinct symbols are equal.
+							const conflictClause = [];
+							for (let e of ds.explainEquality(x, symbol)) {
+								conflictClause.push(...e.map(s => -s));
+							}
+							return conflictClause;
+						}
+					}
+				}
 			}
 
-			for (let [edge, edgeLiteral] of disequal) {
-				const a = edge[0];
-				const b = edge[1];
-				const edgeARep = disequal.get([Math.min(a, rep), Math.max(a, rep)]);
-				const edgeBRep = disequal.get([Math.min(b, rep), Math.max(b, rep)]);
-				if (edgeARep !== undefined && edgeBRep !== undefined) {
-					// (a, b), (a, rep), (b, rep) form a triangle of
-					// inequalities between booleans.
-					return [-edgeLiteral, -edgeARep, -edgeBRep];
+			// Search for a "triangle" of inequalities in the boolean-sorted 
+			// components.
+			if (sort === "bool") {
+				for (let [edge, edgeLiteral] of disequal) {
+					const a = edge[0];
+					const b = edge[1];
+					const edgeARep = disequal.get([Math.min(a, rep), Math.max(a, rep)]);
+					const edgeBRep = disequal.get([Math.min(b, rep), Math.max(b, rep)]);
+					if (edgeARep !== undefined && edgeBRep !== undefined) {
+						// (a, b), (a, rep), (b, rep) form a triangle of
+						// inequalities between booleans.
+						return [-edgeLiteral, -edgeARep, -edgeBRep];
+					}
 				}
 			}
 		}
@@ -417,15 +469,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 	}
 
 	private literalFor(constraint: UFConstraint): Literal {
-		if (typeof constraint === "string") {
-			const vInfo = this.valueTracker.getVariable(constraint);
-			const satTerm = vInfo.satTerm;
-			if (satTerm === null) {
-				throw new Error(`varaible ${constraint} with non-bool type ${vInfo.sort} cannot be used in a clause`);
-			}
-
-			return satTerm;
-		} else if (constraint.tag === "not") {
+		if (constraint.tag === "not") {
 			return -this.literalFor(constraint.constraint);
 		} else if (constraint.tag === "=") {
 			const left = this.valueIndex(constraint.left);
@@ -447,10 +491,11 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 			const vInfo = this.valueTracker.getVariable(v);
 			return { dsIndex: vInfo.dsIndex, satTerm: vInfo.satTerm };
 		}
-		if (v[0] === "app") {
-			const args = v[2].map(a => this.valueIndex(a).dsIndex);
-			const f = v[1];
-			return this.valueTracker.addApplication(f, args);
+		if (v.tag === "app") {
+			const args = v.args.map(a => this.valueIndex(a).dsIndex);
+			return this.valueTracker.addApplication(v.f, args);
+		} else if (v.tag === "const") {
+			return this.valueTracker.addConst(v.value, v.sort);
 		}
 		throw new Error(`unhandled ${v}`);
 	}

@@ -29,7 +29,7 @@ export interface TypeClass {
 	/// `class` references a `ClassDefinition` in a `Program`.
 	class: ClassID,
 
-	parameter: Type[],
+	type_arguments: Type[],
 };
 
 /// `TypeVariable` represents the type which is a parameter of a function or
@@ -355,8 +355,8 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 		if (pattern.class.class_id !== passed.class.class_id) {
 			return false;
 		}
-		for (let i = 0; i < pattern.parameter.length; i++) {
-			if (!equalTypes(pattern.parameter[i], passed.parameter[i])) {
+		for (let i = 0; i < pattern.type_arguments.length; i++) {
+			if (!equalTypes(pattern.type_arguments[i], passed.type_arguments[i])) {
 				return false;
 			}
 		}
@@ -373,7 +373,7 @@ export function typeSubstitute(t: Type, map: Map<number, Type>): Type {
 		return {
 			tag: t.tag,
 			class: t.class,
-			parameter: t.parameter.map(a => typeSubstitute(a, map)),
+			type_arguments: t.type_arguments.map(a => typeSubstitute(a, map)),
 		};
 	} else if (t.tag === "type-primitive") {
 		return t;

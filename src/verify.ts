@@ -4,7 +4,7 @@ import * as smt from "./smt";
 export function verifyProgram(program: ir.Program) {
 	// 1) Verify each function body,
 	for (let f in program.functions) {
-		verifyFunction(program, program.functions[f]);
+		verifyFunction(program, f);
 	}
 
 	// 2) Verify that each interface implementation
@@ -22,7 +22,7 @@ function sortOf(t: ir.Type): smt.UFSort {
 	}
 }
 
-function verifyFunction(program: ir.Program, f: ir.IRFunction) {
+function verifyFunction(program: ir.Program, fName: string) {
 	const state: VerificationState = {
 		variableSorts: {},
 		functionSorts: {},
@@ -37,6 +37,8 @@ function verifyFunction(program: ir.Program, f: ir.IRFunction) {
 
 		failedVerifications: [],
 	};
+
+	const f = program.functions[fName];
 
 	// Initialize the function's arguments.
 	for (let i = 0; i < f.signature.parameters.length; i++) {
@@ -144,7 +146,7 @@ function negate(constraint: smt.UFConstraint): smt.UFConstraint {
 
 function showType(t: ir.Type): string {
 	if (t.tag === "type-class") {
-		return t.class.class_id + "[" + t.parameter.map(showType).join(",") + "]";
+		return t.class.class_id + "[" + t.type_arguments.map(showType).join(",") + "]";
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
 	} else if (t.tag === "type-variable") {
@@ -283,11 +285,14 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			]);
 		}
 
-		// TODO: Verify all postconditions.
+		for (let post of context.returnsPostConditions) {
+			throw new Error("TODO: Verify postcondition at op-return");
+		}
 
 		// Subsequently, this path is treated as unreachable, since the function
 		// exited.
 		state.clauses.push(state.pathConstraints.map(negate));
+		return;
 	} else if (op.tag === "op-static-call") {
 		const sf = op.function.function_id;
 		const signature = program.functions[sf].signature;

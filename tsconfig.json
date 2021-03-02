@@ -11,9 +11,7 @@
     "inlineSources": true,
     "types": [
       "node"
-    ],
-    "allowSyntheticDefaultImports": true,
-    "experimentalDecorators": true
+    ]
   },
   "include": [
     "src/**/*.ts"

@@ -21,7 +21,7 @@ export function classType(name: string, ...args: IR.Type[]): IR.Type {
 	return {
 		tag: "type-class",
 		class: { class_id: name },
-		parameter: args,
+		type_arguments: args,
 	};
 }
 

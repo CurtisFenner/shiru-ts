@@ -3,7 +3,7 @@ import { assert } from "./test";
 
 export const tests = {
 	"simple"() {
-		const blob = `class Something {}`;
+		const blob = `class Something[#T] {}`;
 		const tokens = tokenize(blob, "test-file");
 		assert(tokens, "is equal to", [
 			{
@@ -18,13 +18,32 @@ export const tests = {
 			},
 			{
 				tag: "punctuation",
+				symbol: "[",
+				location: { fileID: "test-file", offset: 15, length: 1 },
+			},
+			{
+				tag: "type-var",
+				name: "T",
+				location: { fileID: "test-file", offset: 16, length: 2 },
+			},
+			{
+				tag: "punctuation",
+				symbol: "]",
+				location: { fileID: "test-file", offset: 18, length: 1 },
+			},
+			{
+				tag: "punctuation",
 				symbol: "{",
-				location: { fileID: "test-file", offset: 16, length: 1 },
+				location: { fileID: "test-file", offset: 20, length: 1 },
 			},
 			{
 				tag: "punctuation",
 				symbol: "}",
-				location: { fileID: "test-file", offset: 17, length: 1 },
+				location: { fileID: "test-file", offset: 21, length: 1 },
+			},
+			{
+				tag: "eof",
+				location: { fileID: "test-file", offset: 22, length: 0 },
 			},
 		]);
 	},

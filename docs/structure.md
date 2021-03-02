@@ -14,10 +14,19 @@ way the different components fit together.
 * `src/parser.ts` defines a parser-combinator library for parsing expression
   grammars (PEG), which are recursive-descent like. This file can be used as a
   standalone library.
+* `src/lexer.ts` defines the tokenizer (aka "lexer") for Shiru programs.
+* `src/grammar.ts` defines the grammar for Shiru programs using the PEG parser
+  library in `src/parser.ts`.
+* `src/semantics.ts` defines the "compiler" which transforms ASTs produced by
+  the grammar into IR. This process includes type-checking, but not contract
+  verification.
 * `src/sat.ts` defines a `sat.SATSolver` class which solves the
   *Boolean conjunctive-normal-form satisfiability problem* (*CNF-SAT*).
 * `src/smt.ts` defines a `smt.SMTSolver` class / `smt.UFTheory` class which
   can solve *satisfiability modulo theories* (*SMT*) problems.
+* `src/verifier.ts` defines a verifying procedure, which transforms a Shiru
+  IR program into a sequence of SMT calls to verify that all pre- and 
+  post-conditions have been met.
 * `src/test.ts` defines a script to run tests.
 
 ## The Shiru Intermediate Representation

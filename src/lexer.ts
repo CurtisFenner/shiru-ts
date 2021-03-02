@@ -53,6 +53,11 @@ export interface PunctuationToken {
 	location: SourceLocation,
 }
 
+export interface EOFToken {
+	tag: "eof",
+	location: SourceLocation,
+}
+
 export const TYPE_KEYWORDS = {
 	"Unit": true,
 	"Boolean": true,
@@ -89,6 +94,7 @@ export const KEYWORDS = {
 	"not": true,
 	"or": true,
 	"package": true,
+	"proof": true,
 	"requires": true,
 	"return": true,
 	"this": true,
@@ -147,16 +153,18 @@ export const PUNCTUATION = {
 	".": true,
 	",": true,
 	":": true,
+	";": true,
 };
 
 export type Token = IdenToken | TypeIdenToken | TypeVarToken
 	| KeywordToken | TypeKeywordToken
 	| StringLiteralToken | NumberLiteralToken
-	| PunctuationToken;
+	| PunctuationToken
+	| EOFToken;
 
 /// THROWS LexError
-export function tokenize(blob: string, fileID: string) {
-	let tokens = [];
+export function tokenize(blob: string, fileID: string): Token[] {
+	let tokens: Token[] = [];
 	let from = 0;
 	while (from < blob.length) {
 		const result = parseToken(blob, from, fileID);
@@ -165,6 +173,10 @@ export function tokenize(blob: string, fileID: string) {
 		}
 		from += result.consumed;
 	}
+	tokens.push({
+		tag: "eof",
+		location: { fileID, offset: blob.length, length: 0 },
+	});
 	return tokens;
 }
 
@@ -175,7 +187,7 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 		return { token: null, consumed: 1 };
 	} else if ("a" <= head && head <= "z") {
 		// Parse an identifier or a keyword.
-		const breaks = findWordBreak(blob, from);
+		const breaks = findWordBreak(blob, from, fileID);
 		const location = {
 			fileID,
 			offset: from,
@@ -203,7 +215,7 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 		}
 	} else if ("A" <= head && head <= "Z") {
 		// Parse a type-identifier or a type keyword.
-		const breaks = findWordBreak(blob, from);
+		const breaks = findWordBreak(blob, from, fileID);
 		const location = {
 			fileID,
 			offset: from,
@@ -248,7 +260,7 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 			]);
 		}
 
-		const breaks = findWordBreak(blob, from + 1);
+		const breaks = findWordBreak(blob, from + 1, fileID);
 		const location = {
 			fileID,
 			offset: from,
@@ -372,7 +384,8 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 
 /// RETURNS the first index after from which is not a letter/number/underscore 
 /// that is valid within Shiru identifiers.
-function findWordBreak(blob: string, from: number) {
+function findWordBreak(blob: string, from: number, fileID: string) {
+	let end = blob.length;
 	for (let i = from + 1; i < blob.length; i++) {
 		const c = blob[i];
 		const lower = "a" <= c && c <= "z";
@@ -380,10 +393,22 @@ function findWordBreak(blob: string, from: number) {
 		const digit = "0" <= c && c <= "9";
 		const under = c === "_";
 		if (!lower && !upper && !digit && !under) {
-			return i;
+			end = i;
+			break;
 		}
 	}
-	return blob.length;
+	const doubleUnder = blob.substring(from, end).indexOf("__", from);
+	if (doubleUnder >= 0) {
+		throw new LexError([
+			"Found invalid double underscore in identifier at",
+			{
+				fileID,
+				offset: from + doubleUnder,
+				length: 2,
+			},
+		]);
+	}
+	return end;
 }
 
 export class LexError {

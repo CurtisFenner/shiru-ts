@@ -1,10 +1,12 @@
-import * as interpreter_test from "./interpreter_test";
-import * as parser_test from "./parser_test";
+import * as interpreter_tests from "./interpreter_tests";
+import * as parser_tests from "./parser_tests";
 import * as sat_tests from "./sat_tests";
 import * as smt_tests from "./smt_tests";
 import * as data_tests from "./data_tests";
 import * as verify_tests from "./verify_tests";
 import * as lexer_tests from "./lexer_tests";
+import * as grammar_tests from "./grammar_tests";
+import * as semantics_tests from "./semantics_tests";
 
 import util = require("util");
 
@@ -55,6 +57,7 @@ export class TestRunner {
 		}
 
 		for (let failure of failed) {
+			console.log("\u{25be}".repeat(80));
 			console.log("  FAIL! " + failure.name);
 			const indent = "      ";
 			let exception: string;
@@ -67,11 +70,12 @@ export class TestRunner {
 				exception = `(${failure.exception.constructor.name}) ${exception}`;
 			}
 			console.log(indent + exception.replace(/\t/g, "    ").replace(/\n/g, "\n" + indent));
+			console.log("\u{25b4}".repeat(80));
 		}
 
 		console.log("");
 		console.log("Passed: " + passed.length + ".");
-		console.log("Faied: " + failed.length + (failed.length == 0 ? "." : "!"));
+		console.log("Failed: " + failed.length + (failed.length == 0 ? "." : "!"));
 
 		if (passed.length === 0 || failed.length !== 0) {
 			return 1;
@@ -80,47 +84,48 @@ export class TestRunner {
 	}
 }
 
-function deepEqual(a: any, b: any) {
+function deepEqual(a: any, b: any): { eq: true } | { eq: false, path: any[] } {
 	if (a === b) {
-		return true;
+		return { eq: true };
 	} else if (typeof a !== typeof b) {
-		return false;
+		return { eq: false, path: [] };
 	} else if (a instanceof Set && b instanceof Set) {
 		for (let v of a) {
 			if (!b.has(v)) {
-				return false;
+				return { eq: false, path: [v] };
 			}
 		}
 		for (let v of b) {
 			if (!a.has(v)) {
-				return false;
+				return { eq: false, path: [v] };
 			}
 		}
-		return true;
+		return { eq: true };
 	} else if (a instanceof Set || b instanceof Set) {
-		return false;
+		return { eq: false, path: [] };
 	} else if (a instanceof Map || b instanceof Map) {
-		return false;
+		return { eq: false, path: [] };
 	} else if (typeof a === "object") {
 		if (a === null || b === null) {
-			return false;
+			return { eq: false, path: [] };
 		}
 
 		let checked: any = {};
 		for (let k in a) {
-			if (!deepEqual(a[k], b[k])) {
-				return false;
+			const cmp = deepEqual(a[k], b[k]);
+			if (!cmp.eq) {
+				return { eq: false, path: [k].concat(cmp.path) };
 			}
 			checked[k] = true;
 		}
 		for (let k in b) {
 			if (!checked[k]) {
-				return false;
+				return { eq: false, path: [k] };
 			}
 		}
-		return true;
+		return { eq: true };
 	} else {
-		return false;
+		return { eq: false, path: [] };
 	}
 }
 
@@ -131,10 +136,11 @@ export function assert(a: () => void, op: "throws", e: unknown): void;
 export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"] | [() => void, "throws", unknown]) {
 	if (args[1] === "is equal to") {
 		const [a, op, b] = args;
-		if (!deepEqual(a, b)) {
+		const cmp = deepEqual(a, b);
+		if (!cmp.eq) {
 			const sa = util.inspect(a, { depth: 16, colors: true });
 			const sb = util.inspect(b, { depth: 16, colors: true });
-			throw new Error(`Expected \n\t${sa}\nto be equal to\n\t${sb}`);
+			throw new Error(`Expected \n\t${sa}\nto be equal to\n\t${sb}\nbut found difference in path \`${JSON.stringify(cmp.path)}\``);
 		}
 	} else if (args[1] === "is array") {
 		const [a, op] = args;
@@ -161,10 +167,12 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 const testRunner = new TestRunner(process.argv[2]);
 
 testRunner.runTests("data_tests", data_tests.tests);
-testRunner.runTests("interpreter_test", interpreter_test.tests);
-testRunner.runTests("parser_test", parser_test.tests);
+testRunner.runTests("interpreter_tests", interpreter_tests.tests);
+testRunner.runTests("parser_tests", parser_tests.tests);
 testRunner.runTests("sat_tests", sat_tests.tests);
 testRunner.runTests("smt_tests", smt_tests.tests);
 testRunner.runTests("verify_tests", verify_tests.tests);
 testRunner.runTests("lexer_tests", lexer_tests.tests);
+testRunner.runTests("grammar_tests", grammar_tests.tests);
+testRunner.runTests("semantics_tests", semantics_tests.tests);
 testRunner.printReport();

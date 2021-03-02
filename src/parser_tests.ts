@@ -1,5 +1,5 @@
 import { assert } from "./test";
-import { RecordParser, TokenParser, ParsersFor, RepeatParser, ChoiceParser, Parser, DebugContext, choice } from "./parser";
+import * as parser from "./parser";
 
 interface OpenParen { }
 
@@ -26,16 +26,15 @@ type ASTs = {
 	Expr: Expr,
 };
 
-type ErrorElement = string | number;
 type Token = { s: string | null, i: number };
 
 function atReference(name: string) {
-	return (x: Token[], from: number, props: DebugContext<Token>) => {
+	return (x: Token[], from: number, props: parser.DebugContext<Token>) => {
 		const token = props[name].first;
 		if (token === null) {
-			return -1;
+			return "eof";
 		} else {
-			return token.i;
+			return token.i + "";
 		}
 	}
 }
@@ -43,27 +42,32 @@ function atReference(name: string) {
 const atHead = (x: Token[], from: number) => {
 	const token = x[from];
 	if (token === null) {
-		return -1;
+		return "eof";
 	} else {
-		return token.i;
+		return token.i + "";
 	}
 }
 
-const grammar: ParsersFor<Token, ErrorElement, ASTs> = {
-	OpenParen: new TokenParser(({ s }) => s === "(" ? {} : null),
-	CloseParen: new TokenParser(({ s }) => s === ")" ? {} : null),
-	Atom: new TokenParser(({ s }) => s !== null && s !== "(" && s !== ")" ? { name: s, lexeme: s } : null),
-	List: new RecordParser({
-		open: () => grammar.OpenParen,
-		elements: () => new RepeatParser(grammar.Expr),
-		close: () => grammar.CloseParen.required(
-			["Expected a `)` at"],
+function parseProblem(...elements: (string | ((stream: Token[], from: number, context: parser.DebugContext<Token>) => string))[]) {
+	return (stream: Token[], from: number, context: parser.DebugContext<Token>) => elements.map(x =>
+		typeof x === "string" ? x : x(stream, from, context));
+}
+
+const grammar: parser.ParsersFor<Token, ASTs> = {
+	OpenParen: new parser.TokenParser(({ s }) => s === "(" ? {} : null),
+	CloseParen: new parser.TokenParser(({ s }) => s === ")" ? {} : null),
+	Atom: new parser.TokenParser(({ s }) => s !== null && s !== "(" && s !== ")" ? { name: s, lexeme: s } : null),
+	List: new parser.RecordParser(() => ({
+		open: grammar.OpenParen,
+		elements: new parser.RepeatParser(grammar.Expr),
+		close: grammar.CloseParen.required(parseProblem(
+			"Expected a `)` at",
 			atHead,
-			["to close the `(` at"],
+			"to close the `(` at",
 			atReference("open")
-		),
-	}),
-	Expr: choice(() => grammar, "Atom", "List"),
+		)),
+	})),
+	Expr: parser.choice(() => grammar, "Atom", "List"),
 };
 
 export const tests = {
@@ -95,14 +99,11 @@ export const tests = {
 		const stream = ["(", "a", "b", "(", "(", "c", ")", null]
 			.map((v, i) => ({ s: v, i }));
 
-		const expr = grammar.Expr.parse(stream, 0, {});
-		assert(expr, "is equal to", {
-			message: [
-				"Expected a `)` at",
-				7,
-				"to close the `(` at",
-				3,
-			]
-		});
+		assert(() => grammar.Expr.parse(stream, 0, {}), "throws", [
+			"Expected a `)` at",
+			"7",
+			"to close the `(` at",
+			"3",
+		]);
 	}
 };

@@ -61,12 +61,12 @@ function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Typ
 			return false;
 		}
 
-		if (pattern.parameter.length !== subject.parameter.length) {
+		if (pattern.type_arguments.length !== subject.type_arguments.length) {
 			throw new Error(`Arity of type \`${pattern.class.class_id}\` is inconsistent.`);
 		}
 
-		for (let i = 0; i < pattern.parameter.length; i++) {
-			if (!matchTypeSingle(variables, pattern.parameter[i], subject.parameter[i])) {
+		for (let i = 0; i < pattern.type_arguments.length; i++) {
+			if (!matchTypeSingle(variables, pattern.type_arguments[i], subject.type_arguments[i])) {
 				return false;
 			}
 		}

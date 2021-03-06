@@ -34,9 +34,10 @@ interface VTableEntry {
 /// Replace all occurrences of the specified type-variables in the constraint 
 /// parameter.
 function constraintSubstitute(c: ir.ConstraintParameter, map: Map<number, ir.Type>): ir.ConstraintParameter {
+	const args = c.interface_arguments.map(t => ir.typeSubstitute(t, map));
 	return {
 		interface: c.interface,
-		interface_parameters: c.interface_parameters.map(t => ir.typeSubstitute(t, map)),
+		interface_arguments: args,
 	};
 }
 
@@ -133,7 +134,7 @@ class StackFrame {
 	resolveVTableFromConstraint(constraint: ir.ConstraintParameter): VTable {
 		return this.resolveVTable(
 			constraint.interface,
-			constraint.interface_parameters);
+			constraint.interface_arguments);
 	}
 
 	resolveVTable(interfaceID: ir.InterfaceID, interfaceArguments: ir.Type[]): VTable {
@@ -177,7 +178,7 @@ class StackFrame {
 						return {
 							interfaceID: resolved.interfaceID,
 							// Use the form of the interface arguments that the callee expects.
-							interfaceArguments: c.interface_parameters,
+							interfaceArguments: c.interface_arguments,
 							entries: resolved.entries,
 						};
 					});
@@ -326,7 +327,7 @@ function interpretStep(program: ir.Program, stack: StackFrame[], foreign: Record
 
 		const constraintArguments: VTable[] = [];
 		for (let constraintParameter of signature.constraint_parameters) {
-			const interfaceElements = constraintParameter.interface_parameters;
+			const interfaceElements = constraintParameter.interface_arguments;
 
 			const concreteInterfaceArguments = interfaceElements.map(u => ir.typeSubstitute(u, parameterMapping));
 			const resolved = frame.resolveVTable(constraintParameter.interface, concreteInterfaceArguments);
@@ -338,7 +339,7 @@ function interpretStep(program: ir.Program, stack: StackFrame[], foreign: Record
 				interfaceID: constraintParameter.interface,
 				// This v-table must be identifiable within the local 
 				// type-context of the called function.
-				interfaceArguments: constraintParameter.interface_parameters,
+				interfaceArguments: constraintParameter.interface_arguments,
 				// The identifications of these v-table entries can be 
 				// instantiated, since they will be overridden elsewhere.
 				entries: resolved.entries,

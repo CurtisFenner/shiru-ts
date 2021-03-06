@@ -226,7 +226,7 @@ export interface IRInterface {
 
 export interface ConstraintParameter {
 	interface: InterfaceID,
-	interface_parameters: Type[],
+	interface_arguments: Type[],
 };
 
 export interface FunctionSignature {

@@ -9,7 +9,7 @@ export const tests = {
 		const ast = grammar.parseSource(source, "file-0");
 
 		assert(() => semantics.compileSources([ast]), "throws", new SemanticError([
-			"Object `example.A` was defined for a second time at",
+			"Entity `example.A` was defined for a second time at",
 			{ fileID: "file-0", offset: 35, length: 1 },
 			"The first definition was at",
 			{ fileID: "file-0", offset: 23, length: 1 },
@@ -23,7 +23,7 @@ export const tests = {
 		const ast1 = grammar.parseSource(source1, "file-1");
 
 		assert(() => semantics.compileSources([ast0, ast1]), "throws", new SemanticError([
-			"Object `example.A` was defined for a second time at",
+			"Entity `example.A` was defined for a second time at",
 			{ fileID: "file-1", offset: 23, length: 1 },
 			"The first definition was at",
 			{ fileID: "file-0", offset: 23, length: 1 },
@@ -37,7 +37,7 @@ export const tests = {
 
 		assert(() => semantics.compileSources([astA, astB]), "throws", {
 			message: [
-				"Object `A` was defined for a second time at",
+				"Entity `A` was defined for a second time at",
 				{ fileID: "file-b", offset: 27, length: 1 },
 				"The first definition was at",
 				{ fileID: "file-b", offset: 36, length: 1 },
@@ -54,7 +54,7 @@ export const tests = {
 
 		assert(() => semantics.compileSources([astA, astB, astC]), "throws", {
 			message: [
-				"Object `A` was defined for a second time at",
+				"Entity `A` was defined for a second time at",
 				{ fileID: "file-c", offset: 43, length: 1 },
 				"The first definition was at",
 				{ fileID: "file-c", offset: 28, length: 1 },
@@ -69,4 +69,28 @@ export const tests = {
 		assert(program.classes, "is equal to", {});
 		assert(program.functions, "is equal to", {});
 	},
+	"redefined-field-in-class"() {
+		const source = `package example; class A { var f1: A; var f1: A; }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"The member `f1` was defined for a second time at",
+				{ fileID: "test-file", offset: 42, length: 2 },
+				"The first definition of `f1` was at",
+				{ fileID: "test-file", offset: 31, length: 2 },
+			],
+		});
+	},
+	"undefined-type-referenced-in-field"() {
+		const source = `package example; class A { var b: B; }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"Entity `B` has not been defined, but it was referenced at",
+				{ fileID: "test-file", offset: 34, length: 1 },
+			],
+		});
+	}
 };

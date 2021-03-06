@@ -48,11 +48,6 @@ export const tests = {
 		assert(ast, "is equal to", {
 			object: {
 				tag: "class-definition",
-				_class: {
-					tag: "keyword",
-					keyword: "class",
-					location: { fileID: "test-file", offset: 0, length: 5 }
-				},
 				entityName: {
 					tag: "type-iden",
 					name: "A",
@@ -62,18 +57,8 @@ export const tests = {
 					parameters: [],
 					constraints: [],
 				},
-				_open: {
-					tag: "punctuation",
-					symbol: "{",
-					location: { fileID: "test-file", offset: 8, length: 1 },
-				},
 				fields: [],
 				fns: [],
-				_close: {
-					tag: "punctuation",
-					symbol: "}",
-					location: { fileID: "test-file", offset: 9, length: 1 },
-				},
 				location: { fileID: "test-file", offset: 0, length: 10 },
 			},
 			rest: tokens.length - 1,
@@ -84,25 +69,14 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(ast, "is equal to", {
 			package: {
-				_package: {
-					tag: "keyword",
-					keyword: "package",
-					location: { fileID: "test-file", offset: 0, length: 7 },
-				},
 				packageName: {
 					tag: "iden",
 					name: "mypackage",
 					location: { fileID: "test-file", offset: 8, length: 9 },
 				},
-				_semicolon: {
-					tag: "punctuation",
-					symbol: ";",
-					location: { fileID: "test-file", offset: 17, length: 1 },
-				},
 			},
 			imports: [],
 			definitions: [],
-			_eof: { fileID: "test-file", offset: 18, length: 0 },
 		});
 	},
 	"parse-small-source"() {

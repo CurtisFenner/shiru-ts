@@ -164,7 +164,9 @@ export class RecordParser<T, R> extends Parser<T, R> {
 				return null;
 			}
 
-			record[p] = result.object;
+			if (p[0] !== "_") {
+				record[p] = result.object;
+			}
 			from = result.rest;
 			const followingToken = stream[from];
 			debugContext[p] = { first: firstToken, following: followingToken };

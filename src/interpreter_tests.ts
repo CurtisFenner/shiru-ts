@@ -344,7 +344,7 @@ export const tests = {
 						constraint_parameters: [
 							{
 								interface: { interface_id: "Favorite" },
-								interface_parameters: [variableType(0)],
+								interface_arguments: [variableType(0)],
 							}
 						],
 						parameters: [],
@@ -435,7 +435,7 @@ export const tests = {
 							constraint_parameters: [
 								{
 									interface: { interface_id: "Favorite" },
-									interface_parameters: [variableType(0)]
+									interface_arguments: [variableType(0)]
 								},
 							],
 						},
@@ -449,7 +449,7 @@ export const tests = {
 						constraint_parameters: [
 							{
 								interface: { interface_id: "Favorite" },
-								interface_parameters: [variableType(0)],
+								interface_arguments: [variableType(0)],
 							}
 						],
 						parameters: [],
@@ -495,7 +495,7 @@ export const tests = {
 						constraint_parameters: [
 							{
 								interface: { interface_id: "Favorite" },
-								interface_parameters: [variableType(0)],
+								interface_arguments: [variableType(0)],
 							},
 						],
 						parameters: [],

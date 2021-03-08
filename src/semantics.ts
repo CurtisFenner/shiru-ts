@@ -158,7 +158,7 @@ interface TypeScope {
 }
 
 function resolveEntity(
-	t: grammar.ClassType,
+	t: grammar.TypeNamed,
 	sourceContext: Readonly<SourceContext>,
 	programContext: Readonly<ProgramContext>,
 ) {
@@ -173,27 +173,27 @@ function resolveEntity(
 		}
 
 		const entitiesInNamespace = programContext.canonicalByQualifiedName[namespaceQualifier];
-		const canonicalName = entitiesInNamespace[t.class.name];
+		const canonicalName = entitiesInNamespace[t.entity.name];
 		if (!canonicalName) {
 			throw new diagnostics.NoSuchEntityErr({
-				entityName: namespace.packageName + "." + t.class.name,
-				reference: t.class.location,
+				entityName: namespace.packageName + "." + t.entity.name,
+				reference: t.entity.location,
 			});
 		}
 		return canonicalName;
 	} else {
-		const bound = sourceContext.entityAliases[t.class.name];
+		const bound = sourceContext.entityAliases[t.entity.name];
 		if (!bound) {
 			throw new diagnostics.NoSuchEntityErr({
-				entityName: t.class.name,
-				reference: t.class.location,
+				entityName: t.entity.name,
+				reference: t.entity.location,
 			});
 		}
 		return bound.canonicalName;
 	}
 }
 
-function compileConstraint(t: grammar.ClassType,
+function compileConstraint(t: grammar.TypeNamed,
 	sourceContext: Readonly<SourceContext>,
 	scope: TypeScope,
 	programContext: Readonly<ProgramContext>): ir.ConstraintParameter {
@@ -220,7 +220,7 @@ function compileType(t: grammar.Type,
 	sourceContext: Readonly<SourceContext>,
 	scope: TypeScope,
 	programContext: Readonly<ProgramContext>): ir.Type {
-	if (t.tag === "keyword") {
+	if (t.tag === "type-keyword") {
 		if (t.keyword === "This") {
 			if (scope.thisType === null) {
 				throw new diagnostics.InvalidThisTypeErr({
@@ -239,7 +239,7 @@ function compileType(t: grammar.Type,
 				primitive: t.keyword,
 			};
 		}
-	} else if (t.tag === "class") {
+	} else if (t.tag === "named") {
 		// Resolve the entity.
 		const canonicalName = resolveEntity(t, sourceContext, programContext);
 		const entity = programContext.entitiesByCanonical[canonicalName];
@@ -249,7 +249,7 @@ function compileType(t: grammar.Type,
 			throw new diagnostics.NonTypeEntityUsedAsTypeErr({
 				entity: canonicalName,
 				entityTag: entity.tag,
-				useLocation: t.class.location,
+				useLocation: t.entity.location,
 				entityBinding: entity.bindingLocation,
 			});
 		}
@@ -383,7 +383,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			entity.typeScope.nextTypeVariableID += 1;
 		}
 		for (let c of entity.ast.typeParameters.constraints) {
-			if (c.constraint.tag === "keyword") {
+			if (c.constraint.tag === "type-keyword") {
 				throw new diagnostics.TypeUsedAsConstraintErr({
 					kind: "keyword",
 					typeLocation: c.constraint.location,

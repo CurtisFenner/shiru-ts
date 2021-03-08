@@ -53,10 +53,39 @@ export interface PunctuationToken {
 	location: SourceLocation,
 }
 
+export interface OperatorToken {
+	tag: "operator",
+	operator: keyof typeof OPERATORS,
+	location: SourceLocation,
+}
+
 export interface EOFToken {
 	tag: "eof",
 	location: SourceLocation,
 }
+
+// These keywords are reserved, but unused. Using them in a program is a syntax
+// error.
+export const RESERVED = {
+	"Never": true,
+
+	"async": true,
+	"await": true,
+	"break": true,
+	"enum": true,
+	"for": true,
+	"function": true,
+	"of": true,
+	"record": true,
+	"resource": true,
+	"resume": true,
+	"service": true,
+	"test": true,
+	"type": true,
+	"until": true,
+	"while": true,
+	"yield": true,
+};
 
 export const TYPE_KEYWORDS = {
 	"Unit": true,
@@ -64,9 +93,6 @@ export const TYPE_KEYWORDS = {
 	"Int": true,
 	"String": true,
 	"This": true,
-
-	// Reserved, but unused:
-	"Never": true,
 };
 
 export const KEYWORDS = {
@@ -103,27 +129,9 @@ export const KEYWORDS = {
 	"unit": true,
 	"var": true,
 	"when": true,
-
-	// Reserved, but unused:
-	"async": true,
-	"await": true,
-	"break": true,
-	"enum": true,
-	"for": true,
-	"function": true,
-	"of": true,
-	"record": true,
-	"resource": true,
-	"resume": true,
-	"service": true,
-	"test": true,
-	"type": true,
-	"until": true,
-	"while": true,
-	"yield": true,
 };
 
-export const PUNCTUATION = {
+export const OPERATORS = {
 	// N.B.: Iteration order determines 'priority', so longer sequences MUST
 	// come first.
 	// N.B.: Sequences must NOT contain `//`, so that they remain comments.
@@ -141,8 +149,10 @@ export const PUNCTUATION = {
 	"%": true,
 	"<": true,
 	">": true,
-	"=": true,
+};
 
+export const PUNCTUATION = {
+	"=": true,
 	"(": true,
 	")": true,
 	"{": true,
@@ -159,7 +169,7 @@ export const PUNCTUATION = {
 export type Token = IdenToken | TypeIdenToken | TypeVarToken
 	| KeywordToken | TypeKeywordToken
 	| StringLiteralToken | NumberLiteralToken
-	| PunctuationToken
+	| PunctuationToken | OperatorToken
 	| EOFToken;
 
 /// THROWS LexError
@@ -203,6 +213,11 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 				},
 				consumed: breaks - from,
 			};
+		} else if (word in RESERVED) {
+			throw new LexError([
+				"Found the reserved term `" + word + "` at",
+				location,
+			]);
 		} else {
 			return {
 				token: {
@@ -231,6 +246,11 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 				},
 				consumed: breaks - from,
 			};
+		} else if (word in RESERVED) {
+			throw new LexError([
+				"Found the reserved term `" + word + "` at",
+				location,
+			]);
 		} else {
 			return {
 				token: {
@@ -356,20 +376,34 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 		};
 	} else {
 		// Attempt to parse punctuations.
-		for (let p in PUNCTUATION) {
-			if (blob.substr(from, p.length) === p) {
+		for (let k = Math.min(blob.length - from, 2); k >= 1; k--) {
+			const lexeme = blob.substr(from, k);
+			if (lexeme in PUNCTUATION) {
 				return {
 					token: {
 						tag: "punctuation",
-						symbol: p as keyof typeof PUNCTUATION,
+						symbol: lexeme as keyof typeof PUNCTUATION,
 						location: {
 							fileID,
 							offset: from,
-							length: p.length,
+							length: k,
 						},
 					},
-					consumed: p.length,
-				}
+					consumed: k,
+				};
+			} else if (lexeme in OPERATORS) {
+				return {
+					token: {
+						tag: "operator",
+						operator: lexeme as keyof typeof OPERATORS,
+						location: {
+							fileID,
+							offset: from,
+							length: k,
+						},
+					},
+					consumed: k,
+				};
 			}
 		}
 	}

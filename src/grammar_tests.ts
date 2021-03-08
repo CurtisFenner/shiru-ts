@@ -14,11 +14,11 @@ export const tests = {
 		});
 	},
 	"expect-package"() {
-		const source = `test`;
+		const source = `something`;
 		assert(() => grammar.parseSource(source, "test-file"), "throws", {
 			message: [
 				"Expected a package declaration to begin the source file at",
-				{ fileID: "test-file", offset: 0, length: 4 },
+				{ fileID: "test-file", offset: 0, length: 9 },
 			],
 		});
 	},
@@ -88,7 +88,7 @@ export const tests = {
 		const source = `package example; class A[] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
-				"Expected at least one type variable at",
+				"Expected a type variable at",
 				{ fileID: "test-a", offset: 25, length: 1 },
 			],
 		});

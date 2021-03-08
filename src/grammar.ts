@@ -1,5 +1,5 @@
 import { SourceLocation } from "./ir";
-import { ErrorElement, IdenToken, KeywordToken, PUNCTUATION, PunctuationToken, Token, tokenize, TypeIdenToken, TypeKeywordToken, TypeVarToken } from "./lexer";
+import { ErrorElement, IdenToken, KeywordToken, NumberLiteralToken, OperatorToken, PUNCTUATION, PunctuationToken, StringLiteralToken, Token, tokenize, TypeIdenToken, TypeKeywordToken, TypeVarToken } from "./lexer";
 import { RecordParserDescription, ConstParser, Parser, ParsersFor, RecordParser, RepeatParser, TokenParser, DebugContext, ParseResult, choice, ChoiceParser, TokenSpan, FailHandler } from "./parser";
 
 function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken> {
@@ -37,7 +37,10 @@ const eofParser: Parser<Token, SourceLocation> = new TokenParser(t => t.tag === 
 /// `CommaParser` is a combinator that parses a comma-separated sequence of 
 /// elements.
 class CommaParser<T> extends Parser<Token, T[]> {
-	constructor(private element: Parser<Token, T>, private expected: string) {
+	constructor(
+		private element: Parser<Token, T>,
+		private expected: string,
+		private min = 0) {
 		super();
 	}
 
@@ -46,12 +49,12 @@ class CommaParser<T> extends Parser<Token, T[]> {
 		while (true) {
 			const object = this.element.parse(stream, from, debugContext);
 			if (object === null) {
-				if (out.length === 0) {
+				if (out.length < this.min) {
+					return null;
+				} else if (out.length === 0) {
 					return { object: [], rest: from };
 				}
 				throw new ParseError([this.expected, stream[from].location]);
-			} else if ("message" in object) {
-				return object;
 			} else {
 				out.push(object.object);
 				from = object.rest;
@@ -60,12 +63,13 @@ class CommaParser<T> extends Parser<Token, T[]> {
 			// Parse a comma.
 			const comma = punctuation.comma.parse(stream, from, debugContext);
 			if (comma === null) {
+				if (out.length < this.min) {
+					return null;
+				}
 				return {
 					object: out,
 					rest: from,
 				};
-			} else if ("message" in comma) {
-				throw new Error("unreachable");
 			} else {
 				from = comma.rest;
 			}
@@ -171,12 +175,25 @@ export function parseSource(blob: string, fileID: string) {
 	return result.object;
 }
 
+export type BooleanLiteralToken = KeywordToken & { keyword: "true" | "false" };
 
 const tokens = {
 	packageIden: tokenParser("iden"),
 	typeIden: tokenParser("type-iden"),
 	iden: tokenParser("iden"),
 	typeVarIden: tokenParser("type-var"),
+	typeKeyword: tokenParser("type-keyword"),
+	operator: tokenParser("operator"),
+	stringLiteral: tokenParser("string-literal"),
+	numberLiteral: tokenParser("number-literal"),
+	booleanLiteral: new TokenParser((token: Token) => {
+		if (token.tag !== "keyword") {
+			return null;
+		} else if (token.keyword !== "true" && token.keyword !== "false") {
+			return null;
+		}
+		return token as BooleanLiteralToken;
+	}),
 };
 
 const keywords = {
@@ -195,6 +212,7 @@ const punctuation = {
 	comma: punctuationParser(","),
 	colon: punctuationParser(":"),
 	dot: punctuationParser("."),
+	equal: punctuationParser("="),
 	pipe: punctuationParser("|"),
 	curlyOpen: punctuationParser("{"),
 	curlyClose: punctuationParser("}"),
@@ -303,19 +321,13 @@ interface TypeConstraints {
 	constraints: TypeConstraint[],
 }
 
-export interface ClassType {
-	tag: "class",
+export interface TypeNamed {
+	tag: "named",
 	packageQualification: PackageQualification | null,
-	class: TypeIdenToken,
+	entity: TypeIdenToken,
 	arguments: Type[],
 	location: SourceLocation,
 }
-
-export type KeywordType = {
-	tag: "keyword",
-	keyword: "Boolean" | "String" | "Unit" | "Int" | "This",
-	location: SourceLocation,
-};
 
 export interface PackageQualification {
 	package: IdenToken,
@@ -323,68 +335,136 @@ export interface PackageQualification {
 	location: SourceLocation,
 }
 
-export type Type = ClassType | KeywordType;
+export type Type = TypeNamed | TypeKeywordToken;
+
+export interface Block {
+	statements: Statement[],
+}
+
+export type Statement = VarSt;
+
+export interface VarSt {
+	variables: VarDecl[],
+	initialization: Expression[],
+}
+
+export interface VarDecl {
+	variable: IdenToken,
+	t: Type,
+}
+
+export interface Expression {
+	left: ExpressionOperand,
+	operations: ExpressionOperation[],
+}
+
+export type ExpressionAccess = ExpressionAccessMethod | ExpressionAccessField;
+
+export interface ExpressionAccessMethod {
+	tag: "method",
+	methodName: IdenToken,
+	args: Expression[],
+}
+
+export interface ExpressionAccessField {
+	tag: "field",
+	fieldName: IdenToken,
+}
+
+export interface ExpressionOperand {
+	atom: ExpressionAtom,
+	accesses: ExpressionAccess[],
+}
+
+export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
+
+export interface LogicalOperation {
+	operator: BinaryLogicalToken,
+	right: ExpressionOperand,
+}
+
+export type ExpressionOperation = ExpressionOperationBinary;
+
+export interface ExpressionOperationBinary {
+	operator: OperatorToken,
+	right: ExpressionOperand,
+}
+
+export interface ExpressionParenthesized {
+	tag: "paren",
+	expression: Expression,
+}
+
+export interface ExpressionCall {
+	tag: "call",
+	t: Type,
+	methodName: IdenToken,
+	arguments: Expression[],
+}
+
+export interface ExpressionNew {
+	tag: "new",
+	args: ExpressionNewArg[],
+}
+
+export interface ExpressionNewArg {
+	fieldName: IdenToken,
+	value: Expression,
+}
+
+export type ExpressionAtom = ExpressionParenthesized
+	| StringLiteralToken | NumberLiteralToken
+	| BooleanLiteralToken
+	| IdenToken
+	| ExpressionCall
+	| ExpressionNew;
 
 type ASTs = {
-	Source: Source,
-	PackageDef: PackageDef,
+	Block: Block,
+	ClassDefinition: ClassDefinition,
+	Definition: Definition,
+	Expression: Expression,
+	ExpressionAccess: ExpressionAccess,
+	ExpressionAccessField: ExpressionAccessField,
+	ExpressionAccessMethod: ExpressionAccessMethod,
+	ExpressionAtom: ExpressionAtom,
+	ExpressionOperand: ExpressionOperand,
+	ExpressionOperation: ExpressionOperation,
+	ExpressionOperationBinary: ExpressionOperationBinary,
+	ExpressionParenthesized: ExpressionParenthesized,
+	Field: Field,
+	Fn: Fn,
+	FnParameter: FnParameter,
+	FnParameters: FnParameters,
+	FnSignature: FnSignature,
+	Import: Import,
 	ImportOfObject: ImportOfObject,
 	ImportOfPackage: ImportOfPackage,
-	Import: Import,
-	Definition: Definition,
-	ClassDefinition: ClassDefinition,
-	Field: Field,
-	FnParameters: FnParameters,
-	FnParameter: FnParameter,
-	FnSignature: FnSignature,
-	Fn: Fn,
 	InterfaceDefinition: InterfaceDefinition,
 	InterfaceMember: InterfaceMember,
-	KeywordType: KeywordType,
+	PackageDef: PackageDef,
 	PackageQualification: PackageQualification,
-	TypeArguments: TypeArguments,
-	TypeParameters: TypeParameters,
-	TypeConstraint: TypeConstraint,
-	TypeConstraints: TypeConstraints,
-	ClassType: ClassType,
+	Source: Source,
+	Statement: Statement,
 	Type: Type,
+	TypeArguments: TypeArguments,
+	TypeNamed: TypeNamed,
+	TypeParameterConstraint: TypeConstraint,
+	TypeParameterConstraints: TypeConstraints,
+	TypeParameters: TypeParameters,
+	VarDecl: VarDecl,
+	VarSt: VarSt,
 };
 
 export const grammar: ParsersFor<Token, ASTs> = {
-	Source: new RecordParser(() => ({
-		package: grammar.PackageDef
-			.required(parseProblem("Expected a package declaration to begin the source file at", atHead)),
-		imports: new RepeatParser(grammar.Import),
-		definitions: new RepeatParser(grammar.Definition),
-		_eof: eofParser
-			.required(parseProblem("Expected another definition at", atHead)),
+	Block: new RecordParser(() => ({
+		_open: punctuation.curlyOpen,
+		statements: new RepeatParser(grammar.Statement),
+		_close: punctuation.curlyClose
+			.required(parseProblem(
+				"Expected a `}` at", atHead,
+				"to complete a block started at", atReference("_open"))),
 	})),
-	PackageDef: new RecordParser(() => ({
-		_package: keywords.package,
-		packageName: tokens.packageIden
-			.required(parseProblem("Expected a package name after `package` at", atHead)),
-		_semicolon: punctuation.semicolon
-			.required(parseProblem("Expected a `;` to end the package declaration at", atHead)),
-	})),
-	ImportOfObject: new StructParser(() => ({
-		tag: new ConstParser("of-object"),
-		packageName: tokens.packageIden,
-		_dot: punctuation.dot,
-		objectName: tokens.typeIden
-			.required(parseProblem("Expected an object name to import after `:` at", atHead)),
-	})),
-	ImportOfPackage: new StructParser(() => ({
-		tag: new ConstParser("of-package"),
-		packageName: tokens.packageIden,
-	})),
-	Import: new RecordParser(() => ({
-		_import: keywords.import,
-		imported: choice(() => grammar, "ImportOfObject", "ImportOfPackage")
-			.required(parseProblem("Expected an entity or package to import after `import` at", atHead)),
-		_semicolon: punctuation.semicolon
-			.required(parseProblem("Expected a `;` to end the import at", atHead)),
-	})),
-	Definition: new ChoiceParser(() => [grammar.ClassDefinition]),
 	ClassDefinition: new StructParser(() => ({
 		_class: keywords.class,
 		tag: new ConstParser("class-definition"),
@@ -398,22 +478,61 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `}` at", atHead,
 				"to complete a class definition beginning at", atReference("_open"))),
 	})),
-	InterfaceMember: new RecordParser(() => ({
-		signature: grammar.FnSignature,
-		_semicolon: punctuation.semicolon
-			.required(parseProblem("Expected a `;` to complete the interface member at", atHead)),
+	TypeNamed: new StructParser(() => ({
+		packageQualification: grammar.PackageQualification
+			.otherwise(null),
+		entity: tokens.typeIden,
+		tag: new ConstParser("named"),
+		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
-	InterfaceDefinition: new RecordParser(() => ({
-		_interface: keywords.interface,
-		tag: new ConstParser("interface-definition"),
-		entityName: tokens.typeIden,
-		typeParameters: grammar.TypeParameters
-			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
-		_open: punctuation.curlyOpen,
-		members: new RepeatParser(grammar.InterfaceMember),
-		_close: punctuation.curlyClose
-			.required(parseProblem("Expected a `}` at", atHead,
-				"to complete an interface definition beginning at", atReference("_open"))),
+	Definition: new ChoiceParser(() => [grammar.ClassDefinition]),
+	Expression: new RecordParser(() => ({
+		left: grammar.ExpressionOperand,
+		operations: new RepeatParser(grammar.ExpressionOperation),
+	})),
+	ExpressionAccess: choice(() => grammar, "ExpressionAccessMethod", "ExpressionAccessField"),
+	ExpressionAccessField: new StructParser(() => ({
+		_dot: punctuation.dot,
+		fieldName: tokens.iden,
+		tag: new ConstParser("field"),
+	})),
+	ExpressionAccessMethod: new StructParser(() => ({
+		_dot: punctuation.dot,
+		methodName: tokens.iden
+			.required(parseProblem("Expected a field or method name after a `.` at", atHead)),
+		_open: punctuation.roundOpen,
+		tag: new ConstParser("method"),
+		args: new CommaParser(grammar.Expression,
+			"Expected another method argument at"),
+		_close: punctuation.roundClose
+			.required(parseProblem("Expected a `)` at", atHead,
+				"to complete a method call beginning at", atReference("_open"))),
+	})),
+	ExpressionParenthesized: new StructParser(() => ({
+		_open: punctuation.roundOpen,
+		tag: new ConstParser("paren"),
+		expression: grammar.Expression,
+		_close: punctuation.roundClose
+			.required(parseProblem("Expected a `)` at", atHead,
+				"to complete a grouping that began at", atReference("_open"))),
+	})),
+	ExpressionAtom: new ChoiceParser<Token, ExpressionAtom>(() => [
+		grammar.ExpressionParenthesized,
+		tokens.stringLiteral,
+		tokens.numberLiteral,
+		tokens.booleanLiteral,
+		tokens.iden,
+	]),
+	ExpressionOperand: new RecordParser(() => ({
+		atom: grammar.ExpressionAtom,
+		accesses: new RepeatParser(grammar.ExpressionAccess),
+	})),
+	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary"),
+	ExpressionOperationBinary: new RecordParser(() => ({
+		operator: tokens.operator,
+		right: grammar.ExpressionOperand
+			.required(parseProblem("Expected an operand at", atHead,
+				"after the binary operator at", atReference("operator")))
 	})),
 	Field: new StructParser(() => ({
 		_var: keywords.var,
@@ -426,64 +545,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_semicolon: punctuation.semicolon
 			.required(parseProblem("Expected a `;` after field type at", atHead)),
 	})),
-	KeywordType: new TokenParser((t) => {
-		if (t.tag !== "type-keyword") {
-			return null;
-		}
-		if (t.keyword === "Never") {
-			throw new ParseError([
-				"Found `Never`, which is a reserved but unused keyword at",
-				t.location,
-			]);
-		}
-		return {
-			tag: "keyword",
-			keyword: t.keyword,
-			location: t.location,
-		}
-	}),
-	PackageQualification: new StructParser(() => ({
-		package: tokens.iden,
-		_dot: punctuation.dot
-			.required(parseProblem("Expected a `.` after a package name at", atHead)),
+	Fn: new RecordParser(() => ({
+		signature: grammar.FnSignature,
+		body: grammar.Block
+			.required(parseProblem("Expected a `{` to begin a function body at", atHead))
 	})),
-	TypeConstraint: new RecordParser(() => ({
-		subject: tokens.typeVarIden,
-		_is: keywords.is
-			.required(parseProblem("Expected `is` after type constraint subject at", atHead)),
-		constraint: grammar.Type
-			.required(parseProblem("Expected a constraint to be named after `is` at", atHead)),
-	})),
-	TypeConstraints: new RecordParser(() => ({
-		_pipe: punctuation.pipe,
-		constraints: new CommaParser(grammar.TypeConstraint, "Expected a type constraint at")
-			.map(requireAtLeastOne("type constraint")),
-	})),
-	TypeParameters: new RecordParser(() => ({
-		_open: punctuation.squareOpen,
-		parameters: new CommaParser(tokens.typeVarIden, "Expected a type variable at")
-			.map(requireAtLeastOne("type variable")),
-		constraints: grammar.TypeConstraints.map(x => x.constraints),
-		_close: punctuation.squareClose
-			.required(parseProblem("Expected a `]` at", atHead,
-				"to complete type parameters started at", atReference("_open"))),
-	})),
-	ClassType: new StructParser(() => ({
-		packageQualification: grammar.PackageQualification
-			.otherwise(null),
-		class: tokens.typeIden,
-		tag: new ConstParser("class"),
-		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
-	})),
-	TypeArguments: new RecordParser(() => ({
-		_open: punctuation.squareOpen,
-		arguments: new CommaParser(grammar.Type, "Expected a type argument at")
-			.map(requireAtLeastOne("type argument")),
-		_close: punctuation.squareClose
-			.required(parseProblem("Expected a `]` at", atHead,
-				"to complete type arguments started at", atReference("_open"))),
-	})),
-	Type: choice(() => grammar, "ClassType", "KeywordType"),
 	FnParameter: new RecordParser(() => ({
 		name: tokens.iden,
 		_colon: punctuation.colon,
@@ -509,11 +575,104 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		returns: new CommaParser(grammar.Type, "Expected a return type at")
 			.map(requireAtLeastOne("return type")),
 	})),
-	Fn: new StructParser(() => ({
+	InterfaceMember: new RecordParser(() => ({
 		signature: grammar.FnSignature,
-		_open: punctuation.curlyOpen
-			.required(parseProblem("Expected a `{` to begin a function body at", atHead)),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` to complete the interface member at", atHead)),
+	})),
+	InterfaceDefinition: new RecordParser(() => ({
+		_interface: keywords.interface,
+		tag: new ConstParser("interface-definition"),
+		entityName: tokens.typeIden,
+		typeParameters: grammar.TypeParameters
+			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
+		_open: punctuation.curlyOpen,
+		members: new RepeatParser(grammar.InterfaceMember),
 		_close: punctuation.curlyClose
-			.required(parseProblem("Expected a `}` to complete a function body at", atHead)),
+			.required(parseProblem("Expected a `}` at", atHead,
+				"to complete an interface definition beginning at", atReference("_open"))),
+	})),
+	Import: new RecordParser(() => ({
+		_import: keywords.import,
+		imported: choice(() => grammar, "ImportOfObject", "ImportOfPackage")
+			.required(parseProblem("Expected an entity or package to import after `import` at", atHead)),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` to end the import at", atHead)),
+	})),
+	ImportOfObject: new StructParser(() => ({
+		tag: new ConstParser("of-object"),
+		packageName: tokens.packageIden,
+		_dot: punctuation.dot,
+		objectName: tokens.typeIden
+			.required(parseProblem("Expected an object name to import after `:` at", atHead)),
+	})),
+	ImportOfPackage: new StructParser(() => ({
+		tag: new ConstParser("of-package"),
+		packageName: tokens.packageIden,
+	})),
+	PackageDef: new RecordParser(() => ({
+		_package: keywords.package,
+		packageName: tokens.packageIden
+			.required(parseProblem("Expected a package name after `package` at", atHead)),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` to end the package declaration at", atHead)),
+	})),
+	Source: new RecordParser(() => ({
+		package: grammar.PackageDef
+			.required(parseProblem("Expected a package declaration to begin the source file at", atHead)),
+		imports: new RepeatParser(grammar.Import),
+		definitions: new RepeatParser(grammar.Definition),
+		_eof: eofParser
+			.required(parseProblem("Expected another definition at", atHead)),
+	})),
+	PackageQualification: new StructParser(() => ({
+		package: tokens.iden,
+		_dot: punctuation.dot
+			.required(parseProblem("Expected a `.` after a package name at", atHead)),
+	})),
+	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword]),
+	TypeArguments: new RecordParser(() => ({
+		_open: punctuation.squareOpen,
+		arguments: new CommaParser(grammar.Type, "Expected a type argument at")
+			.map(requireAtLeastOne("type argument")),
+		_close: punctuation.squareClose
+			.required(parseProblem("Expected a `]` at", atHead,
+				"to complete type arguments started at", atReference("_open"))),
+	})),
+	TypeParameterConstraint: new RecordParser(() => ({
+		subject: tokens.typeVarIden,
+		_is: keywords.is
+			.required(parseProblem("Expected `is` after type constraint subject at", atHead)),
+		constraint: grammar.Type
+			.required(parseProblem("Expected a constraint to be named after `is` at", atHead)),
+	})),
+	TypeParameterConstraints: new RecordParser(() => ({
+		_pipe: punctuation.pipe,
+		constraints: new CommaParser(grammar.TypeParameterConstraint,
+			"Expected a type constraint at", 1)
+			.required(parseProblem("Expected at least one type constraint at", atHead)),
+	})),
+	TypeParameters: new RecordParser(() => ({
+		_open: punctuation.squareOpen,
+		parameters: new CommaParser(tokens.typeVarIden, "Expected a type variable at", 1)
+			.required(parseProblem("Expected a type variable at", atHead)),
+		constraints: grammar.TypeParameterConstraints.map(x => x.constraints),
+		_close: punctuation.squareClose
+			.required(parseProblem("Expected a `]` at", atHead,
+				"to complete type parameters started at", atReference("_open"))),
+	})),
+	Statement: choice(() => grammar, "VarSt"),
+	VarSt: new RecordParser(() => ({
+		variables: new CommaParser(grammar.VarDecl, "variable declaration", 1),
+		"_eq": punctuation.equal
+			.required(parseProblem("Expected a `=` after variable declarations at", atHead)),
+		initialization: new CommaParser(grammar.Expression, "expression", 1),
+		"_semicolon": punctuation.semicolon
+			.required(parseProblem("Expected a `;` after variable initialization at", atHead)),
+	})),
+	VarDecl: new RecordParser(() => ({
+		_var: keywordParser("var"),
+		variable: tokens.iden,
+		t: grammar.Type,
 	})),
 };

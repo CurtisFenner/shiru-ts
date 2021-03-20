@@ -21,9 +21,9 @@ interface FnBinding {
 	ast: grammar.Fn,
 }
 
-interface ClassEntityDef {
-	tag: "class",
-	ast: grammar.ClassDefinition,
+interface RecordEntityDef {
+	tag: "record",
+	ast: grammar.RecordDefinition,
 	sourceContext: SourceContext,
 	bindingLocation: ir.SourceLocation,
 
@@ -42,7 +42,7 @@ interface InterfaceEntityDef {
 	typeScope: TypeScope,
 }
 
-type EntityDef = ClassEntityDef | InterfaceEntityDef;
+type EntityDef = RecordEntityDef | InterfaceEntityDef;
 
 interface EntityBinding {
 	canonicalName: string,
@@ -111,7 +111,7 @@ function collectAllEntities(sources: grammar.Source[]) {
 
 			let entity: EntityDef;
 			entity = {
-				tag: "class",
+				tag: "record",
 				ast: definition,
 				bindingLocation,
 
@@ -119,7 +119,7 @@ function collectAllEntities(sources: grammar.Source[]) {
 				sourceContext: null as any,
 
 				typeScope: {
-					// The `This` type keyword cannot be used in class 
+					// The `This` type keyword cannot be used in record
 					// definitions.
 					thisType: null,
 
@@ -201,7 +201,7 @@ function compileConstraint(t: grammar.TypeNamed,
 	if (entity.tag !== "interface") {
 		throw new diagnostics.TypeUsedAsConstraintErr({
 			name: canonicalName,
-			kind: "class",
+			kind: "record",
 			typeLocation: t.location,
 		});
 	}
@@ -241,9 +241,9 @@ function compileType(
 		// Resolve the entity.
 		const canonicalName = resolveEntity(t, sourceContext);
 		const entity = sourceContext.programContext.entitiesByCanonical[canonicalName];
-		// TODO: Check that entity is a class, etc.
+		// TODO: Check that entity is a record, etc.
 
-		if (entity.tag !== "class") {
+		if (entity.tag !== "record") {
 			throw new diagnostics.NonTypeEntityUsedAsTypeErr({
 				entity: canonicalName,
 				entityTag: entity.tag,
@@ -359,7 +359,7 @@ function resolveSourceContext(
 // instantiated by the verifier.
 function collectMembers(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
-	if (entity.tag === "class") {
+	if (entity.tag === "record") {
 		// Bring the type parameters into scope.
 		for (let parameter of entity.ast.typeParameters.parameters) {
 			const existingBinding = entity.typeScope.typeVariables[parameter.name];
@@ -832,11 +832,11 @@ function compileFunction(
 	program.functions[fName] = { signature, body };
 }
 
-function compileClassEntity(
+function compileRecordEntity(
 	program: ir.Program,
-	entity: ClassEntityDef,
+	entity: RecordEntityDef,
 	entityName: string) {
-	// Layout storage for this class.
+	// Layout storage for this record.
 	program.records[entityName] = {
 		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
 		fields: {},
@@ -855,7 +855,7 @@ function compileClassEntity(
 	// TODO: Implement vtable factories.
 }
 
-/// `compileEntity` compiles the indicated entity into classes, functions,
+/// `compileEntity` compiles the indicated entity into records, functions,
 /// interfaces, vtable-factories, etc in the given `program`.
 /// THROWS `SemanticError` if a type-error is discovered within the 
 /// implementation of this entity.
@@ -864,8 +864,8 @@ function compileEntity(
 	programContext: Readonly<ProgramContext>,
 	entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
-	if (entity.tag === "class") {
-		compileClassEntity(program, entity, entityName);
+	if (entity.tag === "record") {
+		compileRecordEntity(program, entity, entityName);
 	} else {
 		throw new Error("Unhandled tag in compileEntity: " + entity.tag);
 	}

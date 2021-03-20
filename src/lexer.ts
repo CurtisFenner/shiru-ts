@@ -121,6 +121,7 @@ export const KEYWORDS = {
 	"or": true,
 	"package": true,
 	"proof": true,
+	"record": true,
 	"requires": true,
 	"return": true,
 	"this": true,

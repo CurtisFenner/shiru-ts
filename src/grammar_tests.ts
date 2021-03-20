@@ -40,18 +40,18 @@ export const tests = {
 			],
 		});
 	},
-	"parse-minimal-class"() {
-		const code = `class A {}`;
+	"parse-minimal-record"() {
+		const code = `record A {}`;
 		const tokens = tokenize(code, "test-file");
-		const ast = grammar.grammar.ClassDefinition.parse(tokens, 0, {});
+		const ast = grammar.grammar.RecordDefinition.parse(tokens, 0, {});
 
 		assert(ast, "is equal to", {
 			object: {
-				tag: "class-definition",
+				tag: "record-definition",
 				entityName: {
 					tag: "type-iden",
 					name: "A",
-					location: { fileID: "test-file", offset: 6, length: 1 },
+					location: { fileID: "test-file", offset: 7, length: 1 },
 				},
 				typeParameters: {
 					parameters: [],
@@ -59,7 +59,7 @@ export const tests = {
 				},
 				fields: [],
 				fns: [],
-				location: { fileID: "test-file", offset: 0, length: 10 },
+				location: { fileID: "test-file", offset: 0, length: 11 },
 			},
 			rest: tokens.length - 1,
 		});
@@ -80,43 +80,43 @@ export const tests = {
 		});
 	},
 	"parse-small-source"() {
-		const source = `package mypackage; class A {} class B {}`;
+		const source = `package mypackage; record A {} record B {}`;
 		const ast = grammar.parseSource(source, "test-file");
 		assert(ast.definitions.length, "is equal to", 2);
 	},
 	"expect-one-type-variable"() {
-		const source = `package example; class A[] {}`;
+		const source = `package example; record A[] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
 				"Expected a type variable at",
-				{ fileID: "test-a", offset: 25, length: 1 },
+				{ fileID: "test-a", offset: 26, length: 1 },
 			],
 		});
 	},
 	"expect-some-type-constraints"() {
-		const source = `package example; class A[#X | ] {}`;
+		const source = `package example; record A[#X | ] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
 				"Expected at least one type constraint at",
-				{ fileID: "test-a", offset: 30, length: 1 },
+				{ fileID: "test-a", offset: 31, length: 1 },
 			],
 		});
 	},
 	"expect-some-type-constraint-is"() {
-		const source = `package example; class A[#X | #X] {}`;
+		const source = `package example; record A[#X | #X] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
 				"Expected `is` after type constraint subject at",
-				{ fileID: "test-a", offset: 32, length: 1 },
+				{ fileID: "test-a", offset: 33, length: 1 },
 			],
 		});
 	},
 	"expect-some-type-constraint-name"() {
-		const source = `package example; class A[#X | #X is] {}`;
+		const source = `package example; record A[#X | #X is] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
 				"Expected a constraint to be named after `is` at",
-				{ fileID: "test-a", offset: 35, length: 1 },
+				{ fileID: "test-a", offset: 36, length: 1 },
 			],
 		});
 	},

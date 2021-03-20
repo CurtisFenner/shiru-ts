@@ -115,7 +115,7 @@ export class NonTypeEntityUsedAsTypeErr extends SemanticError {
 }
 
 export class TypeUsedAsConstraintErr extends SemanticError {
-	constructor(args: { name?: string, kind: "class" | "keyword", typeLocation: SourceLocation }) {
+	constructor(args: { name?: string, kind: "record" | "keyword", typeLocation: SourceLocation }) {
 		super([
 			args.name === undefined
 				? "A " + args.kind + " type "

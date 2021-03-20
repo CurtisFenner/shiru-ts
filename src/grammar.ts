@@ -204,6 +204,7 @@ const keywords = {
 	interface: keywordParser("interface"),
 	package: keywordParser("package"),
 	proof: keywordParser("proof"),
+	record: keywordParser("record"),
 	return: keywordParser("return"),
 	var: keywordParser("var"),
 };
@@ -254,10 +255,10 @@ export interface Import {
 	imported: ImportOfObject | ImportOfPackage,
 }
 
-export type Definition = ClassDefinition;
+export type Definition = RecordDefinition;
 
-export interface ClassDefinition {
-	tag: "class-definition",
+export interface RecordDefinition {
+	tag: "record-definition",
 	entityName: TypeIdenToken,
 	typeParameters: TypeParameters,
 	fields: Field[],
@@ -439,7 +440,6 @@ export type ExpressionAtom = ExpressionParenthesized
 
 type ASTs = {
 	Block: Block,
-	ClassDefinition: ClassDefinition,
 	Definition: Definition,
 	Expression: Expression,
 	ExpressionAccess: ExpressionAccess,
@@ -462,6 +462,7 @@ type ASTs = {
 	InterfaceMember: InterfaceMember,
 	PackageDef: PackageDef,
 	PackageQualification: PackageQualification,
+	RecordDefinition: RecordDefinition,
 	ReturnSt: ReturnSt,
 	Source: Source,
 	Statement: Statement,
@@ -484,19 +485,6 @@ export const grammar: ParsersFor<Token, ASTs> = {
 				"Expected a `}` at", atHead,
 				"to complete a block started at", atReference("_open"))),
 	})),
-	ClassDefinition: new StructParser(() => ({
-		_class: keywords.class,
-		tag: new ConstParser("class-definition"),
-		entityName: tokens.typeIden,
-		typeParameters: grammar.TypeParameters
-			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
-		_open: punctuation.curlyOpen,
-		fields: new RepeatParser(grammar.Field),
-		fns: new RepeatParser(grammar.Fn),
-		_close: punctuation.curlyClose
-			.required(parseProblem("Expected a `}` at", atHead,
-				"to complete a class definition beginning at", atReference("_open"))),
-	})),
 	TypeNamed: new StructParser(() => ({
 		packageQualification: grammar.PackageQualification
 			.otherwise(null),
@@ -504,7 +492,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tag: new ConstParser("named"),
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
-	Definition: new ChoiceParser(() => [grammar.ClassDefinition]),
+	Definition: new ChoiceParser(() => [grammar.RecordDefinition]),
 	Expression: new StructParser(() => ({
 		left: grammar.ExpressionOperand,
 		operations: new RepeatParser(grammar.ExpressionOperation),
@@ -648,6 +636,19 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		package: tokens.iden,
 		_dot: punctuation.dot
 			.required(parseProblem("Expected a `.` after a package name at", atHead)),
+	})),
+	RecordDefinition: new StructParser(() => ({
+		_record: keywords.record,
+		tag: new ConstParser("record-definition"),
+		entityName: tokens.typeIden,
+		typeParameters: grammar.TypeParameters
+			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
+		_open: punctuation.curlyOpen,
+		fields: new RepeatParser(grammar.Field),
+		fns: new RepeatParser(grammar.Fn),
+		_close: punctuation.curlyClose
+			.required(parseProblem("Expected a `}` at", atHead,
+				"to complete a record definition beginning at", atReference("_open"))),
 	})),
 	ReturnSt: new StructParser(() => ({
 		_return: keywords.return,

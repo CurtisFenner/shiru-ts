@@ -34,10 +34,10 @@ interface VTableEntry {
 /// Replace all occurrences of the specified type-variables in the constraint 
 /// parameter.
 function constraintSubstitute(c: ir.ConstraintParameter, map: Map<number, ir.Type>): ir.ConstraintParameter {
-	const args = c.interface_arguments.map(t => ir.typeSubstitute(t, map));
+	const args = c.subjects.map(t => ir.typeSubstitute(t, map));
 	return {
-		interface: c.interface,
-		interface_arguments: args,
+		constraint: c.constraint,
+		subjects: args,
 	};
 }
 
@@ -57,13 +57,13 @@ function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Typ
 			}
 			return pattern.id.type_variable_id === subject.id.type_variable_id;
 		}
-	} else if (pattern.tag === "type-class" && subject.tag === "type-class") {
-		if (pattern.class.class_id !== subject.class.class_id) {
+	} else if (pattern.tag === "type-compound" && subject.tag === "type-compound") {
+		if (pattern.record.record_id !== subject.record.record_id) {
 			return false;
 		}
 
 		if (pattern.type_arguments.length !== subject.type_arguments.length) {
-			throw new Error(`Arity of type \`${pattern.class.class_id}\` is inconsistent.`);
+			throw new Error(`Arity of type \`${pattern.record.record_id}\` is inconsistent.`);
 		}
 
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -133,8 +133,8 @@ class StackFrame {
 
 	resolveVTableFromConstraint(constraint: ir.ConstraintParameter): VTable {
 		return this.resolveVTable(
-			constraint.interface,
-			constraint.interface_arguments);
+			constraint.constraint,
+			constraint.subjects);
 	}
 
 	resolveVTable(interfaceID: ir.InterfaceID, interfaceArguments: ir.Type[]): VTable {
@@ -178,7 +178,7 @@ class StackFrame {
 						return {
 							interfaceID: resolved.interfaceID,
 							// Use the form of the interface arguments that the callee expects.
-							interfaceArguments: c.interface_arguments,
+							interfaceArguments: c.subjects,
 							entries: resolved.entries,
 						};
 					});
@@ -264,7 +264,7 @@ function interpretStep(program: ir.Program, stack: StackFrame[], foreign: Record
 		frame.setVariable(op.destination, instance.fields[op.field]);
 		frame.ip[frame.ip.length - 1] += 1;
 		return;
-	} else if (op.tag == "op-new-class") {
+	} else if (op.tag == "op-new-record") {
 		let instance: ClassValue = {
 			sort: "class",
 			fields: {},
@@ -327,19 +327,19 @@ function interpretStep(program: ir.Program, stack: StackFrame[], foreign: Record
 
 		const constraintArguments: VTable[] = [];
 		for (let constraintParameter of signature.constraint_parameters) {
-			const interfaceElements = constraintParameter.interface_arguments;
+			const interfaceElements = constraintParameter.subjects;
 
 			const concreteInterfaceArguments = interfaceElements.map(u => ir.typeSubstitute(u, parameterMapping));
-			const resolved = frame.resolveVTable(constraintParameter.interface, concreteInterfaceArguments);
+			const resolved = frame.resolveVTable(constraintParameter.constraint, concreteInterfaceArguments);
 
 			// For the purpose of identification within the new stack-frame, the
 			// interface-parameters should be in the original uninstantiated 
 			// form.
 			constraintArguments.push({
-				interfaceID: constraintParameter.interface,
+				interfaceID: constraintParameter.constraint,
 				// This v-table must be identifiable within the local 
 				// type-context of the called function.
-				interfaceArguments: constraintParameter.interface_arguments,
+				interfaceArguments: constraintParameter.subjects,
 				// The identifications of these v-table entries can be 
 				// instantiated, since they will be overridden elsewhere.
 				entries: resolved.entries,
@@ -400,7 +400,7 @@ interface SyntheticCloseScope {
 
 /// isLast: appended to for each visited element of ip, whether or not that
 ///         index can be incremented without leaving bounds.
-function getOp(base: ir.Op, ip: number[], from: number = 0): ir.Op | SyntheticCloseScope {
+function getOp(base: ir.Op | ir.OpBlock, ip: number[], from: number = 0): ir.Op | ir.OpBlock | SyntheticCloseScope {
 	if (from >= ip.length) {
 		return base;
 	}

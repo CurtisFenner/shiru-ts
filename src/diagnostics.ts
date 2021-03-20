@@ -1,6 +1,30 @@
 import { SourceLocation } from "./ir";
 import { ErrorElement } from "./lexer";
 
+function pluralize(n: number, singular: string, plural = singular + "s"): string {
+	if (n === 1) {
+		return singular;
+	}
+	return plural;
+}
+
+function nth(n: number): string {
+	if (n % 100 == 11) {
+		return n + "th";
+	} else if (n % 100 == 12) {
+		return n + "th";
+	} else if (n % 100 == 13) {
+		return n + "th";
+	} else if (n % 10 == 1) {
+		return n + "st";
+	} else if (n % 10 == 2) {
+		return n + "nd";
+	} else if (n % 10 == 3) {
+		return n + "rd";
+	}
+	return n + "th";
+}
+
 export class SemanticError {
 	constructor(public message: ErrorElement[]) { }
 
@@ -98,6 +122,83 @@ export class TypeUsedAsConstraintErr extends SemanticError {
 				: "The " + args.kind + " type `" + args.name + "` ",
 			"cannot be used as a constraint like it is at",
 			args.typeLocation,
+		]);
+	}
+}
+
+export class VariableRedefinedErr extends SemanticError {
+	constructor(args: { name: string, firstLocation: SourceLocation, secondLocation: SourceLocation }) {
+		super([
+			"The variable `" + args.name + "` was defined for a second time at",
+			args.secondLocation,
+			"The first definition was at",
+			args.firstLocation,
+		]);
+	}
+}
+
+export class VariableNotDefinedErr extends SemanticError {
+	constructor(args: { name: string, referencedAt: SourceLocation }) {
+		super([
+			"The variable `" + args.name + "` has not been defined, but it was referenced at",
+			args.referencedAt,
+		]);
+	}
+}
+
+export class MultiExpressionGroupedErr extends SemanticError {
+	constructor(args: {
+		location: SourceLocation,
+		valueCount: number,
+		grouping: "parens" | "field" | "method",
+	}) {
+		super([
+			"An expression has " + args.valueCount + " values and so cannot be grouped",
+			"by " + args.grouping + " at",
+			args.location,
+		]);
+	}
+}
+
+export class ValueCountMismatchErr extends SemanticError {
+	constructor(args: { actualCount: number, actualLocation: SourceLocation, expectedCount: number, expectedLocation: SourceLocation }) {
+		super([
+			"An expression has " + args.actualCount + " " + pluralize(args.actualCount, "value") + " at",
+			args.actualLocation,
+			"but " + args.expectedCount + " " + pluralize(args.expectedCount, "value was", "values were") + " expected at",
+			args.expectedLocation,
+		]);
+	}
+}
+
+export class TypeMismatchErr extends SemanticError {
+	constructor(args: {
+		givenType: string,
+		givenLocation: SourceLocation,
+		givenIndex?: { index0: number, count: number },
+		expectedType: string,
+		expectedLocation: SourceLocation,
+	}) {
+		const value = args.givenIndex && args.givenIndex.count !== 1
+			? `${nth(args.givenIndex.count + 1)} value (of ${args.givenIndex.count})`
+			: "value";
+		super([
+			"A " + value + " with type `" + args.givenType + "` at",
+			args.givenLocation,
+			"cannot be converted to the type `" + args.expectedType + "` as expected at",
+			args.expectedLocation,
+		]);
+	}
+}
+
+export class FieldAccessOnNonCompoundErr extends SemanticError {
+	constructor(args: {
+		accessedType: string,
+		accessedLocation: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.accessedType + "` is not a compound type so a field access is illegal at",
+			args.accessedLocation,
 		]);
 	}
 }

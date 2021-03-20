@@ -265,6 +265,29 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 		// Parse a line comment.
 	} else if ("0" <= head && head <= "9") {
 		// Parse a number literal.
+		const breaks = findWordBreak(blob, from, fileID);
+		const location = {
+			fileID, offset: from, length: breaks - from,
+		};
+
+		const slice = blob.substr(from, breaks - from);
+		if (!/^[0-9]+$/.test(blob.substr(from, breaks - from)) || slice.length > 10) {
+			throw new LexError([
+				"Found a malformed integer literal at",
+				location,
+			]);
+		}
+
+		const value = parseInt(slice);
+
+		return {
+			token: {
+				tag: "number-literal",
+				value,
+				location,
+			},
+			consumed: breaks - from,
+		};
 	} else if (head === "#") {
 		// Parse a type variable or keyword.
 		const first = blob[from + 1];

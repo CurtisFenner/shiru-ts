@@ -66,7 +66,7 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 
 		const program = semantics.compileSources([ast]);
-		assert(program.classes, "is equal to", {});
+		assert(program.records, "is equal to", {});
 		assert(program.functions, "is equal to", {});
 	},
 	"redefined-field-in-class"() {
@@ -92,5 +92,44 @@ export const tests = {
 				{ fileID: "test-file", offset: 34, length: 1 },
 			],
 		});
-	}
+	},
+	"access-field-in-int"() {
+		const source = `package example; class A { fn f(): Unit { var a: Int = 1; var b: A = a; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"A value with type `Int` at",
+				{ fileID: "test-file", offset: 69, length: 1 },
+				"cannot be converted to the type `example.A` as expected at",
+				{ fileID: "test-file", offset: 62, length: 1 },
+			],
+		});
+	},
+	"return-too-many-values"() {
+		const source = `package example; class A { fn f(): Int { return 1, 1; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"An expression has 2 values at",
+				{ fileID: "test-file", offset: 48, length: 4 },
+				"but 1 value was expected at",
+				{ fileID: "test-file", offset: 35, length: 3 },
+			],
+		});
+	},
+	"return-too-few-values"() {
+		const source = `package example; class A { fn f(): Int, Int { return 1; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"An expression has 1 value at",
+				{ fileID: "test-file", offset: 53, length: 1 },
+				"but 2 values were expected at",
+				{ fileID: "test-file", offset: 35, length: 8 },
+			],
+		});
+	},
 };

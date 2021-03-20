@@ -145,8 +145,8 @@ function negate(constraint: smt.UFConstraint): smt.UFConstraint {
 }
 
 function showType(t: ir.Type): string {
-	if (t.tag === "type-class") {
-		return t.class.class_id + "[" + t.type_arguments.map(showType).join(",") + "]";
+	if (t.tag === "type-compound") {
+		return t.record.record_id + "[" + t.type_arguments.map(showType).join(",") + "]";
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
 	} else if (t.tag === "type-variable") {
@@ -202,7 +202,7 @@ function addConditionalClause(state: VerificationState, clause: smt.UFConstraint
 
 // MUTATES the verification state parameter, to add additional clauses that are 
 // ensured after the execution (and termination) of this operation.
-function traverse(program: ir.Program, op: ir.Op, state: VerificationState, context: VerificationContext): void {
+function traverse(program: ir.Program, op: ir.Op | ir.OpBlock, state: VerificationState, context: VerificationContext): void {
 	if (op.tag === "op-assign") {
 		// Update the last assignment.
 		// NOTE that since this creates no new objects, this does not require
@@ -270,7 +270,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-field") {
 	} else if (op.tag === "op-foreign") {
 
-	} else if (op.tag === "op-new-class") {
+	} else if (op.tag === "op-new-record") {
 
 	} else if (op.tag === "op-proof") {
 		return traverse(program, op.body, state, context);

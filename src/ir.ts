@@ -11,6 +11,24 @@ export interface SourceLocation {
 	length: number,
 }
 
+export function locationSpan(from: SourceLocation, to: SourceLocation) {
+	return {
+		fileID: from.fileID,
+		offset: from.offset,
+		length: to.offset + to.length - from.offset,
+	};
+}
+
+export function locationsSpan(set: { location: SourceLocation }[]): SourceLocation {
+	const smallest = Math.min(...set.map(x => x.location.offset));
+	const largest = Math.max(...set.map(x => x.location.offset + x.location.length));
+	return {
+		fileID: set[0].location.fileID,
+		offset: smallest,
+		length: largest - smallest,
+	};
+}
+
 /// `TypePrimitive` represents one of the "built-in" primitive types:
 /// `"Bytes"` is the type of immutable finite sequences of octets.
 /// `"Unit"` is the type of a single value: "unit".
@@ -21,13 +39,18 @@ export interface TypePrimitive {
 	primitive: "Bytes" | "Unit" | "Boolean" | "Int",
 };
 
-/// `TypeClass` represents the type which is instances of a given class.
-/// A "class" is a product (and "quotient") of fields.
-export interface TypeClass {
-	tag: "type-class",
+export const T_INT: TypePrimitive = { tag: "type-primitive", primitive: "Int" };
+export const T_BOOLEAN: TypePrimitive = { tag: "type-primitive", primitive: "Boolean" };
+export const T_BYTES: TypePrimitive = { tag: "type-primitive", primitive: "Bytes" };
+export const T_UNIT: TypePrimitive = { tag: "type-primitive", primitive: "Unit" };
 
-	/// `class` references a `ClassDefinition` in a `Program`.
-	class: ClassID,
+/// `TypeCompound` represents the type which is an instance of a given entity
+/// type.
+export interface TypeCompound {
+	tag: "type-compound",
+
+	/// `record` references a `RecordDefinition` in a `Program`.
+	record: RecordID,
 
 	type_arguments: Type[],
 };
@@ -39,11 +62,11 @@ export interface TypeVariable {
 	id: TypeVariableID,
 };
 
-export type Type = TypePrimitive | TypeClass | TypeVariable;
+export type Type = TypePrimitive | TypeCompound | TypeVariable;
 
 export type FunctionID = { function_id: string };
 export type VariableID = { variable_id: number };
-export type ClassID = { class_id: string };
+export type RecordID = { record_id: string };
 export type ConstraintID = { constraint_id: number };
 export type InterfaceID = { interface_id: string };
 export type TypeVariableID = { type_variable_id: number };
@@ -85,34 +108,34 @@ export interface OpBranch {
 	falseBranch: OpBlock,
 };
 
-/// `OpNewClass` overwrites a `destination` variable with a newly created 
-/// instance of a specified class.
-export interface OpNewClass {
-	tag: "op-new-class",
-	class: ClassID,
+/// `OpNewRecord` overwrites a `destination` variable with a newly created 
+/// instance of a specified record.
+export interface OpNewRecord {
+	tag: "op-new-record",
+	record: RecordID,
 
 	/// The types of the fields must be the same as the types of the
 	/// `destination` variable's fields (with appropriate instantiation of any
-	/// `parameter`s in the class type).
+	/// `parameter`s in the record type).
 	fields: { [fieldName: string]: VariableID },
 
-	/// The destination must have a class type for the given id.
+	/// The destination must have a type of the specified record.
 	destination: VariableID,
 };
 
 export interface OpField {
 	tag: "op-field",
 
-	/// The `object` variable must be a class type.
+	/// The `object` variable must be a record type.
 	object: VariableID,
 
 	/// The `field` must be one of the keys in the `fields` map of the 
-	/// `ClassDefinition` corresponding to the class type of this `object`.
+	/// `RecordDefinition` corresponding to the record type of this `object`.
 	field: string,
 
 	/// The type of the `destination` variable must be the same as the type of
 	/// the `field` within the `object` variable (with appropriate instantiation
-	/// of any `parameter`s in the class type).
+	/// of any `parameter`s in the record type).
 	destination: VariableID,
 };
 
@@ -206,14 +229,14 @@ export interface OpEq {
 export type LeafOp = OpVar
 	| OpConst
 	| OpAssign
-	| OpNewClass | OpField
+	| OpNewRecord | OpField
 	| OpStaticCall | OpDynamicCall
 	| OpForeign
 	| OpReturn
 	| OpUnreachable
 	| OpEq;
 
-export type Op = OpBlock | OpBranch | OpProof | LeafOp;
+export type Op = OpBranch | OpProof | LeafOp;
 
 export interface IRInterface {
 	// type_parameters.length is the number of type arguments.
@@ -225,13 +248,11 @@ export interface IRInterface {
 };
 
 export interface ConstraintParameter {
-	interface: InterfaceID,
-	interface_arguments: Type[],
+	constraint: InterfaceID,
+	subjects: Type[],
 };
 
 export interface FunctionSignature {
-	parameters: Type[],
-
 	/// The length of `type_parameters` indicates the number of type parameters.
 	/// The names in this array are currently unused.
 	type_parameters: string[],
@@ -240,9 +261,13 @@ export interface FunctionSignature {
 	/// `constraint_parameters`.
 	constraint_parameters: ConstraintParameter[],
 
+	/// `parameters` is the sequence of types for each function parameter.
+	parameters: Type[],
+
+	/// `returns` is the sequence of types for each function return.
 	return_types: Type[],
 
-	// TODO: Add terminationmeasure function.
+	// TODO: Add termination-measure function.
 
 	/// The first `parameters.length` variables are the arguments.
 	/// The Op returns a single boolean, which must be _verified_ to be true at
@@ -260,17 +285,17 @@ export interface FunctionSignature {
 
 export interface IRFunction {
 	signature: FunctionSignature,
-	body: Op,
+	body: OpBlock,
 };
 
-export interface ClassDefinition {
-	/// N.B.: Classes are NOT existential types; while they have type
+export interface RecordDefinition {
+	/// N.B.: Records are NOT existential types; while they have type
 	/// parameters, they do NOT hold constraint implementations. Instead, those
 	/// are passed by callers of methods.
 	// The names in this array are currently unused.
-	parameters: string[],
+	type_parameters: string[],
 
-	/// The fields defined by this class.
+	/// The fields defined by this record.
 	fields: {
 		[field: string]: Type,
 	},
@@ -308,7 +333,7 @@ export interface VTableEntry {
 export interface Program {
 	functions: Record<string, IRFunction>,
 	interfaces: Record<string, IRInterface>,
-	classes: Record<string, ClassDefinition>,
+	records: Record<string, RecordDefinition>,
 
 	foreign: Record<string, FunctionSignature>,
 
@@ -351,8 +376,8 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 		// TODO: Switch to unification?
 		return passed.tag === "type-variable"
 			&& passed.id.type_variable_id === pattern.id.type_variable_id;
-	} else if (pattern.tag === "type-class" && passed.tag === "type-class") {
-		if (pattern.class.class_id !== passed.class.class_id) {
+	} else if (pattern.tag === "type-compound" && passed.tag === "type-compound") {
+		if (pattern.record.record_id !== passed.record.record_id) {
 			return false;
 		}
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -369,10 +394,10 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 }
 
 export function typeSubstitute(t: Type, map: Map<number, Type>): Type {
-	if (t.tag === "type-class") {
+	if (t.tag === "type-compound") {
 		return {
 			tag: t.tag,
-			class: t.class,
+			record: t.record,
 			type_arguments: t.type_arguments.map(a => typeSubstitute(a, map)),
 		};
 	} else if (t.tag === "type-primitive") {

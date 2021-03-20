@@ -140,7 +140,7 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		if (!cmp.eq) {
 			const sa = util.inspect(a, { depth: 16, colors: true });
 			const sb = util.inspect(b, { depth: 16, colors: true });
-			throw new Error(`Expected \n\t${sa}\nto be equal to\n\t${sb}\nbut found difference in path \`${JSON.stringify(cmp.path)}\``);
+			throw new Error(`Expected \n${sa}\nto be equal to\n${sb}\nbut found difference in path \`${JSON.stringify(cmp.path)}\``);
 		}
 	} else if (args[1] === "is array") {
 		const [a, op] = args;
@@ -153,6 +153,9 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		try {
 			f();
 		} catch (e) {
+			if (e instanceof Error) {
+				throw e;
+			}
 			assert(e, "is equal to", expected);
 			threw = true;
 		}

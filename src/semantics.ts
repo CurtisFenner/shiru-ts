@@ -1,7 +1,7 @@
 import * as grammar from "./grammar";
 import * as ir from "./ir";
 import * as diagnostics from "./diagnostics";
-import { execFile } from "child_process";
+import * as lexer from "./lexer";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,
@@ -79,6 +79,9 @@ interface SourceContext {
 	/// This does NOT include an entry for the current package, as explicit
 	/// qualification in that form is not allowed.
 	namespaces: Record<string, PackageBinding>,
+
+	/// `programContext` is a reference to the single common `ProgramContext`.
+	programContext: ProgramContext,
 }
 
 // Collects the set of entities defined across all given sources.
@@ -122,7 +125,7 @@ function collectAllEntities(sources: grammar.Source[]) {
 
 					constraints: [],
 					typeVariables: {},
-					nextTypeVariableID: 0,
+					typeVariableDebugNames: [],
 				},
 
 				// These are filled in by `collectMembers`.
@@ -141,26 +144,21 @@ interface TypeVariableBinding {
 	variable: ir.TypeVariable,
 }
 
-interface TypeConstraint {
-	subjects: ir.Type[],
-	constraint: ir.ConstraintID,
-}
-
 interface TypeScope {
 	thisType: null | ir.TypeVariable,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
 	typeVariables: Record<string, TypeVariableBinding>,
 
-	constraints: TypeConstraint[],
+	constraints: ir.ConstraintParameter[],
 
-	nextTypeVariableID: number,
+	// These names do NOT include "#".
+	typeVariableDebugNames: string[],
 }
 
 function resolveEntity(
 	t: grammar.TypeNamed,
-	sourceContext: Readonly<SourceContext>,
-	programContext: Readonly<ProgramContext>,
+	sourceContext: Readonly<SourceContext>
 ) {
 	if (t.packageQualification !== null) {
 		const namespaceQualifier = t.packageQualification.package.name;
@@ -172,7 +170,7 @@ function resolveEntity(
 			});
 		}
 
-		const entitiesInNamespace = programContext.canonicalByQualifiedName[namespaceQualifier];
+		const entitiesInNamespace = sourceContext.programContext.canonicalByQualifiedName[namespaceQualifier];
 		const canonicalName = entitiesInNamespace[t.entity.name];
 		if (!canonicalName) {
 			throw new diagnostics.NoSuchEntityErr({
@@ -198,7 +196,7 @@ function compileConstraint(t: grammar.TypeNamed,
 	scope: TypeScope,
 	programContext: Readonly<ProgramContext>): ir.ConstraintParameter {
 	// Resolve the entity.
-	const canonicalName = resolveEntity(t, sourceContext, programContext);
+	const canonicalName = resolveEntity(t, sourceContext);
 	const entity = programContext.entitiesByCanonical[canonicalName];
 	if (entity.tag !== "interface") {
 		throw new diagnostics.TypeUsedAsConstraintErr({
@@ -208,18 +206,18 @@ function compileConstraint(t: grammar.TypeNamed,
 		});
 	}
 
-	const args = t.arguments.map(a => compileType(a, sourceContext, scope, programContext));
+	const args = t.arguments.map(a => compileType(a, scope, sourceContext));
 
 	return {
-		interface: { interface_id: canonicalName },
-		interface_arguments: args,
+		constraint: { interface_id: canonicalName },
+		subjects: args,
 	};
 }
 
-function compileType(t: grammar.Type,
-	sourceContext: Readonly<SourceContext>,
+function compileType(
+	t: grammar.Type,
 	scope: TypeScope,
-	programContext: Readonly<ProgramContext>): ir.Type {
+	sourceContext: Readonly<SourceContext>): ir.Type {
 	if (t.tag === "type-keyword") {
 		if (t.keyword === "This") {
 			if (scope.thisType === null) {
@@ -241,8 +239,8 @@ function compileType(t: grammar.Type,
 		}
 	} else if (t.tag === "named") {
 		// Resolve the entity.
-		const canonicalName = resolveEntity(t, sourceContext, programContext);
-		const entity = programContext.entitiesByCanonical[canonicalName];
+		const canonicalName = resolveEntity(t, sourceContext);
+		const entity = sourceContext.programContext.entitiesByCanonical[canonicalName];
 		// TODO: Check that entity is a class, etc.
 
 		if (entity.tag !== "class") {
@@ -255,10 +253,10 @@ function compileType(t: grammar.Type,
 		}
 
 		const typeArguments = t.arguments.map(a =>
-			compileType(a, sourceContext, scope, programContext));
+			compileType(a, scope, sourceContext));
 		return {
-			tag: "type-class",
-			class: { class_id: canonicalName },
+			tag: "type-compound",
+			record: { record_id: canonicalName },
 			type_arguments: typeArguments,
 		};
 	}
@@ -331,6 +329,7 @@ function resolveSourceContext(
 	const sourceContext: SourceContext = {
 		entityAliases: {},
 		namespaces: {},
+		programContext,
 	};
 
 	// Bring all entities defined within this package into scope.
@@ -375,12 +374,12 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 				variable: {
 					tag: "type-variable",
 					id: {
-						type_variable_id: entity.typeScope.nextTypeVariableID
+						type_variable_id: entity.typeScope.typeVariableDebugNames.length,
 					},
 				},
 				bindingLocation: parameter.location,
 			};
-			entity.typeScope.nextTypeVariableID += 1;
+			entity.typeScope.typeVariableDebugNames.push(parameter.name);
 		}
 		for (let c of entity.ast.typeParameters.constraints) {
 			if (c.constraint.tag === "type-keyword") {
@@ -406,7 +405,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const fieldType = compileType(field.t,
-				entity.sourceContext, entity.typeScope, programContext);
+				entity.typeScope, entity.sourceContext);
 
 			entity.fields[fieldName] = {
 				nameLocation: field.name.location,
@@ -436,12 +435,12 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const parameterTypes: TypeBinding[] = fn.signature.parameters.map(t => ({
-				t: compileType(t.t, entity.sourceContext, entity.typeScope, programContext),
+				t: compileType(t.t, entity.typeScope, entity.sourceContext),
 				location: t.t.location,
 			}));
 
 			const returnTypes: TypeBinding[] = fn.signature.returns.map(t => ({
-				t: compileType(t, entity.sourceContext, entity.typeScope, programContext),
+				t: compileType(t, entity.typeScope, entity.sourceContext),
 				location: t.location,
 			}));
 
@@ -458,23 +457,399 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 	throw new Error("TODO: collectMembers for unhandled " + entity.ast.tag);
 }
 
+function canonicalFunctionName(entityName: string, memberName: string) {
+	return entityName + "." + memberName;
+}
+
+interface FunctionContext {
+	/// `returnsTo` indicates the types that the containing function returns,
+	/// and where those return types can be found annotated in the source.
+	returnsTo: { t: ir.Type, location: ir.SourceLocation }[],
+
+	sourceContext: SourceContext,
+}
+
+interface VariableBinding {
+	bindingLocation: ir.SourceLocation,
+	t: ir.Type,
+	id: ir.VariableID,
+}
+
+class VariableStack {
+	private variables: Record<string, VariableBinding> = {};
+	private stack: string[] = [];
+	private blocks: number[] = [];
+
+	/// THROWS SemanticError when a variable of this name is already in scope.
+	defineVariable(name: string, t: ir.Type, location: ir.SourceLocation): VariableBinding {
+		const existing = this.variables[name]
+		if (existing !== undefined) {
+			throw new diagnostics.VariableRedefinedErr({
+				name,
+				firstLocation: existing.bindingLocation,
+				secondLocation: location,
+			});
+		}
+		this.variables[name] = {
+			bindingLocation: location,
+			t,
+			id: { variable_id: this.stack.length },
+		};
+		this.stack.push(name);
+		return this.variables[name];
+	}
+
+	defineTemporary(t: ir.Type, location: ir.SourceLocation) {
+		const name = "$" + this.stack.length;
+		return this.defineVariable(name, t, location);
+	}
+
+	/// THROWS SemanticError when a variable of this name is not in scope.
+	resolve(variable: lexer.IdenToken): VariableBinding {
+		const def = this.variables[variable.name];
+		if (def === undefined) {
+			throw new diagnostics.VariableNotDefinedErr({
+				name: variable.name,
+				referencedAt: variable.location,
+			});
+		}
+		return def;
+	}
+
+	openBlock() {
+		this.blocks.push(this.stack.length);
+	}
+
+	closeBlock() {
+		const start = this.blocks.pop();
+		if (start === undefined) throw new Error("block is not open");
+		const removed = this.stack.splice(start);
+		for (const r of removed) {
+			delete this.variables[r];
+		}
+	}
+}
+
+interface ValueInfo {
+	values: { t: ir.Type, id: ir.VariableID }[],
+	location: ir.SourceLocation,
+}
+
+function compileExpressionAtom(
+	e: grammar.ExpressionAtom,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext): ValueInfo {
+	if (e.tag === "iden") {
+		const v = stack.resolve(e);
+		return {
+			values: [{ t: v.t, id: v.id }],
+			location: e.location,
+		};
+	} else if (e.tag === "paren") {
+		const component = compileExpression(e.expression, ops, stack, typeScope, context);
+		if (component.values.length !== 1) {
+			// TODO: Include information from the value info to explain why this
+			// has multiple values.
+			throw new diagnostics.MultiExpressionGroupedErr({
+				valueCount: component.values.length,
+				location: e.location,
+				grouping: "parens",
+			});
+		}
+		return component;
+	} else if (e.tag === "number-literal") {
+		const v = stack.defineTemporary(ir.T_INT, e.location);
+		ops.push({
+			tag: "op-var",
+			type: v.t,
+		});
+		ops.push({
+			tag: "op-const",
+			destination: v.id,
+			value: e.value,
+		});
+		return { values: [{ t: v.t, id: v.id }], location: e.location };
+	}
+
+	throw new Error("TODO: Unhandled tag `" + e.tag + "` in compileExpressionAtom");
+}
+
+function compileOperand(
+	e: grammar.ExpressionOperand,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext): ValueInfo {
+	let value = compileExpressionAtom(e.atom, ops, stack, typeScope, context);
+	for (const access of e.accesses) {
+		if (value.values.length !== 1) {
+			throw new diagnostics.MultiExpressionGroupedErr({
+				location: value.location,
+				valueCount: value.values.length,
+				grouping: access.tag,
+			});
+		}
+		const base = value.values[0];
+
+		if (access.tag === "field") {
+			if (base.t.tag !== "type-compound") {
+				throw new diagnostics.FieldAccessOnNonCompoundErr({
+					accessedType: displayType(base.t, typeScope, context.sourceContext),
+					accessedLocation: access.fieldName.location,
+				});
+			}
+			throw new Error("TODO: compileOperand field access");
+		} else if (access.tag === "method") {
+			throw new Error("TODO: compileOperand method access");
+		} else {
+			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
+		}
+	}
+
+	return value;
+
+	throw new Error("TODO:");
+}
+
+function compileExpression(
+	e: grammar.Expression,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext): ValueInfo {
+
+	let left = compileOperand(e.left, ops, stack, typeScope, context);
+
+	if (e.operations.length !== 0) {
+		if (e.operations.length > 1) {
+			throw new Error("TODO: Handle more than 1 operation. (Use parentheses)");
+		}
+
+		const operand = e.operations[1];
+		const right = compileOperand(operand.right, ops, stack, typeScope, context);
+		throw new Error("TODO: Invoke correct method/foreign");
+	}
+
+	return left;
+}
+
+/// `displayType` formats the given IR `Type` as a string, potentially formatted
+/// for the given `SourceContext` (considering import aliases and such).
+function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: Readonly<SourceContext>): string {
+	if (t.tag === "type-compound") {
+		const base = t.record.record_id;
+		const args = t.type_arguments.map(x => displayType(x, typeScope, sourceContext));
+		if (args.length === 0) {
+			return base;
+		} else {
+			return base + "[" + args.join(", ") + "]";
+		}
+	} else if (t.tag === "type-primitive") {
+		// TODO: Text vs String vs Bytes?
+		return t.primitive;
+	} else if (t.tag == "type-variable") {
+		return "#" + typeScope.typeVariableDebugNames[t.id.type_variable_id];
+	} else {
+		throw new Error("displayType: unhandled tag `" + t["tag"] + "`");
+	}
+}
+
+/// `compileAssignment` adds operations to `ops` to move the value from the 
+/// source variable to the destination variable.
+/// THROWS a `SemanticError` if doing such is a type error.
+function compileAssignment(
+	value: { tuple: ValueInfo, i: number },
+	destination: VariableBinding,
+	ops: ir.Op[],
+	typeScope: Readonly<TypeScope>,
+	context: FunctionContext,
+) {
+	const sourceType = value.tuple.values[value.i].t;
+
+	if (!ir.equalTypes(sourceType, destination.t)) {
+		throw new diagnostics.TypeMismatchErr({
+			givenType: displayType(sourceType, typeScope, context.sourceContext),
+			givenLocation: value.tuple.location,
+			expectedType: displayType(destination.t, typeScope, context.sourceContext),
+			expectedLocation: destination.bindingLocation,
+		});
+	}
+
+	ops.push({
+		tag: "op-assign",
+		destination: destination.id,
+		source: value.tuple.values[value.i].id,
+	});
+}
+
+function compileVarSt(
+	statement: grammar.VarSt,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext) {
+	const values = [];
+	for (const e of statement.initialization) {
+		const tuple = compileExpression(e, ops, stack, typeScope, context);
+		for (let i = 0; i < tuple.values.length; i++) {
+			values.push({ tuple, i });
+		}
+	}
+
+	const destinations = [];
+	for (const v of statement.variables) {
+		const t = compileType(v.t, typeScope, context.sourceContext);
+		const d = stack.defineVariable(v.variable.name, t, v.variable.location);
+		destinations.push(d);
+	}
+
+	if (values.length !== destinations.length) {
+		throw new diagnostics.ValueCountMismatchErr({
+			actualCount: values.length,
+			actualLocation: ir.locationsSpan(statement.initialization),
+			expectedCount: destinations.length,
+			expectedLocation: ir.locationsSpan(statement.variables),
+		});
+	}
+
+	for (let i = 0; i < values.length; i++) {
+		compileAssignment(values[i], destinations[i], ops, typeScope, context);
+	}
+}
+
+function compileReturnSt(
+	statement: grammar.ReturnSt,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext) {
+	const values = [];
+	for (const e of statement.values) {
+		const tuple = compileExpression(e, ops, stack, typeScope, context);
+		for (let i = 0; i < tuple.values.length; i++) {
+			values.push({ tuple, i });
+		}
+	}
+
+	if (values.length !== context.returnsTo.length) {
+		const signatureReturn = ir.locationsSpan(context.returnsTo);
+		throw new diagnostics.ValueCountMismatchErr({
+			actualCount: values.length,
+			actualLocation: ir.locationsSpan(statement.values),
+			expectedCount: context.returnsTo.length,
+			expectedLocation: signatureReturn,
+		});
+	}
+	let op: ir.OpReturn = { tag: "op-return", sources: [] };
+	for (let i = 0; i < values.length; i++) {
+		const v = values[i];
+		const source = v.tuple.values[v.i];
+		op.sources.push(source.id);
+
+		const destination = context.returnsTo[i];
+		if (!ir.equalTypes(source.t, destination.t)) {
+			throw new diagnostics.TypeMismatchErr({
+				givenType: displayType(source.t, typeScope, context.sourceContext),
+				givenLocation: v.tuple.location,
+				givenIndex: { index0: v.i, count: v.tuple.values.length },
+				expectedType: displayType(destination.t, typeScope, context.sourceContext),
+				expectedLocation: destination.location,
+			});
+		}
+	}
+	ops.push(op);
+}
+
+function compileStatement(
+	statement: grammar.Statement,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext) {
+	if (statement.tag === "var") {
+		compileVarSt(statement, ops, stack, typeScope, context);
+		return;
+	} else if (statement.tag === "return") {
+		compileReturnSt(statement, ops, stack, typeScope, context);
+	}
+	throw new Error("Unhandled tag in compileStatement `" + statement.tag + "`");
+}
+
+function compileBlock(
+	block: grammar.Block,
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext): ir.OpBlock {
+	const ops: ir.Op[] = [];
+	stack.openBlock();
+
+	for (const s of block.statements) {
+		compileStatement(s, ops, stack, typeScope, context);
+	}
+
+	stack.closeBlock();
+	return {
+		tag: "op-block",
+		ops: ops,
+	};
+}
+
+function compileFunction(
+	program: ir.Program,
+	def: FnBinding,
+	fName: string,
+	sourceContext: SourceContext,
+	typeScope: TypeScope) {
+	const signature: ir.FunctionSignature = {
+		type_parameters: typeScope.typeVariableDebugNames,
+		constraint_parameters: typeScope.constraints,
+
+		parameters: [],
+		return_types: [],
+
+		// TODO:
+		preconditions: [],
+		postconditions: [],
+	};
+	const stack = new VariableStack();
+	for (const p of def.ast.signature.parameters) {
+		const t = compileType(p.t, typeScope, sourceContext);
+		signature.parameters.push(t);
+		stack.defineVariable(p.name.name, t, p.name.location);
+	}
+	const context: FunctionContext = {
+		returnsTo: [],
+		sourceContext,
+	};
+	for (const r of def.ast.signature.returns) {
+		const t = compileType(r, typeScope, sourceContext);
+		signature.return_types.push(t);
+		context.returnsTo.push({ t, location: r.location });
+	}
+	const body = compileBlock(def.ast.body, stack, typeScope, context);
+	program.functions[fName] = { signature, body };
+}
+
 function compileClassEntity(
 	program: ir.Program,
 	entity: ClassEntityDef,
-	programContext: Readonly<ProgramContext>,
 	entityName: string) {
 	// Layout storage for this class.
-	program.classes[entityName] = {
-		parameters: entity.ast.typeParameters.parameters.map(x => x.name),
+	program.records[entityName] = {
+		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
 		fields: {},
 	};
-	for (let f in entity.fields) {
-		program.classes[entityName].fields[f] = entity.fields[f].t;
+	for (const f in entity.fields) {
+		program.records[entityName].fields[f] = entity.fields[f].t;
 	}
 
 	// Implement functions.
-	for (let f in entity.fns) {
+	for (const f in entity.fns) {
 		const def = entity.fns[f];
+		const fName = canonicalFunctionName(entityName, f);
+		compileFunction(program, def, fName, entity.sourceContext, entity.typeScope);
 	}
 
 	// TODO: Implement vtable factories.
@@ -490,7 +865,7 @@ function compileEntity(
 	entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
 	if (entity.tag === "class") {
-		compileClassEntity(program, entity, programContext, entityName);
+		compileClassEntity(program, entity, entityName);
 	} else {
 		throw new Error("Unhandled tag in compileEntity: " + entity.tag);
 	}
@@ -511,7 +886,6 @@ export function compileSources(sources: grammar.Source[]): ir.Program {
 
 	// Resolve members of entities, without checking the validity of
 	// type-constraints.
-
 	for (let canonicalEntityName in programContext.entitiesByCanonical) {
 		collectMembers(programContext, canonicalEntityName);
 	}
@@ -519,7 +893,7 @@ export function compileSources(sources: grammar.Source[]): ir.Program {
 	const program: ir.Program = {
 		functions: {},
 		interfaces: {},
-		classes: {},
+		records: {},
 		foreign: {},
 		globalVTableFactories: {},
 	};

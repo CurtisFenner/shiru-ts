@@ -102,5 +102,32 @@ export const tests = {
 			"Found an unexpected symbol at",
 			{ fileID: "test-file", offset: 6, length: 1 },
 		]));
-	}
+	},
+	"basic-integer"() {
+		const blob = `1 12`;
+		const tokens = tokenize(blob, "test-file");
+		assert(tokens, "is equal to", [
+			{
+				tag: "number-literal",
+				value: 1,
+				location: { fileID: "test-file", offset: 0, length: 1 },
+			},
+			{
+				tag: "number-literal",
+				value: 12,
+				location: { fileID: "test-file", offset: 2, length: 2 },
+			},
+			{
+				tag: "eof",
+				location: { fileID: "test-file", offset: 4, length: 0 },
+			},
+		]);
+	},
+	"invalid-integer"() {
+		const blob = `1b2`;
+		assert(() => tokenize(blob, "test-file"), "throws", new LexError([
+			"Found a malformed integer literal at",
+			{ fileID: "test-file", offset: 0, length: 3 }
+		]));
+	},
 };

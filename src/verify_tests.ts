@@ -3,7 +3,7 @@ import { Program } from "./ir";
 export const tests = {
 	"basic-verification"() {
 		const program: Program = {
-			classes: {},
+			records: {},
 			functions: {},
 			interfaces: {},
 			foreign: {},

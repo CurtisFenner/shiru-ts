@@ -1,104 +1,97 @@
 import { assert } from "./test";
-import * as IR from "./ir";
+import * as ir from "./ir";
 import type { Value } from "./interpreter"
 import { interpret } from "./interpreter";
 
-const T_INT: IR.Type = { tag: "type-primitive", primitive: "Int" } as const;
-const T_BOOL: IR.Type = { tag: "type-primitive", primitive: "Boolean" } as const;
+const T_INT: ir.Type = { tag: "type-primitive", primitive: "Int" } as const;
+const T_BOOL: ir.Type = { tag: "type-primitive", primitive: "Boolean" } as const;
 
-export type SOp = ["block", SOp[]]
-	| ["local", IR.Type, string | undefined]
-	| ["if", number, SOp[], SOp[]]
-	| ["bool", number, boolean]
-	| ["int", number, number]
-	| ["foreign", { f: string, dst: number[], arg: number[] }]
-	| ["return", number[]]
-	| ["call", { f: string, dst: number[], arg: number[], ts: IR.Type[] }]
-	| ["dyncall", { i: string, it: IR.Type[], f: number, dst: number[], arg: number[], ts: IR.Type[] }];
-
-
-export function classType(name: string, ...args: IR.Type[]): IR.Type {
+export function classType(name: string, ...args: ir.Type[]): ir.Type {
 	return {
-		tag: "type-class",
-		class: { class_id: name },
+		tag: "type-compound",
+		record: { record_id: name },
 		type_arguments: args,
 	};
 }
 
-export function variableType(n: number): IR.TypeVariable {
+export function variableType(n: number): ir.TypeVariable {
 	return {
 		tag: "type-variable",
 		id: { type_variable_id: n },
 	};
 }
 
-export function op(...args: SOp): IR.Op {
-	if (args[0] === "local") {
-		return {
-			tag: "op-var",
-			type: args[1],
-			debug_name: args[2],
-		};
-	} else if (args[0] === "if") {
-		return {
-			tag: "op-branch",
-			condition: { variable_id: args[1] },
-			trueBranch: op("block", args[2]) as IR.OpBlock,
-			falseBranch: op("block", args[3]) as IR.OpBlock,
-		};
-	} else if (args[0] === "block") {
-		return {
-			tag: "op-block",
-			ops: args[1].map(x => op(...x)),
-		};
-	} else if (args[0] === "bool") {
-		return {
-			tag: "op-const",
-			destination: { variable_id: args[1] },
-			value: args[2],
-		};
-	} else if (args[0] === "int") {
-		return {
-			tag: "op-const",
-			destination: { variable_id: args[1] },
-			value: args[2],
-		};
-	} else if (args[0] === "foreign") {
-		return {
-			tag: "op-foreign",
-			operation: args[1].f,
-			destinations: args[1].dst.map(x => ({ variable_id: x })),
-			arguments: args[1].arg.map(x => ({ variable_id: x })),
-		};
-	} else if (args[0] === "return") {
-		return {
-			tag: "op-return",
-			sources: args[1].map(x => ({ variable_id: x })),
-		};
-	} else if (args[0] === "call") {
-		return {
-			tag: "op-static-call",
-			function: { function_id: args[1].f },
-			destinations: args[1].dst.map(x => ({ variable_id: x })),
-			arguments: args[1].arg.map(x => ({ variable_id: x })),
-			type_arguments: args[1].ts,
-		};
-	} else if (args[0] === "dyncall") {
-		return {
-			tag: "op-dynamic-call",
-			interface: { interface_id: args[1].i },
-			interface_arguments: args[1].it,
-			signature_id: args[1].f,
-			signature_type_arguments: args[1].ts,
-			destinations: args[1].dst.map(x => ({ variable_id: x })),
-			arguments: args[1].arg.map(x => ({ variable_id: x })),
-		};
-	} else {
-		throw new Error("unhandled args: `" + args + "`");
-	}
+export function opVar(t: ir.Type, name: string): ir.OpVar {
+	return {
+		tag: "op-var",
+		type: t,
+		debug_name: name,
+	};
 }
 
-const foreign: Record<string, IR.FunctionSignature> = {
+export function opBlock(...ops: ir.Op[]): ir.OpBlock {
+	return {
+		tag: "op-block",
+		ops,
+	};
+}
+
+export function opBranch(condition: number, trueBranch: ir.OpBlock, falseBranch: ir.OpBlock): ir.OpBranch {
+	return {
+		tag: "op-branch",
+		condition: { variable_id: condition },
+		trueBranch,
+		falseBranch,
+	};
+}
+
+export function opConst(destination: number, value: number | boolean): ir.OpConst {
+	return {
+		tag: "op-const",
+		destination: { variable_id: destination },
+		value,
+	};
+}
+
+export function opForeign({ dst, args, f }: { dst: number[], args: number[], f: string }): ir.OpForeign {
+	return {
+		tag: "op-foreign",
+		operation: f,
+		destinations: dst.map(x => ({ variable_id: x })),
+		arguments: args.map(x => ({ variable_id: x })),
+	};
+}
+
+export function opReturn(...srcs: number[]): ir.OpReturn {
+	return {
+		tag: "op-return",
+		sources: srcs.map(x => ({ variable_id: x })),
+	};
+}
+
+export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], args: number[], ts: ir.Type[] }): ir.OpStaticCall {
+	return {
+		tag: "op-static-call",
+		function: { function_id: f },
+		destinations: dst.map(x => ({ variable_id: x })),
+		arguments: args.map(x => ({ variable_id: x })),
+		type_arguments: ts,
+	};
+}
+
+export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: number, ts: ir.Type[], dst: number[], args: number[] }): ir.OpDynamicCall {
+	return {
+		tag: "op-dynamic-call",
+		interface: { interface_id: i },
+		interface_arguments: its,
+		signature_id: f,
+		signature_type_arguments: ts,
+		destinations: dst.map(x => ({ variable_id: x })),
+		arguments: args.map(x => ({ variable_id: x })),
+	};
+}
+
+const foreign: Record<string, ir.FunctionSignature> = {
 	"int=": {
 		// Equality
 		parameters: [T_INT, T_INT],
@@ -138,9 +131,9 @@ const foreign: Record<string, IR.FunctionSignature> = {
 // Tests for interpreter.ts.
 export const tests = {
 	"basic-arithmetic"() {
-		const program: IR.Program = {
+		const program: ir.Program = {
 			globalVTableFactories: {},
-			classes: {},
+			records: {},
 			interfaces: {},
 			functions: {
 				"main": {
@@ -153,12 +146,12 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "n: #0"],
-						["int", 0, 5],
-						["call", { f: "fib", dst: [0], arg: [0], ts: [] }],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "n: #0"),
+						opConst(0, 5),
+						opStaticCall({ f: "fib", dst: [0], args: [0], ts: [] }),
+						opReturn(0),
+					),
 				},
 				"fib": {
 					signature: {
@@ -169,35 +162,39 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "zero: #1"],
-						["int", 1, 0],
-						["local", T_BOOL, "arg == 0: #2"],
-						["foreign", { f: "int=", dst: [2], arg: [0, 1] }],
-						["local", T_INT, "1: #3"],
-						["int", 3, 1],
-						["if", 2,
-							[["return", [3]]],
-							[
-								["foreign", { f: "int=", dst: [2], arg: [0, 3] }],
-								["if", 2,
-									[["return", [3]]],
-									[
-										["local", T_INT, "arg - 1: #4"],
-										["local", T_INT, "arg - 2: #5"],
-										["local", T_INT, "2: #6"],
-										["int", 6, 2],
-										["foreign", { f: "int-", dst: [4], arg: [0, 3] }],
-										["foreign", { f: "int-", dst: [5], arg: [0, 6] }],
-										["call", { f: "fib", dst: [4], arg: [4], ts: [] }],
-										["call", { f: "fib", dst: [5], arg: [5], ts: [] }],
-										["foreign", { f: "int+", dst: [4], arg: [4, 5] }],
-										["return", [4]],
-									],
-								],
-							],
-						],
-					]),
+					body: opBlock(
+						opVar(T_INT, "zero: #1"),
+						opConst(1, 0),
+						opVar(T_BOOL, "arg == 0: #2"),
+						opForeign({ f: "int=", dst: [2], args: [0, 1] }),
+						opVar(T_INT, "1: #3"),
+						opConst(3, 1),
+						opBranch(2,
+							opBlock(
+								opReturn(3),
+							),
+							opBlock(
+								opForeign({ f: "int=", dst: [2], args: [0, 3] }),
+								opBranch(2,
+									opBlock(
+										opReturn(3),
+									),
+									opBlock(
+										opVar(T_INT, "arg - 1: #4"),
+										opVar(T_INT, "arg - 2: #5"),
+										opVar(T_INT, "2: #6"),
+										opConst(6, 2),
+										opForeign({ f: "int-", dst: [4], args: [0, 3] }),
+										opForeign({ f: "int-", dst: [5], args: [0, 6] }),
+										opStaticCall({ f: "fib", dst: [4], args: [4], ts: [] }),
+										opStaticCall({ f: "fib", dst: [5], args: [5], ts: [] }),
+										opForeign({ f: "int+", dst: [4], args: [4, 5] }),
+										opReturn(4),
+									),
+								),
+							),
+						),
+					),
 				},
 			},
 			foreign: foreign,
@@ -224,7 +221,7 @@ export const tests = {
 		assert(returned.int, "is equal to", 8);
 	},
 	"dynamic-dispatch-from-global-vtable-factory"() {
-		const program: IR.Program = {
+		const program: ir.Program = {
 			globalVTableFactories: {
 				"FortyTwoIsFavorite": {
 					interface: { interface_id: "Favorite" },
@@ -248,11 +245,11 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "fortytwo: #0"],
-						["int", 0, 42],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "fortytwo: #0"),
+						opConst(0, 42),
+						opReturn(0),
+					),
 				},
 				"main": {
 					signature: {
@@ -264,13 +261,13 @@ export const tests = {
 						postconditions: [],
 
 					},
-					body: op("block", [
-						["local", T_INT, "favorite: #0"],
+					body: opBlock(
+						opVar(T_INT, "favorite: #0"),
 						// Invoke op-dynamic-call.
 						// No constraints are passed in this invocation.
-						["dyncall", { i: "Favorite", it: [classType("FortyTwo")], f: 0, arg: [], dst: [0], ts: [] }],
-						["return", [0]],
-					]),
+						opDynamicCall({ i: "Favorite", its: [classType("FortyTwo")], f: 0, args: [], dst: [0], ts: [] }),
+						opReturn(0),
+					),
 				},
 			},
 			interfaces: {
@@ -288,9 +285,9 @@ export const tests = {
 					]
 				},
 			},
-			classes: {
+			records: {
 				"FortyTwo": {
-					parameters: [],
+					type_parameters: [],
 					fields: {},
 				},
 			},
@@ -304,7 +301,7 @@ export const tests = {
 		});
 	},
 	"dynamic-dispatch-from-type-parameter"() {
-		const program: IR.Program = {
+		const program: ir.Program = {
 			globalVTableFactories: {
 				"ThirteenIsFavorite": {
 					interface: { interface_id: "Favorite" },
@@ -328,11 +325,11 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "thirteen: #0"],
-						["int", 0, 13],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "thirteen: #0"),
+						opConst(0, 13),
+						opReturn(0),
+					),
 				},
 				"favoriteOf": {
 					signature: {
@@ -343,8 +340,8 @@ export const tests = {
 						type_parameters: ["#T"],
 						constraint_parameters: [
 							{
-								interface: { interface_id: "Favorite" },
-								interface_arguments: [variableType(0)],
+								constraint: { interface_id: "Favorite" },
+								subjects: [variableType(0)],
 							}
 						],
 						parameters: [],
@@ -352,16 +349,14 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "favorite: #0"],
-						[
-							"dyncall", {
-								i: "Favorite", it: [variableType(0)],
-								f: 0, arg: [], dst: [0], ts: []
-							},
-						],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "favorite: #0"),
+						opDynamicCall({
+							i: "Favorite", its: [variableType(0)],
+							f: 0, args: [], dst: [0], ts: [],
+						}),
+						opReturn(0),
+					),
 				},
 				"main": {
 					signature: {
@@ -373,12 +368,12 @@ export const tests = {
 						postconditions: [],
 
 					},
-					body: op("block", [
-						["local", T_INT, "favorite: #0"],
+					body: opBlock(
+						opVar(T_INT, "favorite: #0"),
 						// No constraints are passed in this invocation.
-						["call", { f: "favoriteOf", dst: [0], arg: [], ts: [classType("Thirteen")] }],
-						["return", [0]],
-					]),
+						opStaticCall({ f: "favoriteOf", dst: [0], args: [], ts: [classType("Thirteen")] }),
+						opReturn(0),
+					),
 				},
 			},
 			interfaces: {
@@ -396,9 +391,9 @@ export const tests = {
 					]
 				},
 			},
-			classes: {
+			records: {
 				"Thirteen": {
-					parameters: [],
+					type_parameters: [],
 					fields: {},
 				},
 			},
@@ -412,7 +407,7 @@ export const tests = {
 		});
 	},
 	"dynamic-dispatch-from-type-constraint-closure"() {
-		const program: IR.Program = {
+		const program: ir.Program = {
 			globalVTableFactories: {
 				"SevenIsFavorite": {
 					interface: { interface_id: "Favorite" },
@@ -434,8 +429,8 @@ export const tests = {
 							implementation: { function_id: "squareFavorite" },
 							constraint_parameters: [
 								{
-									interface: { interface_id: "Favorite" },
-									interface_arguments: [variableType(0)]
+									constraint: { interface_id: "Favorite" },
+									subjects: [variableType(0)]
 								},
 							],
 						},
@@ -448,8 +443,8 @@ export const tests = {
 						type_parameters: ["#F"],
 						constraint_parameters: [
 							{
-								interface: { interface_id: "Favorite" },
-								interface_arguments: [variableType(0)],
+								constraint: { interface_id: "Favorite" },
+								subjects: [variableType(0)],
 							}
 						],
 						parameters: [],
@@ -457,18 +452,15 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "fav: #0"],
-						[
-							"dyncall",
-							{
-								i: "Favorite", it: [variableType(0)],
-								f: 0, dst: [0], arg: [], ts: []
-							},
-						],
-						["foreign", { f: "int*", dst: [0], arg: [0, 0] }],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "fav: #0"),
+						opDynamicCall({
+							i: "Favorite", its: [variableType(0)],
+							f: 0, dst: [0], args: [], ts: [],
+						}),
+						opForeign({ f: "int*", dst: [0], args: [0, 0] }),
+						opReturn(0),
+					),
 				},
 				"seven": {
 					signature: {
@@ -479,11 +471,11 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "seven: #0"],
-						["int", 0, 7],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "seven: #0"),
+						opConst(0, 7),
+						opReturn(0),
+					),
 				},
 				"favoriteOf": {
 					signature: {
@@ -494,8 +486,8 @@ export const tests = {
 						type_parameters: ["#T"],
 						constraint_parameters: [
 							{
-								interface: { interface_id: "Favorite" },
-								interface_arguments: [variableType(0)],
+								constraint: { interface_id: "Favorite" },
+								subjects: [variableType(0)],
 							},
 						],
 						parameters: [],
@@ -503,17 +495,14 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "favorite: #0"],
-						[
-							"dyncall",
-							{
-								i: "Favorite", it: [variableType(0)],
-								f: 0, arg: [], dst: [0], ts: []
-							},
-						],
-						["return", [0]],
-					]),
+					body: opBlock(
+						opVar(T_INT, "favorite: #0"),
+						opDynamicCall({
+							i: "Favorite", its: [variableType(0)],
+							f: 0, args: [], dst: [0], ts: [],
+						}),
+						opReturn(0),
+					),
 				},
 				"main": {
 					signature: {
@@ -524,12 +513,14 @@ export const tests = {
 						preconditions: [],
 						postconditions: [],
 					},
-					body: op("block", [
-						["local", T_INT, "favorite: #0"],
+					body: opBlock(
+						opVar(T_INT, "favorite: #0"),
 						// No constraints are passed in this invocation.
-						["call", { f: "favoriteOf", dst: [0], arg: [], ts: [classType("Squarer", classType("Seven"))] }],
-						["return", [0]],
-					]),
+						opStaticCall({
+							f: "favoriteOf", dst: [0], args: [], ts: [classType("Squarer", classType("Seven"))],
+						}),
+						opReturn(0),
+					),
 				},
 			},
 			interfaces: {
@@ -547,13 +538,13 @@ export const tests = {
 					]
 				},
 			},
-			classes: {
+			records: {
 				"Seven": {
-					parameters: [],
+					type_parameters: [],
 					fields: {},
 				},
 				"FavoriteSquarer": {
-					parameters: ["#X"],
+					type_parameters: ["#X"],
 					fields: {},
 				},
 			},

@@ -197,13 +197,14 @@ const tokens = {
 };
 
 const keywords = {
+	class: keywordParser("class"),
 	fn: keywordParser("fn"),
 	import: keywordParser("import"),
 	is: keywordParser("is"),
 	interface: keywordParser("interface"),
 	package: keywordParser("package"),
 	proof: keywordParser("proof"),
-	class: keywordParser("class"),
+	return: keywordParser("return"),
 	var: keywordParser("var"),
 };
 
@@ -299,6 +300,7 @@ export interface FnSignature {
 
 export interface Fn {
 	signature: FnSignature,
+	body: Block,
 }
 
 // For bringing new type variables into a scope.
@@ -341,21 +343,35 @@ export interface Block {
 	statements: Statement[],
 }
 
-export type Statement = VarSt;
+export interface ReturnSt {
+	tag: "return",
+	values: Expression[],
+
+	location: SourceLocation,
+}
+
+export type Statement = VarSt | ReturnSt;
 
 export interface VarSt {
+	tag: "var",
 	variables: VarDecl[],
 	initialization: Expression[],
+
+	location: SourceLocation,
 }
 
 export interface VarDecl {
 	variable: IdenToken,
 	t: Type,
+
+	location: SourceLocation,
 }
 
 export interface Expression {
 	left: ExpressionOperand,
 	operations: ExpressionOperation[],
+
+	location: SourceLocation,
 }
 
 export type ExpressionAccess = ExpressionAccessMethod | ExpressionAccessField;
@@ -393,6 +409,8 @@ export interface ExpressionOperationBinary {
 export interface ExpressionParenthesized {
 	tag: "paren",
 	expression: Expression,
+
+	location: SourceLocation,
 }
 
 export interface ExpressionCall {
@@ -444,6 +462,7 @@ type ASTs = {
 	InterfaceMember: InterfaceMember,
 	PackageDef: PackageDef,
 	PackageQualification: PackageQualification,
+	ReturnSt: ReturnSt,
 	Source: Source,
 	Statement: Statement,
 	Type: Type,
@@ -486,7 +505,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
 	Definition: new ChoiceParser(() => [grammar.ClassDefinition]),
-	Expression: new RecordParser(() => ({
+	Expression: new StructParser(() => ({
 		left: grammar.ExpressionOperand,
 		operations: new RepeatParser(grammar.ExpressionOperation),
 	})),
@@ -630,6 +649,14 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_dot: punctuation.dot
 			.required(parseProblem("Expected a `.` after a package name at", atHead)),
 	})),
+	ReturnSt: new StructParser(() => ({
+		_return: keywords.return,
+		tag: new ConstParser("return"),
+		values: new CommaParser(grammar.Expression, "Expected an expression at"),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` to complete a return statement at", atHead)),
+	})),
+	Statement: choice(() => grammar, "VarSt", "ReturnSt"),
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,
@@ -661,18 +688,22 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `]` at", atHead,
 				"to complete type parameters started at", atReference("_open"))),
 	})),
-	Statement: choice(() => grammar, "VarSt"),
-	VarSt: new RecordParser(() => ({
+	VarSt: new StructParser(() => ({
 		variables: new CommaParser(grammar.VarDecl, "variable declaration", 1),
+		tag: new ConstParser("var"),
 		"_eq": punctuation.equal
 			.required(parseProblem("Expected a `=` after variable declarations at", atHead)),
 		initialization: new CommaParser(grammar.Expression, "expression", 1),
 		"_semicolon": punctuation.semicolon
 			.required(parseProblem("Expected a `;` after variable initialization at", atHead)),
 	})),
-	VarDecl: new RecordParser(() => ({
+	VarDecl: new StructParser(() => ({
 		_var: keywordParser("var"),
-		variable: tokens.iden,
-		t: grammar.Type,
+		variable: tokens.iden
+			.required(parseProblem("Expected a variable name after `var` in a variable declaration at", atHead)),
+		_colon: punctuation.colon
+			.required(parseProblem("Expected a `:` after a variable name in a variable declaration at", atHead)),
+		t: grammar.Type
+			.required(parseProblem("Expected a type after `:` in a variable declaration at", atHead)),
 	})),
 };

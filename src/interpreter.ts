@@ -21,24 +21,13 @@ export type IntValue = {
 };
 
 interface VTable {
-	interfaceID: ir.InterfaceID,
-	interfaceArguments: ir.Type[],
+	tag: "dictionary",
 	entries: VTableEntry[],
-};
+}
 
 interface VTableEntry {
 	implementation: ir.FunctionID,
-	closureConstraints: VTable[],
-};
-
-/// Replace all occurrences of the specified type-variables in the constraint 
-/// parameter.
-function constraintSubstitute(c: ir.ConstraintParameter, map: Map<number, ir.Type>): ir.ConstraintParameter {
-	const args = c.subjects.map(t => ir.typeSubstitute(t, map));
-	return {
-		constraint: c.constraint,
-		subjects: args,
-	};
+	closureConstraints: (VTable | { tag: "callsite", callsite: number })[],
 }
 
 function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Type, subject: ir.Type): boolean {
@@ -111,313 +100,243 @@ function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.T
 	return mapping as Map<number, ir.Type>;
 }
 
-class StackFrame {
-	variables: (Value | null)[] = [];
-
-	/// `scopes[i]` indicates the size of the `variables` stack at the moment
-	/// the `i`th scope opened.
-	scopes: number[] = [];
-
-	/// `ip` indicates the 'path' into the `op` of this function.
-	/// For a block, a value `k` indicates index `k` into the `ops` array, or a
-	/// "cleanup" instruction.
-	/// For a branch, a value `THEN_INDEX` indicates the truthy branch and
-	/// `FALSE_INDEX` indicates the falsy branch.
-	ip: number[] = [];
-
-	constructor(
-		private program: ir.Program,
-		public function_id: string,
-		public constraintArguments: VTable[]) {
-	}
-
-	resolveVTableFromConstraint(constraint: ir.ConstraintParameter): VTable {
-		return this.resolveVTable(
-			constraint.constraint,
-			constraint.subjects);
-	}
-
-	resolveVTable(interfaceID: ir.InterfaceID, interfaceArguments: ir.Type[]): VTable {
-		// Search in this stack frame for constraint parameters.
-		for (let vtable of this.constraintArguments) {
-			if (vtable.interfaceID.interface_id !== interfaceID.interface_id) {
-				continue;
-			}
-
-			const instantiationMapping = matchTypes([], vtable.interfaceArguments, interfaceArguments);
-			if (!instantiationMapping) {
-				continue;
-			}
-
-			// Found a matching v-table!
-			return vtable;
-		}
-
-		// Search in the list of global v-table factories.
-		const availableVTables = Object.values(this.program.globalVTableFactories);
-		for (let vtableFactory of availableVTables) {
-			if (vtableFactory.interface.interface_id !== interfaceID.interface_id) {
-				continue;
-			}
-
-			// Match v-table's arguments against the query.
-			const instantiationMapping = matchTypes(vtableFactory.for_any, vtableFactory.interface_arguments, interfaceArguments);
-			if (!instantiationMapping) {
-				continue;
-			}
-
-			// Found a matching v-table in the global list of v-tables.
-			// Substitute its types with the instantiation mapping.
-			return {
-				interfaceID: interfaceID,
-				interfaceArguments: interfaceArguments,
-				entries: vtableFactory.implementations.map(entry => {
-					const mappedParameters = entry.constraint_parameters.map(c => {
-						const resolved = this.resolveVTableFromConstraint(constraintSubstitute(c, instantiationMapping));
-
-						return {
-							interfaceID: resolved.interfaceID,
-							// Use the form of the interface arguments that the callee expects.
-							interfaceArguments: c.subjects,
-							entries: resolved.entries,
-						};
-					});
-					return {
-						implementation: entry.implementation,
-						closureConstraints: mappedParameters,
-					};
-				}),
-			};
-		}
-
-		console.error("Failing call resolveVTable(", interfaceID, interfaceArguments, ")");
-		throw new Error("No vtable found");
-	}
-
-	getVariable(variable: ir.VariableID): Value {
-		const value = this.variables[variable.variable_id];
-		if (value === null || value === undefined) {
-			throw new Error("attempting to read undefined variable `" + variable.variable_id + "`");
-		}
-		return value;
-	}
-
-	setVariable(variable: ir.VariableID, value: Value) {
-		const id = variable.variable_id;
-		if (this.variables[id] === undefined) {
-			throw new Error("attempting to write to undefined variable `" + id + "`");
-		}
-		this.variables[id] = value;
-	}
-}
-
-export type ForeignImpl = (args: Value[]) => Value[];
-
-/// Execute a Shiru program until termination, returning the result from the 
-/// given `entry` function.
-export function interpret(entry: string, program: ir.Program, foreign: Record<string, ForeignImpl>): Value[] {
-	if (!program.functions[entry]) {
-		throw new Error("The program has no function named `" + entry + "`");
-	} else if (program.functions[entry].signature.parameters.length !== 0) {
-		throw new Error("Function `" + entry + "` cannot be used as an entry point because it expects arguments.");
-	}
-
-	const stack: StackFrame[] = [new StackFrame(program, entry, [])];
-	while (true) {
-		const result = interpretStep(program, stack, foreign);
-		if (result) {
-			return result;
-		}
-	}
-}
-
-const THEN_INDEX = 1;
-const ELSE_INDEX = 2;
-
-function interpretStep(program: ir.Program, stack: StackFrame[], foreign: Record<string, ForeignImpl>): undefined | Value[] {
-	const frame = stack[stack.length - 1];
-	const func = program.functions[frame.function_id];
-	const op = getOp(func.body, frame.ip);
-
-	if (op.tag == "op-assign") {
-		frame.setVariable(op.destination, frame.getVariable(op.source));
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag == "op-block") {
-		if (op.ops.length === 0) {
-			// No-op.
-			frame.ip[frame.ip.length - 1] += 1;
-			return;
-		} else {
-			frame.ip.push(0);
-			return;
-		}
-	} else if (op.tag == "op-branch") {
-		const condition = frame.getVariable(op.condition);
-		frame.ip.push(isTruthy(condition) ? THEN_INDEX : ELSE_INDEX);
-		return;
-	} else if (op.tag == "op-field") {
-		const instance = frame.getVariable(op.object);
-		if (instance.sort !== "class") {
-			throw new Error("op-field requires instance of sort 'class'");
-		}
-		frame.setVariable(op.destination, instance.fields[op.field]);
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag == "op-new-record") {
-		let instance: ClassValue = {
-			sort: "class",
-			fields: {},
-		};
-		for (let field in op.fields) {
-			instance.fields[field] = frame.getVariable(op.fields[field]);
-		}
-		frame.setVariable(op.destination, instance);
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag == "op-proof") {
-		// Proof statements are a no-op at runtime.
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag == "op-return") {
-		stack.pop();
-		const lastFrame = stack[stack.length - 1];
-		if (!lastFrame) {
-			// The entry-point function is returning.
-			return op.sources.map(v => frame.getVariable(v));
-		} else {
-			const callerFunc = program.functions[lastFrame.function_id];
-			const call = getOp(callerFunc.body, lastFrame.ip);
-			if (call.tag === "op-static-call") {
-				for (let i = 0; i < call.destinations.length; i++) {
-					lastFrame.setVariable(call.destinations[i], frame.getVariable(op.sources[i]));
-				}
-				lastFrame.ip[lastFrame.ip.length - 1] += 1;
-			} else if (call.tag === "op-dynamic-call") {
-				for (let i = 0; i < call.destinations.length; i++) {
-					lastFrame.setVariable(call.destinations[i], frame.getVariable(op.sources[i]));
-				}
-				lastFrame.ip[lastFrame.ip.length - 1] += 1;
-			} else {
-				throw new Error("Invalid call state");
-			}
-			return;
-		}
-	} else if (op.tag == "op-dynamic-call") {
-		const invoking = frame.resolveVTable(op.interface, op.interface_arguments);
-		const vtableEntry = invoking.entries[op.signature_id];
-
-		// N.B.: Though the interface may add additional type-parameters, it 
-		// cannot actually  demand any constraint arguments,only the underlying
-		// implementation can.
-		const functionID = vtableEntry.implementation.function_id;
-		const constraintArguments = vtableEntry.closureConstraints;
-		const newFrame = new StackFrame(program, functionID, constraintArguments);
-		for (let arg of op.arguments) {
-			newFrame.variables.push(frame.getVariable(arg));
-		}
-		stack.push(newFrame);
-		return;
-	} else if (op.tag == "op-static-call") {
-		const signature = program.functions[op.function.function_id].signature;
-		const parameterMapping: Map<number, ir.Type> = new Map();
-		for (let i = 0; i < op.type_arguments.length; i++) {
-			parameterMapping.set(i, op.type_arguments[i]);
-		}
-
-		const constraintArguments: VTable[] = [];
-		for (let constraintParameter of signature.constraint_parameters) {
-			const interfaceElements = constraintParameter.subjects;
-
-			const concreteInterfaceArguments = interfaceElements.map(u => ir.typeSubstitute(u, parameterMapping));
-			const resolved = frame.resolveVTable(constraintParameter.constraint, concreteInterfaceArguments);
-
-			// For the purpose of identification within the new stack-frame, the
-			// interface-parameters should be in the original uninstantiated 
-			// form.
-			constraintArguments.push({
-				interfaceID: constraintParameter.constraint,
-				// This v-table must be identifiable within the local 
-				// type-context of the called function.
-				interfaceArguments: constraintParameter.subjects,
-				// The identifications of these v-table entries can be 
-				// instantiated, since they will be overridden elsewhere.
-				entries: resolved.entries,
-			});
-		}
-
-		const newFrame = new StackFrame(program, op.function.function_id, constraintArguments);
-		for (let arg of op.arguments) {
-			newFrame.variables.push(frame.getVariable(arg));
-		}
-		stack.push(newFrame);
-		return;
-	} else if (op.tag == "op-unreachable") {
-		throw new Error("unreachable code was reached! This indicates a bug in the verifier.");
-	} else if (op.tag == "op-var") {
-		frame.variables.push(null);
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag === "op-const") {
-		if (typeof op.value === "number") {
-			frame.setVariable(op.destination, {
-				sort: "int",
-				int: op.value as number,
-			});
-		} else {
-			throw new Error("unrecognized constant value `" + op.value + "`");
-		}
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	} else if (op.tag === "op-foreign") {
-		if (!foreign[op.operation]) {
-			throw new Error("missing implementation for foreign operation `" + op.operation + "`");
-		}
-		const argumentValues = op.arguments.map(arg => frame.getVariable(arg));
-		const results = foreign[op.operation](argumentValues);
-		if (results.length !== op.destinations.length) {
-			throw new Error("operation `" + op.operation + "` returned "
-				+ results.length + " values but the instruction expected "
-				+ op.destinations.length);
-		}
-		for (let i = 0; i < op.destinations.length; i++) {
-			frame.setVariable(op.destinations[i], results[i]);
-		}
-		frame.ip[frame.ip.length - 1] += 1;
-		return;
-	}
-	throw new Error(`TODO: ${op.tag}`);
-}
-
 function isTruthy(value: Value): boolean {
 	if (value.sort !== "boolean") throw new Error("bad value sort for isTruthy `" + value.sort + "`");
 	return value.boolean;
 }
 
-interface SyntheticCloseScope {
-	tag: "synth-close-scope",
+function satisfyConstraint(
+	globalVTableFactories: Record<string, ir.VTableFactory>,
+	constraint: ir.InterfaceID,
+	subjects: ir.Type[],
+	availableSignatures: ir.ConstraintParameter[],
+	// TODO: Separate this parameter so that this function's search can be
+	// memoized.
+	availableVTables: VTable[],
+): VTable {
+	// TODO: This is a very inefficient scan that is repeated at each call.
+	// It should instead be precomputed for each distinct callsite.
+
+	for (let i = 0; i < availableSignatures.length; i++) {
+		const signature = availableSignatures[i];
+		if (signature.constraint.interface_id !== constraint.interface_id) {
+			continue;
+		}
+		const match = matchTypes([], signature.subjects, subjects);
+		if (match !== null) {
+			return availableVTables[i];
+		}
+	}
+
+	for (let global in globalVTableFactories) {
+		const factory = globalVTableFactories[global];
+		const match = matchTypes(factory.for_any, factory.subjects, subjects);
+		if (match !== null) {
+			// Collect the entries to use in the v-table.
+			const vtable: VTable = { tag: "dictionary", entries: [] };
+			for (let entryPattern of factory.entries) {
+				const entry: VTableEntry = {
+					implementation: entryPattern.implementation,
+					closureConstraints: [],
+				};
+				for (let c of entryPattern.constraint_parameters) {
+					if (typeof c === "number") {
+						entry.closureConstraints.push({
+							tag: "callsite",
+							callsite: c,
+						});
+					} else {
+						const subSubjects = c.subjects.map(a => ir.typeSubstitute(a, match));
+						const subVTableReference = satisfyConstraint(
+							globalVTableFactories, c.constraint, subSubjects,
+							availableSignatures, availableVTables);
+						entry.closureConstraints.push(subVTableReference);
+					}
+				}
+				vtable.entries.push(entry);
+			}
+			return vtable;
+		}
+	}
+
+	throw new Error("Could not find an implementation of `"
+		+ constraint.interface_id
+		+ "` for " + JSON.stringify(subjects));
 }
 
-/// isLast: appended to for each visited element of ip, whether or not that
-///         index can be incremented without leaving bounds.
-function getOp(base: ir.Op | ir.OpBlock, ip: number[], from: number = 0): ir.Op | ir.OpBlock | SyntheticCloseScope {
-	if (from >= ip.length) {
-		return base;
+export type ForeignImpl = (args: Value[]) => Value[];
+
+interface Context {
+	program: ir.Program,
+	foreign: Record<string, ForeignImpl>,
+
+	/// `availableConstraints` describes the elements of `availableVTables`.
+	/// These are separated because `availableConstraints` remains constant as
+	/// execution evolves, but `availableVTables` may change constantly.
+	availableVTables: VTable[],
+	availableConstraints: ir.ConstraintParameter[],
+}
+
+interface Slot {
+	value: Value,
+	t: ir.Type,
+}
+
+export function interpret(
+	fn: string,
+	args: Value[],
+	program: ir.Program,
+	foreign: Record<string, ForeignImpl>): Value[] {
+	const context: Context = {
+		program,
+		foreign,
+		availableVTables: [],
+		availableConstraints: [],
+	};
+
+	const iter = interpretCall(fn, args, [], context);
+	while (true) {
+		const x = iter.next();
+		if (x.done) {
+			return x.value;
+		}
 	}
-	const index = ip[from];
-	if (base.tag == "op-block") {
-		if (index === base.ops.length) {
-			// Generate a synthetic "close block" operation.
-			return { tag: "synth-close-scope" };
+}
+
+/// Execute a Shiru program until termination, returning the result from the 
+/// given `entry` function.
+export function* interpretCall(
+	fnName: string,
+	args: Value[],
+	vtables: VTable[],
+	context: Context,
+): Generator<{}, Value[], unknown> {
+	if (!context.program.functions[fnName]) {
+		throw new Error("The program has no function named `" + fnName + "`");
+	}
+
+	const fn = context.program.functions[fnName];
+	if (fn.signature.constraint_parameters.length !== vtables.length) {
+		throw new Error("interpretCall: Wrong number of constraint parameters");
+	}
+	const newContext: Context = {
+		...context,
+		availableConstraints: fn.signature.constraint_parameters,
+		availableVTables: vtables,
+	};
+
+	const stack = args.map((value, i) => ({ value, t: fn.signature.parameters[i] }));
+	const result = yield* interpretBlock(fn.body, stack, newContext);
+	if (result === null) {
+		throw new Error("Function `" + fn + "` failed to return a result");
+	}
+	return result;
+}
+
+function* interpretBlock(
+	block: ir.OpBlock,
+	stack: Slot[],
+	context: Context,
+): Generator<{}, Value[] | null, unknown> {
+	const initialStack = stack.length;
+	for (let op of block.ops) {
+		const result = yield* interpretOp(op, stack, context);
+		if (result !== null) {
+			return result;
+		}
+	}
+	stack.splice(initialStack);
+	return null;
+}
+
+function* interpretOp(
+	op: ir.Op,
+	stack: Slot[],
+	context: Context,
+): Generator<{}, Value[] | null, unknown> {
+	yield {};
+	if (op.tag === "op-return") {
+		return op.sources.map(({ variable_id }) => stack[variable_id].value);
+	} else if (op.tag === "op-var") {
+		stack.push({ t: op.type, value: null as any });
+		return null;
+	} else if (op.tag === "op-assign") {
+		stack[op.destination.variable_id].value = stack[op.source.variable_id].value;
+		return null;
+	} else if (op.tag === "op-const") {
+		let value: Value;
+		if (typeof op.value === "boolean") {
+			value = { sort: "boolean", boolean: op.value };
+		} else if (typeof op.value === "number") {
+			value = { sort: "int", int: op.value };
 		} else {
-			return getOp(base.ops[index], ip, from + 1);
+			const _: never = op.value;
+			throw new Error("interpretOp: unhandled op-const value");
 		}
-	} else if (base.tag == "op-branch") {
-		if (index == ELSE_INDEX) {
-			return getOp(base.falseBranch, ip, from + 1);
-		} else if (index == THEN_INDEX) {
-			return getOp(base.trueBranch, ip, from + 1);
+		stack[op.destination.variable_id].value = value;
+		return null;
+	} else if (op.tag === "op-static-call") {
+		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+
+		const constraintArgs: VTable[] = [];
+		const fn = context.program.functions[op.function.function_id];
+		const instantiation: Map<number, ir.Type> = new Map();
+		for (let i = 0; i < op.type_arguments.length; i++) {
+			instantiation.set(i, op.type_arguments[i]);
 		}
+		for (let constraintTemplate of fn.signature.constraint_parameters) {
+			const subjects = constraintTemplate.subjects.map(t => ir.typeSubstitute(t, instantiation));
+			const vtable = satisfyConstraint(
+				context.program.globalVTableFactories,
+				constraintTemplate.constraint, subjects,
+				context.availableConstraints, context.availableVTables);
+			constraintArgs.push(vtable);
+		}
+
+		const result = yield* interpretCall(op.function.function_id, args, constraintArgs, context);
+		for (let i = 0; i < result.length; i++) {
+			stack[op.destinations[i].variable_id].value = result[i];
+		}
+		return null;
+	} else if (op.tag === "op-foreign") {
+		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+		const f = context.foreign[op.operation];
+		if (f === undefined) {
+			throw new Error("interpretOp: no implementation for `" + op.operation + "`");
+		}
+		const result = f(args);
+		for (let i = 0; i < op.destinations.length; i++) {
+			stack[op.destinations[i].variable_id].value = result[i];
+		}
+		return null;
+	} else if (op.tag === "op-branch") {
+		const condition = isTruthy(stack[op.condition.variable_id].value);
+		const branch = condition ? op.trueBranch : op.falseBranch;
+		const result = yield* interpretBlock(branch, stack, context);
+		return result;
+	} else if (op.tag === "op-dynamic-call") {
+		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+		const vtable = satisfyConstraint(context.program.globalVTableFactories,
+			op.constraint, op.subjects,
+			context.availableConstraints, context.availableVTables);
+
+		const spec = vtable.entries[op.signature_id];
+		const constraintArgs = [];
+		for (let constraint of spec.closureConstraints) {
+			if (constraint.tag === "callsite") {
+				throw new Error("TODO: Retrieve callsite constraint like static call");
+			} else {
+				constraintArgs.push(constraint);
+			}
+		}
+
+		const result = yield* interpretCall(spec.implementation.function_id, args, constraintArgs, context);
+		for (let i = 0; i < result.length; i++) {
+			stack[op.destinations[i].variable_id].value = result[i];
+		}
+		return null;
 	}
-	throw new Error(`cannot access ${index} in ${base.tag}`);
+
+	const _: never = op;
+	throw new Error("interpretOp: unhandled op tag `" + op["tag"] + "`");
 }

@@ -2,9 +2,11 @@ import { assert } from "./test";
 import * as ir from "./ir";
 import type { Value } from "./interpreter"
 import { interpret } from "./interpreter";
+import { parseSource } from "./grammar";
+import { compileSources } from "./semantics";
 
-const T_INT: ir.Type = { tag: "type-primitive", primitive: "Int" } as const;
-const T_BOOL: ir.Type = { tag: "type-primitive", primitive: "Boolean" } as const;
+const T_INT: ir.Type = ir.T_INT;
+const T_BOOL: ir.Type = ir.T_BOOLEAN;
 
 export function classType(name: string, ...args: ir.Type[]): ir.Type {
 	return {
@@ -82,8 +84,8 @@ export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], a
 export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: number, ts: ir.Type[], dst: number[], args: number[] }): ir.OpDynamicCall {
 	return {
 		tag: "op-dynamic-call",
-		interface: { interface_id: i },
-		interface_arguments: its,
+		constraint: { interface_id: i },
+		subjects: its,
 		signature_id: f,
 		signature_type_arguments: ts,
 		destinations: dst.map(x => ({ variable_id: x })),
@@ -92,7 +94,7 @@ export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir
 }
 
 const foreign: Record<string, ir.FunctionSignature> = {
-	"int=": {
+	"Int==": {
 		// Equality
 		parameters: [T_INT, T_INT],
 		return_types: [T_BOOL],
@@ -108,7 +110,7 @@ const foreign: Record<string, ir.FunctionSignature> = {
 			}
 		],
 	},
-	"int+": {
+	"Int+": {
 		// Addition
 		parameters: [T_INT, T_INT],
 		return_types: [T_INT],
@@ -117,7 +119,7 @@ const foreign: Record<string, ir.FunctionSignature> = {
 		preconditions: [],
 		postconditions: [],
 	},
-	"int-": {
+	"Int-": {
 		// Addition
 		parameters: [T_INT, T_INT],
 		return_types: [T_INT],
@@ -166,7 +168,7 @@ export const tests = {
 						opVar(T_INT, "zero: #1"),
 						opConst(1, 0),
 						opVar(T_BOOL, "arg == 0: #2"),
-						opForeign({ f: "int=", dst: [2], args: [0, 1] }),
+						opForeign({ f: "Int==", dst: [2], args: [0, 1] }),
 						opVar(T_INT, "1: #3"),
 						opConst(3, 1),
 						opBranch(2,
@@ -174,7 +176,7 @@ export const tests = {
 								opReturn(3),
 							),
 							opBlock(
-								opForeign({ f: "int=", dst: [2], args: [0, 3] }),
+								opForeign({ f: "Int==", dst: [2], args: [0, 3] }),
 								opBranch(2,
 									opBlock(
 										opReturn(3),
@@ -184,11 +186,11 @@ export const tests = {
 										opVar(T_INT, "arg - 2: #5"),
 										opVar(T_INT, "2: #6"),
 										opConst(6, 2),
-										opForeign({ f: "int-", dst: [4], args: [0, 3] }),
-										opForeign({ f: "int-", dst: [5], args: [0, 6] }),
+										opForeign({ f: "Int-", dst: [4], args: [0, 3] }),
+										opForeign({ f: "Int-", dst: [5], args: [0, 6] }),
 										opStaticCall({ f: "fib", dst: [4], args: [4], ts: [] }),
 										opStaticCall({ f: "fib", dst: [5], args: [5], ts: [] }),
-										opForeign({ f: "int+", dst: [4], args: [4, 5] }),
+										opForeign({ f: "Int+", dst: [4], args: [4, 5] }),
 										opReturn(4),
 									),
 								),
@@ -200,18 +202,18 @@ export const tests = {
 			foreign: foreign,
 		};
 
-		const [returned] = interpret("main", program, {
-			"int+": ([a, b]: Value[]) => {
+		const [returned] = interpret("main", [], program, {
+			"Int+": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");
 				if (b.sort !== "int") throw new Error("bad argument");
 				return [{ sort: "int", int: a.int + b.int }];
 			},
-			"int-": ([a, b]: Value[]) => {
+			"Int-": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");
 				if (b.sort !== "int") throw new Error("bad argument");
 				return [{ sort: "int", int: a.int - b.int }];
 			},
-			"int=": ([a, b]: Value[]) => {
+			"Int==": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");
 				if (b.sort !== "int") throw new Error("bad argument");
 				return [{ sort: "boolean", boolean: a.int == b.int }];
@@ -225,11 +227,11 @@ export const tests = {
 			globalVTableFactories: {
 				"FortyTwoIsFavorite": {
 					interface: { interface_id: "Favorite" },
-					interface_arguments: [classType("FortyTwo")],
+					subjects: [classType("FortyTwo")],
 					for_any: [],
-					implementations: [
+					entries: [
 						{
-							implementation: { "function_id": "fortyTwo" },
+							implementation: { function_id: "fortyTwo" },
 							constraint_parameters: [],
 						}
 					],
@@ -294,7 +296,7 @@ export const tests = {
 			foreign: {},
 		};
 
-		const [returned] = interpret("main", program, {});
+		const [returned] = interpret("main", [], program, {});
 		assert(returned, "is equal to", {
 			sort: "int",
 			int: 42,
@@ -305,9 +307,9 @@ export const tests = {
 			globalVTableFactories: {
 				"ThirteenIsFavorite": {
 					interface: { interface_id: "Favorite" },
-					interface_arguments: [classType("Thirteen")],
+					subjects: [classType("Thirteen")],
 					for_any: [],
-					implementations: [
+					entries: [
 						{
 							implementation: { "function_id": "thirteen" },
 							constraint_parameters: [],
@@ -400,7 +402,7 @@ export const tests = {
 			foreign: {},
 		};
 
-		const [returned] = interpret("main", program, {});
+		const [returned] = interpret("main", [], program, {});
 		assert(returned, "is equal to", {
 			sort: "int",
 			int: 13,
@@ -411,9 +413,9 @@ export const tests = {
 			globalVTableFactories: {
 				"SevenIsFavorite": {
 					interface: { interface_id: "Favorite" },
-					interface_arguments: [classType("Seven")],
+					subjects: [classType("Seven")],
 					for_any: [],
-					implementations: [
+					entries: [
 						{
 							implementation: { "function_id": "seven" },
 							constraint_parameters: [],
@@ -422,9 +424,9 @@ export const tests = {
 				},
 				"SquarerIsFavorite": {
 					interface: { interface_id: "Favorite" },
-					interface_arguments: [classType("Squarer", variableType(0))],
+					subjects: [classType("Squarer", variableType(0))],
 					for_any: [variableType(0)],
-					implementations: [
+					entries: [
 						{
 							implementation: { function_id: "squareFavorite" },
 							constraint_parameters: [
@@ -551,7 +553,7 @@ export const tests = {
 			foreign: foreign,
 		};
 
-		const [returned] = interpret("main", program, {
+		const [returned] = interpret("main", [], program, {
 			"int*": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");
 				if (b.sort !== "int") throw new Error("bad argument");
@@ -562,5 +564,51 @@ export const tests = {
 			sort: "int",
 			int: 49,
 		});
+	},
+	"end-to-end"() {
+		const text = `
+		package example;
+		record Main {
+			fn lucas(n: Int): Int {
+				if n == 0 {
+					return 2;
+				} else if n == 1 {
+					return 1;
+				}
+				return Main.lucas(n - 1) + Main.lucas(n - 2);
+			}
+
+			fn main(): Int, Int, Int, Int, Int, Int, Int {
+				return Main.lucas(1), Main.lucas(2), Main.lucas(3), Main.lucas(4), Main.lucas(5), Main.lucas(6), Main.lucas(7);
+			}
+		}`;
+		const ast = parseSource(text, "test-file");
+		const program = compileSources([ast]);
+		const result = interpret("example.Main.main", [], program, {
+			"Int+": ([a, b]: Value[]) => {
+				if (a.sort !== "int") throw new Error("bad argument");
+				if (b.sort !== "int") throw new Error("bad argument");
+				return [{ sort: "int", int: a.int + b.int }];
+			},
+			"Int-": ([a, b]: Value[]) => {
+				if (a.sort !== "int") throw new Error("bad argument");
+				if (b.sort !== "int") throw new Error("bad argument");
+				return [{ sort: "int", int: a.int - b.int }];
+			},
+			"Int==": ([a, b]: Value[]) => {
+				if (a.sort !== "int") throw new Error("bad argument");
+				if (b.sort !== "int") throw new Error("bad argument");
+				return [{ sort: "boolean", boolean: a.int == b.int }];
+			},
+		});
+		assert(result, "is equal to", [
+			{ sort: "int", int: 1 },
+			{ sort: "int", int: 3 },
+			{ sort: "int", int: 4 },
+			{ sort: "int", int: 7 },
+			{ sort: "int", int: 11 },
+			{ sort: "int", int: 18 },
+			{ sort: "int", int: 29 },
+		]);
 	},
 };

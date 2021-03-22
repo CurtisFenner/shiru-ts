@@ -174,10 +174,10 @@ function createFunctionIDs(state: VerificationState, destinations: ir.VariableID
 }
 
 function createDynamicFunctionID(state: VerificationState, op: ir.OpDynamicCall): string[] {
-	const args = op.interface_arguments.concat(op.signature_type_arguments).map(showType);
+	const args = op.subjects.concat(op.signature_type_arguments).map(showType);
 	// TODO: This is a bad way to do this, particularly because it makes 
 	// encoding parametricity relationships harder.
-	const prefix = `dyn_${op.interface.interface_id}:${op.signature_id}[${args.join(",")}]`;
+	const prefix = `dyn_${op.constraint.interface_id}:${op.signature_id}[${args.join(",")}]`;
 	const fs = [];
 	for (let i = 0; i < op.destinations.length; i++) {
 		const f = `${prefix}:${i}`;

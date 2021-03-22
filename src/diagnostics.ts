@@ -150,11 +150,19 @@ export class MultiExpressionGroupedErr extends SemanticError {
 	constructor(args: {
 		location: SourceLocation,
 		valueCount: number,
-		grouping: "parens" | "field" | "method",
+		grouping: "parens" | "field" | "method" | "if" | "op",
+		op?: string,
 	}) {
+		const by = {
+			parens: "parenthesization",
+			field: "a field access",
+			method: "a method access",
+			if: "an `if` condition",
+			op: "a `" + args.op + "` operation",
+		};
 		super([
 			"An expression has " + args.valueCount + " values and so cannot be grouped",
-			"by " + args.grouping + " at",
+			"by " + by[args.grouping] + " at",
 			args.location,
 		]);
 	}
@@ -199,6 +207,77 @@ export class FieldAccessOnNonCompoundErr extends SemanticError {
 		super([
 			"The type `" + args.accessedType + "` is not a compound type so a field access is illegal at",
 			args.accessedLocation,
+		]);
+	}
+}
+
+export class BooleanTypeExpectedErr extends SemanticError {
+	constructor(args: {
+		givenType: string,
+		location: SourceLocation,
+		reason: "if",
+	}) {
+		super([
+			"A condition expression with type `" + args.givenType + "` at",
+			args.location,
+			"cannot be converted to the type `Boolean` as required of `if` conditions.",
+		]);
+	}
+}
+
+export class TypeDoesNotProvideOperatorErr extends SemanticError {
+	constructor({ lhsType, operator, operatorLocation }: {
+		lhsType: string,
+		operatorLocation: SourceLocation,
+		operator: string,
+	}) {
+		super([
+			"The type `" + lhsType + "` does not have an operator `" + operator + "`,"
+			+ " so an operation is illegal at",
+			operatorLocation,
+		]);
+	}
+}
+
+export class OperatorTypeMismatchErr extends SemanticError {
+	constructor(args: {
+		lhsType: string,
+		operator: string,
+		givenRhsType: string,
+		expectedRhsType: string,
+		rhsLocation: SourceLocation
+	}) {
+		super([
+			"The operator `" + args.operator + "`"
+			+ " with type `" + args.lhsType
+			+ "` on the left side expects a value with type `"
+			+ args.expectedRhsType + "` on the right side, but one of type `"
+			+ args.givenRhsType + "` was given at",
+			args.rhsLocation
+		]);
+	}
+}
+
+export class CallOnNonCompoundErr extends SemanticError {
+	constructor(args: {
+		baseType: string,
+		location: SourceLocation,
+	}) {
+		super([
+			"TODO: CallOnNonCompoundErr",
+		]);
+	}
+}
+
+export class NoSuchFnErr extends SemanticError {
+	constructor(args: {
+		baseType: string,
+		methodName: string,
+		methodNameLocation: SourceLocation,
+	}) {
+		super([
+			"TODO: NoSuchFnErr: " + args.baseType + " " + args.methodName + " ",
+			args.methodNameLocation,
 		]);
 	}
 }

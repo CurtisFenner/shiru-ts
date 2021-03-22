@@ -198,7 +198,9 @@ const tokens = {
 
 const keywords = {
 	class: keywordParser("class"),
+	else: keywordParser("else"),
 	fn: keywordParser("fn"),
+	if: keywordParser("if"),
 	import: keywordParser("import"),
 	is: keywordParser("is"),
 	interface: keywordParser("interface"),
@@ -351,7 +353,24 @@ export interface ReturnSt {
 	location: SourceLocation,
 }
 
-export type Statement = VarSt | ReturnSt;
+export interface IfSt {
+	tag: "if",
+	condition: Expression,
+	body: Block,
+	elseIfClauses: ElseIfClause[],
+	elseClause: ElseClause | null,
+}
+
+export interface ElseIfClause {
+	condition: Expression,
+	body: Block,
+}
+
+export interface ElseClause {
+	body: Block,
+}
+
+export type Statement = VarSt | ReturnSt | IfSt;
 
 export interface VarSt {
 	tag: "var",
@@ -391,6 +410,8 @@ export interface ExpressionAccessField {
 export interface ExpressionOperand {
 	atom: ExpressionAtom,
 	accesses: ExpressionAccess[],
+
+	location: SourceLocation,
 }
 
 export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
@@ -419,6 +440,8 @@ export interface ExpressionCall {
 	t: Type,
 	methodName: IdenToken,
 	arguments: Expression[],
+
+	location: SourceLocation,
 }
 
 export interface ExpressionNew {
@@ -441,11 +464,14 @@ export type ExpressionAtom = ExpressionParenthesized
 type ASTs = {
 	Block: Block,
 	Definition: Definition,
+	ElseClause: ElseClause,
+	ElseIfClause: ElseIfClause,
 	Expression: Expression,
 	ExpressionAccess: ExpressionAccess,
 	ExpressionAccessField: ExpressionAccessField,
 	ExpressionAccessMethod: ExpressionAccessMethod,
 	ExpressionAtom: ExpressionAtom,
+	ExpressionCall: ExpressionCall,
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
 	ExpressionOperationBinary: ExpressionOperationBinary,
@@ -455,6 +481,7 @@ type ASTs = {
 	FnParameter: FnParameter,
 	FnParameters: FnParameters,
 	FnSignature: FnSignature,
+	IfSt: IfSt,
 	Import: Import,
 	ImportOfObject: ImportOfObject,
 	ImportOfPackage: ImportOfPackage,
@@ -493,6 +520,19 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
 	Definition: new ChoiceParser(() => [grammar.RecordDefinition]),
+	ElseClause: new RecordParser(() => ({
+		_else: keywords.else,
+		body: grammar.Block
+			.required(parseProblem("Expected a block after `else` at", atHead)),
+	})),
+	ElseIfClause: new RecordParser(() => ({
+		_else: keywords.else,
+		_if: keywords.if,
+		condition: grammar.Expression
+			.required(parseProblem("Expected an expression after `if` at", atHead)),
+		body: grammar.Block
+			.required(parseProblem("Expected a block after condition at", atHead)),
+	})),
 	Expression: new StructParser(() => ({
 		left: grammar.ExpressionOperand,
 		operations: new RepeatParser(grammar.ExpressionOperation),
@@ -515,22 +555,33 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `)` at", atHead,
 				"to complete a method call beginning at", atReference("_open"))),
 	})),
-	ExpressionParenthesized: new StructParser(() => ({
-		_open: punctuation.roundOpen,
-		tag: new ConstParser("paren"),
-		expression: grammar.Expression,
-		_close: punctuation.roundClose
-			.required(parseProblem("Expected a `)` at", atHead,
-				"to complete a grouping that began at", atReference("_open"))),
-	})),
 	ExpressionAtom: new ChoiceParser<Token, ExpressionAtom>(() => [
 		grammar.ExpressionParenthesized,
 		tokens.stringLiteral,
 		tokens.numberLiteral,
 		tokens.booleanLiteral,
 		tokens.iden,
+		grammar.ExpressionCall,
 	]),
-	ExpressionOperand: new RecordParser(() => ({
+	ExpressionCall: new StructParser(() => ({
+		t: grammar.TypeNamed,
+		tag: new ConstParser("call"),
+		_dot: punctuation.dot
+			.required(parseProblem(
+				"Expected a `.` after a type in a function call expression at", atHead)),
+		methodName: tokens.iden
+			.required(parseProblem(
+				"Expected a function name after `.` in a call expression", atHead)),
+		_open: punctuation.roundOpen
+			.required(parseProblem(
+				"Expected a `(` after a function name in a call expression at", atHead)),
+		arguments: new CommaParser(grammar.Expression, "Expected another argument at"),
+		_close: punctuation.roundClose
+			.required(parseProblem(
+				"Expected a `)` at", atHead,
+				"to complete a function call beginning at", atReference("_open"))),
+	})),
+	ExpressionOperand: new StructParser(() => ({
 		atom: grammar.ExpressionAtom,
 		accesses: new RepeatParser(grammar.ExpressionAccess),
 	})),
@@ -540,6 +591,14 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		right: grammar.ExpressionOperand
 			.required(parseProblem("Expected an operand at", atHead,
 				"after the binary operator at", atReference("operator")))
+	})),
+	ExpressionParenthesized: new StructParser(() => ({
+		_open: punctuation.roundOpen,
+		tag: new ConstParser("paren"),
+		expression: grammar.Expression,
+		_close: punctuation.roundClose
+			.required(parseProblem("Expected a `)` at", atHead,
+				"to complete a grouping that began at", atReference("_open"))),
 	})),
 	Field: new StructParser(() => ({
 		_var: keywords.var,
@@ -581,6 +640,16 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `:` after function parameters at", atHead)),
 		returns: new CommaParser(grammar.Type, "Expected a return type at")
 			.map(requireAtLeastOne("return type")),
+	})),
+	IfSt: new RecordParser(() => ({
+		_if: keywords.if,
+		tag: new ConstParser("if"),
+		condition: grammar.Expression
+			.required(parseProblem("Expected a condition after `if` at", atHead)),
+		body: grammar.Block
+			.required(parseProblem("Expected a block after if condition at", atHead)),
+		elseIfClauses: new RepeatParser(grammar.ElseIfClause),
+		elseClause: grammar.ElseClause.otherwise(null),
 	})),
 	InterfaceMember: new RecordParser(() => ({
 		signature: grammar.FnSignature,
@@ -657,7 +726,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_semicolon: punctuation.semicolon
 			.required(parseProblem("Expected a `;` to complete a return statement at", atHead)),
 	})),
-	Statement: choice(() => grammar, "VarSt", "ReturnSt"),
+	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt"),
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,

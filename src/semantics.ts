@@ -19,6 +19,8 @@ interface FnBinding {
 	parameters: TypeBinding[],
 	returns: TypeBinding[],
 	ast: grammar.Fn,
+
+	id: ir.FunctionID,
 }
 
 interface RecordEntityDef {
@@ -64,6 +66,8 @@ interface ProgramContext {
 	/// `entitiesByCanonical` identifies information of the entity with the 
 	/// given "canonical" name.of the entity.
 	entitiesByCanonical: Record<string, EntityDef>,
+
+	foreignSignatures: Record<string, ir.FunctionSignature>,
 }
 
 /// `SourceContext` represents the "view" of the program from the perspective of
@@ -89,6 +93,7 @@ function collectAllEntities(sources: grammar.Source[]) {
 	const programContext: ProgramContext = {
 		canonicalByQualifiedName: {},
 		entitiesByCanonical: {},
+		foreignSignatures: getBasicForeign(),
 	};
 
 	for (const source of sources) {
@@ -449,6 +454,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 				parameters: parameterTypes,
 				returns: returnTypes,
 				ast: fn,
+				id: { function_id: canonicalFunctionName(entityName, fnName) },
 			};
 		}
 
@@ -535,6 +541,115 @@ interface ValueInfo {
 	location: ir.SourceLocation,
 }
 
+function getRecord(context: FunctionContext, record: ir.RecordID): RecordEntityDef {
+	const entity = context.sourceContext.programContext.entitiesByCanonical[record.record_id];
+	if (entity.tag !== "record") {
+		throw new Error("ICE: Bad record ID");
+	}
+	return entity;
+}
+
+function compileCallExpression(
+	e: grammar.ExpressionCall,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext): ValueInfo {
+	const baseType = compileType(e.t, typeScope, context.sourceContext);
+	if (baseType.tag !== "type-compound") {
+		// TODO: Handle dynamic dispatch on type parameters.
+		throw new diagnostics.CallOnNonCompoundErr({
+			baseType: displayType(baseType, typeScope, context.sourceContext),
+			location: e.t.location,
+		});
+	}
+
+	const record = getRecord(context, baseType.record);
+	const fn = record.fns[e.methodName.name];
+	if (fn === undefined) {
+		throw new diagnostics.NoSuchFnErr({
+			baseType: displayType(baseType, typeScope, context.sourceContext),
+			methodName: e.methodName.name,
+			methodNameLocation: e.methodName.location,
+		});
+	}
+
+	const argValues = [];
+	for (let arg of e.arguments) {
+		const tuple = compileExpression(arg, ops, stack, typeScope, context);
+		for (let i = 0; i < tuple.values.length; i++) {
+			argValues.push({ tuple, i });
+		}
+	}
+
+	if (argValues.length !== fn.parameters.length) {
+		throw new diagnostics.ValueCountMismatchErr({
+			actualCount: argValues.length,
+			actualLocation: ir.locationsSpan(e.arguments),
+			expectedCount: fn.parameters.length,
+			expectedLocation: ir.locationsSpan(fn.parameters),
+		});
+	}
+
+	const typeArgumentMapping: Map<number, ir.Type> = new Map();
+	for (let i = 0; i < baseType.type_arguments.length; i++) {
+		typeArgumentMapping.set(i, baseType.type_arguments[i]);
+	}
+
+	const argumentSources = [];
+	for (let i = 0; i < argValues.length; i++) {
+		const value = argValues[i];
+		const valueType = value.tuple.values[value.i].t;
+		const templateType = fn.parameters[i].t;
+
+		const expectedType = ir.typeSubstitute(templateType, typeArgumentMapping);
+
+		if (!ir.equalTypes(expectedType, valueType)) {
+			throw new diagnostics.TypeMismatchErr({
+				givenType: displayType(valueType, typeScope, context.sourceContext),
+				givenLocation: value.tuple.location,
+				givenIndex: { index0: value.i, count: value.tuple.values.length },
+				expectedType: displayType(expectedType, typeScope, context.sourceContext),
+				expectedLocation: fn.parameters[i].location,
+			});
+		}
+		argumentSources.push(value.tuple.values[value.i].id);
+	}
+
+	const destinations = [];
+	const info = [];
+	for (let i = 0; i < fn.returns.length; i++) {
+		const templateType = fn.returns[i].t;
+		const returnType = ir.typeSubstitute(templateType, typeArgumentMapping);
+
+		const result = stack.defineTemporary(returnType, e.location);
+		destinations.push(result.id);
+		info.push({
+			t: returnType,
+			id: result.id,
+		});
+		ops.push({
+			tag: "op-var",
+			type: result.t,
+		});
+	}
+	ops.push({
+		tag: "op-static-call",
+		function: fn.id,
+
+		arguments: argumentSources,
+		type_arguments: baseType.type_arguments,
+		destinations: destinations,
+
+		diagnostic_callsite: e.location,
+	});
+
+	return {
+		values: info,
+		location: e.location,
+	};
+}
+
 function compileExpressionAtom(
 	e: grammar.ExpressionAtom,
 	ops: ir.Op[],
@@ -571,9 +686,18 @@ function compileExpressionAtom(
 			value: e.value,
 		});
 		return { values: [{ t: v.t, id: v.id }], location: e.location };
+	} else if (e.tag === "call") {
+		return compileCallExpression(e, ops, stack, typeScope, context);
+	} else if (e.tag === "keyword") {
+		throw new Error("TODO");
+	} else if (e.tag === "new") {
+		throw new Error("TODO");
+	} else if (e.tag === "string-literal") {
+		throw new Error("TODO");
 	}
 
-	throw new Error("TODO: Unhandled tag `" + e.tag + "` in compileExpressionAtom");
+	const _: never = e;
+	throw new Error("TODO: Unhandled tag `" + e["tag"] + "` in compileExpressionAtom");
 }
 
 function compileOperand(
@@ -604,13 +728,43 @@ function compileOperand(
 		} else if (access.tag === "method") {
 			throw new Error("TODO: compileOperand method access");
 		} else {
+			const _: never = access;
 			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
 		}
 	}
 
 	return value;
+}
 
-	throw new Error("TODO:");
+function resolveOperator(
+	lhs: ValueInfo,
+	operator: lexer.OperatorToken,
+	typeScope: TypeScope,
+	context: FunctionContext): ir.FunctionID {
+	if (lhs.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: lhs.location,
+			valueCount: lhs.values.length,
+			grouping: "op",
+			op: operator.operator,
+		});
+	}
+	const value = lhs.values[0];
+	if (ir.equalTypes(ir.T_INT, value.t)) {
+		if (operator.operator === "+") {
+			return { function_id: "Int+" };
+		} else if (operator.operator === "-") {
+			return { function_id: "Int-" };
+		} else if (operator.operator === "==") {
+			return { function_id: "Int==" };
+		}
+	}
+
+	throw new diagnostics.TypeDoesNotProvideOperatorErr({
+		lhsType: displayType(value.t, typeScope, context.sourceContext),
+		operator: operator.operator,
+		operatorLocation: operator.location,
+	});
 }
 
 function compileExpression(
@@ -627,9 +781,69 @@ function compileExpression(
 			throw new Error("TODO: Handle more than 1 operation. (Use parentheses)");
 		}
 
-		const operand = e.operations[1];
-		const right = compileOperand(operand.right, ops, stack, typeScope, context);
-		throw new Error("TODO: Invoke correct method/foreign");
+		const operation = e.operations[0];
+		const right = compileOperand(operation.right, ops, stack, typeScope, context);
+
+		const fn = resolveOperator(left, operation.operator, typeScope, context);
+		const foreign = context.sourceContext.programContext.foreignSignatures[fn.function_id];
+		if (foreign === undefined) {
+			throw new Error(
+				"resolveOperator produced a bad foreign signature (`" + fn.function_id
+				+ "`) for `" + displayType(left.values[0].t, typeScope, context.sourceContext)
+				+ "` `" + operation.operator.operator + "`");
+		}
+
+		if (foreign.parameters.length !== 2) {
+			throw new Error(
+				"Foreign signature `" + fn.function_id + "` cannot be used as"
+				+ "an operator since it doesn't take exactly 2 parameters");
+		}
+		const expectedRhsType = foreign.parameters[1];
+
+		if (right.values.length !== 1) {
+			throw new diagnostics.MultiExpressionGroupedErr({
+				location: operation.right.location,
+				valueCount: right.values.length,
+				grouping: "op",
+				op: operation.operator.operator,
+			});
+		}
+
+		if (!ir.equalTypes(expectedRhsType, right.values[0].t)) {
+			throw new diagnostics.OperatorTypeMismatchErr({
+				lhsType: displayType(left.values[0].t, typeScope, context.sourceContext),
+				operator: operation.operator.operator,
+				givenRhsType: displayType(right.values[0].t, typeScope, context.sourceContext),
+				expectedRhsType: displayType(foreign.parameters[1], typeScope, context.sourceContext),
+				rhsLocation: operation.right.location,
+			});
+		}
+
+		if (foreign.return_types.length !== 1) {
+			throw new Error(
+				"Foreign signature `" + fn.function_id
+				+ "` cannot be used as an operator since it produces "
+				+ foreign.return_types.length + " values");
+		}
+		const result = stack.defineTemporary(foreign.return_types[0],
+			ir.locationSpan(left.location, right.location));
+		ops.push({
+			tag: "op-var",
+			type: result.t,
+		});
+
+		ops.push({
+			tag: "op-foreign",
+			operation: fn.function_id,
+			arguments: [left.values[0].id, right.values[0].id],
+			destinations: [result.id],
+		});
+
+		// Fake left associativity:
+		left = {
+			values: [result],
+			location: result.bindingLocation,
+		};
 	}
 
 	return left;
@@ -652,6 +866,7 @@ function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: 
 	} else if (t.tag == "type-variable") {
 		return "#" + typeScope.typeVariableDebugNames[t.id.type_variable_id];
 	} else {
+		const _: never = t;
 		throw new Error("displayType: unhandled tag `" + t["tag"] + "`");
 	}
 }
@@ -762,6 +977,66 @@ function compileReturnSt(
 	ops.push(op);
 }
 
+function compileIfClause(
+	clause: grammar.ElseIfClause,
+	rest: grammar.ElseIfClause[],
+	restIndex: number,
+	elseClause: grammar.ElseClause | null,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext) {
+	const condition = compileExpression(clause.condition, ops, stack, typeScope, context);
+	if (condition.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: clause.condition.location,
+			valueCount: condition.values.length,
+			grouping: "if",
+		});
+	}
+	const conditionValue = condition.values[0];
+	if (!ir.equalTypes(ir.T_BOOLEAN, conditionValue.t)) {
+		throw new diagnostics.BooleanTypeExpectedErr({
+			givenType: displayType(conditionValue.t, typeScope, context.sourceContext),
+			location: clause.condition.location,
+			reason: "if",
+		});
+	}
+
+	const trueBranch: ir.OpBlock = compileBlock(clause.body, stack, typeScope, context);
+
+	stack.openBlock();
+	let falseBranch: ir.OpBlock = { tag: "op-block", ops: [] };
+	if (restIndex >= rest.length) {
+		// Reached else clause.
+		if (elseClause !== null) {
+			falseBranch = compileBlock(elseClause.body, stack, typeScope, context);
+		}
+	} else {
+		const next = rest[restIndex];
+		compileIfClause(rest[restIndex], rest, restIndex + 1, elseClause,
+			falseBranch.ops, stack, typeScope, context);
+	}
+	stack.closeBlock();
+
+	ops.push({
+		tag: "op-branch",
+		condition: conditionValue.id,
+		trueBranch,
+		falseBranch,
+	});
+}
+
+function compileIfSt(
+	statement: grammar.IfSt,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext) {
+	compileIfClause(statement, statement.elseIfClauses, 0, statement.elseClause,
+		ops, stack, typeScope, context);
+}
+
 function compileStatement(
 	statement: grammar.Statement,
 	ops: ir.Op[],
@@ -773,8 +1048,14 @@ function compileStatement(
 		return;
 	} else if (statement.tag === "return") {
 		compileReturnSt(statement, ops, stack, typeScope, context);
+		return;
+	} else if (statement.tag === "if") {
+		compileIfSt(statement, ops, stack, typeScope, context);
+		return;
 	}
-	throw new Error("Unhandled tag in compileStatement `" + statement.tag + "`");
+
+	const _: never = statement;
+	throw new Error("Unhandled tag in compileStatement `" + statement["tag"] + "`");
 }
 
 function compileBlock(
@@ -848,7 +1129,7 @@ function compileRecordEntity(
 	// Implement functions.
 	for (const f in entity.fns) {
 		const def = entity.fns[f];
-		const fName = canonicalFunctionName(entityName, f);
+		const fName = def.id.function_id;
 		compileFunction(program, def, fName, entity.sourceContext, entity.typeScope);
 	}
 
@@ -869,6 +1150,45 @@ function compileEntity(
 	} else {
 		throw new Error("Unhandled tag in compileEntity: " + entity.tag);
 	}
+}
+
+function getBasicForeign(): Record<string, ir.FunctionSignature> {
+	return {
+		"Int==": {
+			// Equality
+			parameters: [ir.T_INT, ir.T_INT],
+			return_types: [ir.T_BOOLEAN],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [
+				{
+					tag: "op-eq",
+					left: { variable_id: 0 },
+					right: { variable_id: 1 },
+					destination: { variable_id: 2 },
+				}
+			],
+		},
+		"Int+": {
+			// Addition
+			parameters: [ir.T_INT, ir.T_INT],
+			return_types: [ir.T_INT],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [],
+		},
+		"Int-": {
+			// Subtract
+			parameters: [ir.T_INT, ir.T_INT],
+			return_types: [ir.T_INT],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [],
+		},
+	};
 }
 
 /// `compileSources` transforms the ASTs making up a Shiru program into a
@@ -894,7 +1214,7 @@ export function compileSources(sources: grammar.Source[]): ir.Program {
 		functions: {},
 		interfaces: {},
 		records: {},
-		foreign: {},
+		foreign: programContext.foreignSignatures,
 		globalVTableFactories: {},
 	};
 

@@ -67,7 +67,6 @@ export type Type = TypePrimitive | TypeCompound | TypeVariable;
 export type FunctionID = { function_id: string };
 export type VariableID = { variable_id: number };
 export type RecordID = { record_id: string };
-export type ConstraintID = { constraint_id: number };
 export type InterfaceID = { interface_id: string };
 export type TypeVariableID = { type_variable_id: number };
 
@@ -159,8 +158,8 @@ export interface OpStaticCall {
 
 export interface OpDynamicCall {
 	tag: "op-dynamic-call",
-	interface: InterfaceID,
-	interface_arguments: Type[],
+	constraint: InterfaceID,
+	subjects: Type[],
 
 	// The index of the function to call within the interface's signature list.
 	signature_id: number,
@@ -311,19 +310,24 @@ export interface VTableFactory {
 
 	// The arguments to this interface. At least one must be provided.
 	// This array may reference variables in the `for_any` field.
-	interface_arguments: Type[],
+	subjects: Type[],
 
 	// The functions to call for the corresponding signatures in the interface.
-	implementations: VTableEntry[],
+	entries: VTableEntry[],
 };
 
 export interface VTableEntry {
 	implementation: FunctionID,
 
-	// These constraint parameters are captured as "closures" at time of 
-	// construction of the v-table. They may reference variables in the 
-	// `for_any` parameterization.
-	constraint_parameters: ConstraintParameter[],
+	/// `constraint_parameters` has one entry for each of the 
+	/// `constraint_parameters` in the `FunctionSignature` of the 
+	/// implementating function.
+	/// A `number` element indicates the index within the _interface_'s 
+	/// signature to use; a `ConstraintParameter` indicates a v-table to be 
+	/// captured as a closure when this v-table entry is constructed. These
+	/// specifications may reference variables from the `for_any` 
+	/// parameterization.
+	constraint_parameters: (number | ConstraintParameter)[],
 };
 
 /// `Program` represents a Shiru program: a collection of function definitions

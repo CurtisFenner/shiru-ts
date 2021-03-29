@@ -2,10 +2,14 @@
 	"scripts": {
 		"test": "node --enable-source-maps built/test.js",
 		"dimacs": "node --enable-source-maps built/dimacs.js",
+		"cmd": "node --enable-source-maps built/cmd.js",
 		"build": "tsc"
 	},
 	"dependencies": {
 		"@types/node": "^14.6.4"
 	},
-	"license": "LGPL-3.0-only"
+	"license": "LGPL-3.0-only",
+	"devDependencies": {
+		"typescript": "^4.2.3"
+	}
 }

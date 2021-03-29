@@ -5,7 +5,6 @@
     "outDir": "built",
     "strict": true,
     "noImplicitAny": true,
-    "jsx": "react",
     "allowJs": true,
     "sourceMap": true,
     "inlineSources": true,

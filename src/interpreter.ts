@@ -1,8 +1,10 @@
+import { Block } from "./grammar";
 import * as ir from "./ir";
+import { ErrorElement } from "./lexer";
 
-export type Value = ClassValue | BooleanValue | StringValue | IntValue;
-export type ClassValue = {
-	sort: "class",
+export type Value = RecordValue | BooleanValue | BytesValue | IntValue;
+export type RecordValue = {
+	sort: "record",
 	fields: {
 		[field: string]: Value,
 	},
@@ -11,9 +13,9 @@ export type BooleanValue = {
 	sort: "boolean",
 	boolean: boolean,
 };
-export type StringValue = {
-	sort: "string",
-	string: string,
+export type BytesValue = {
+	sort: "bytes",
+	bytes: string,
 };
 export type IntValue = {
 	sort: "int",
@@ -101,7 +103,9 @@ function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.T
 }
 
 function isTruthy(value: Value): boolean {
-	if (value.sort !== "boolean") throw new Error("bad value sort for isTruthy `" + value.sort + "`");
+	if (value.sort !== "boolean") {
+		throw new Error("bad value sort for isTruthy `" + value.sort + "`");
+	}
 	return value.boolean;
 }
 
@@ -228,7 +232,7 @@ export function* interpretCall(
 	const stack = args.map((value, i) => ({ value, t: fn.signature.parameters[i] }));
 	const result = yield* interpretBlock(fn.body, stack, newContext);
 	if (result === null) {
-		throw new Error("Function `" + fn + "` failed to return a result");
+		throw new Error("Function `" + fnName + "` failed to return a result");
 	}
 	return result;
 }
@@ -269,6 +273,8 @@ function* interpretOp(
 			value = { sort: "boolean", boolean: op.value };
 		} else if (typeof op.value === "number") {
 			value = { sort: "int", int: op.value };
+		} else if (typeof op.value === "string") {
+			value = { sort: "bytes", bytes: op.value };
 		} else {
 			const _: never = op.value;
 			throw new Error("interpretOp: unhandled op-const value");
@@ -310,7 +316,8 @@ function* interpretOp(
 		}
 		return null;
 	} else if (op.tag === "op-branch") {
-		const condition = isTruthy(stack[op.condition.variable_id].value);
+		const conditionValue = stack[op.condition.variable_id].value;
+		const condition = isTruthy(conditionValue);
 		const branch = condition ? op.trueBranch : op.falseBranch;
 		const result = yield* interpretBlock(branch, stack, context);
 		return result;
@@ -335,8 +342,168 @@ function* interpretOp(
 			stack[op.destinations[i].variable_id].value = result[i];
 		}
 		return null;
+	} else if (op.tag === "op-proof") {
+		// Do nothing.
+		return null;
+	} else if (op.tag === "op-new-record") {
+		const record: RecordValue = {
+			sort: "record",
+			fields: {},
+		};
+		for (let f in op.fields) {
+			record.fields[f] = stack[op.fields[f].variable_id].value;
+		}
+		stack[op.destination.variable_id].value = record;
+		return null;
+	} else if (op.tag === "op-field") {
+		const record = stack[op.object.variable_id].value;
+		if (record.sort !== "record") {
+			throw new Error("bad value sort for field access");
+		}
+		stack[op.destination.variable_id].value = record.fields[op.field];
+		return null;
+	} else if (op.tag === "op-unreachable") {
+		throw new RunErr([
+			"Hit unreachable op at",
+			op.diagnostic_location || " (unknown location)",
+		]);
 	}
 
 	const _: never = op;
 	throw new Error("interpretOp: unhandled op tag `" + op["tag"] + "`");
+}
+
+class RunErr {
+	constructor(public message: ErrorElement[]) { }
+}
+
+function showType(t: ir.Type, context: { typeVariables: string[] }): string {
+	if (t.tag === "type-compound") {
+		const generics = "[" + t.type_arguments.map(x => showType(x, context)).join(", ") + "]";
+		return t.record.record_id + generics;
+	} else if (t.tag === "type-primitive") {
+		return t.primitive;
+	} else {
+		return "#" + context.typeVariables[t.id.type_variable_id];
+	}
+}
+
+export function printProgram(program: ir.Program, lines: string[]) {
+	for (let fnName in program.functions) {
+		printFn(program, fnName, lines);
+	}
+}
+
+export function printFn(program: ir.Program, fnName: string, lines: string[]) {
+	const fn = program.functions[fnName];
+	const context = { stack: [] as string[], typeVariables: [] as string[] };
+	for (let i = 0; i < fn.signature.type_parameters.length; i++) {
+		context.typeVariables[i] = "T" + i;
+	}
+	const parameters = [];
+	for (let i = 0; i < fn.signature.parameters.length; i++) {
+		context.stack[i] = "p" + i;
+		parameters.push(context.stack[i] + ": " + showType(fn.signature.parameters[i], context));
+	}
+	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
+	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ") {");
+	printBlockContents(fn.body, "", context, lines);
+	lines.push("}");
+	lines.push("");
+}
+
+export function printBlockContents(
+	block: ir.OpBlock,
+	indent: string,
+	context: { stack: string[], typeVariables: string[] },
+	lines: string[],
+) {
+	const before = context.stack.length;
+	for (let op of block.ops) {
+		printOp(op, indent + "\t", context, lines);
+	}
+	context.stack.splice(before);
+}
+
+export function printOp(
+	op: ir.Op,
+	indent: string,
+	context: { stack: string[], typeVariables: string[] },
+	lines: string[],
+) {
+	if (op.tag === "op-assign") {
+		const src = context.stack[op.source.variable_id];
+		const dst = context.stack[op.destination.variable_id];
+		lines.push(indent + dst + " = " + src + ";");
+		return;
+	} else if (op.tag === "op-branch") {
+		const cond = context.stack[op.condition.variable_id];
+		lines.push(indent + "if " + cond + " {");
+		printBlockContents(op.trueBranch, indent, context, lines);
+		lines.push(indent + "} else {");
+		printBlockContents(op.falseBranch, indent, context, lines);
+		lines.push(indent + "}");
+		return;
+	} else if (op.tag === "op-return") {
+		const srcs = op.sources.map(x => context.stack[x.variable_id]);
+		lines.push(indent + "return " + srcs.join(", ") + ";");
+		return;
+	} else if (op.tag === "op-var") {
+		const t = showType(op.type, context);
+		const id = context.stack.length;
+		const n = "v" + id;
+		context.stack.push(n);
+		lines.push(indent + "var " + n + ": " + t + "; // " + id);
+		return;
+	} else if (op.tag === "op-const") {
+		let dst = context.stack[op.destination.variable_id];
+		if (!dst) {
+			dst = "<bad " + op.destination.variable_id + ">";
+		}
+		lines.push(indent + dst + " = " + op.value + ";");
+		return;
+	} else if (op.tag === "op-foreign") {
+		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
+		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		lines.push(indent + dsts.join(", ") + " = " + op.operation + "(" + args.join(", ") + ");");
+		return;
+	} else if (op.tag === "op-unreachable") {
+		lines.push(indent + "unreachable; // " + op.diagnostic_kind);
+		return;
+	} else if (op.tag === "op-static-call") {
+		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
+		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		const targs = op.type_arguments.map(x => showType(x, context));
+		lines.push(indent + dsts.join(", ") + " = " + op.function.function_id
+			+ "[" + targs.join(", ") + "](" + args.join(", ") + ");");
+		return;
+	} else if (op.tag === "op-proof") {
+		lines.push(indent + "proof {");
+		printBlockContents(op.body, indent, context, lines);
+		lines.push("}");
+		return;
+	} else if (op.tag === "op-dynamic-call") {
+		const f = op.constraint.interface_id + "." + op.signature_id;
+		const targs = op.signature_type_arguments.map(x => showType(x, context));
+		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
+		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		lines.push(indent + dsts.join(", ") + " = "
+			+ f + "[" + targs.join(", ") + "](" + args.join(", ") + ")");
+		return;
+	} else if (op.tag === "op-field") {
+		lines.push(indent + context.stack[op.destination.variable_id] + " = "
+			+ context.stack[op.object.variable_id] + "." + op.field + ";");
+		return;
+	} else if (op.tag === "op-new-record") {
+		const args = [];
+		for (let k in op.fields) {
+			args.push(k + " = " + context.stack[op.fields[k].variable_id]);
+		}
+		lines.push(indent + context.stack[op.destination.variable_id] + " = "
+			+ "new(" + args + ");");
+		return;
+	}
+
+	const _: never = op;
+	lines.push(indent + "??? " + op["tag"] + " ???");
 }

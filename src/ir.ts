@@ -82,7 +82,7 @@ export interface OpVar {
 export interface OpConst {
 	tag: "op-const",
 	destination: VariableID,
-	value: number | boolean,
+	value: number | boolean | string,
 };
 
 /// `OpAssign` overwrites a destination variable with the current value of a
@@ -189,7 +189,7 @@ export interface OpBlock {
 /// function calls) in the body of an OpProof must be total (terminate).
 export interface OpProof {
 	tag: "op-proof",
-	body: Op,
+	body: OpBlock,
 };
 
 /// `OpUnreachable` indicates a point in the program which is unreachable 
@@ -214,17 +214,6 @@ export interface OpForeign {
 	destinations: VariableID[],
 };
 
-/// `OpEq` is used in specifications of functions to indicate that they produce
-/// an equivalence relation that is _extensional_ with respect to all other 
-/// operations.
-/// TODO: Pin down how this works with 'quotient' types.
-export interface OpEq {
-	tag: "op-eq",
-	left: VariableID,
-	right: VariableID,
-	destination: VariableID,
-};
-
 export type LeafOp = OpVar
 	| OpConst
 	| OpAssign
@@ -232,8 +221,7 @@ export type LeafOp = OpVar
 	| OpStaticCall | OpDynamicCall
 	| OpForeign
 	| OpReturn
-	| OpUnreachable
-	| OpEq;
+	| OpUnreachable;
 
 export type Op = OpBranch | OpProof | LeafOp;
 
@@ -280,6 +268,13 @@ export interface FunctionSignature {
 	/// the implementation, and may be _assumed_ to be true in subsequent 
 	/// postconditions and at callsites.
 	postconditions: Op[],
+
+	semantics?: {
+		/// Indicates that this is a congruence relation, which is an 
+		/// equivalence relation that respects extensionality. 
+		/// That is, a == b implies f(a) == f(b).
+		eq?: true,
+	},
 };
 
 export interface IRFunction {
@@ -365,9 +360,25 @@ export function typecheckProgram(program: Program): Problem[] {
 	return problems;
 }
 
+function opTerminates(op: Op) {
+	return op.tag === "op-return" || op.tag === "op-unreachable";
+}
+
 function typecheckFunction(program: Program, fid: string): Problem[] {
 	const fDef = program.functions[fid];
+	const body = fDef.body;
+
+	const problems = [];
+
+	if (body.ops.length === 0 || !opTerminates(body.ops[body.ops.length - 1])) {
+		problems.push({
+			tag: "missing-return",
+			message: "Function `" + fid + "` does not end with op-return/op-unreachable",
+		});
+	}
+
 	throw new Error("TODO");
+	return problems;
 }
 
 function typecheckInterface(program: Program, iid: string): Problem[] {

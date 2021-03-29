@@ -40,6 +40,15 @@ export const tests = {
 			],
 		});
 	},
+	"expect-something"() {
+		const source = ``;
+		assert(() => grammar.parseSource(source, "test-file"), "throws", {
+			message: [
+				"Expected a package declaration to begin the source file at",
+				{ fileID: "test-file", offset: 0, length: 0 },
+			],
+		});
+	},
 	"parse-minimal-record"() {
 		const code = `record A {}`;
 		const tokens = tokenize(code, "test-file");

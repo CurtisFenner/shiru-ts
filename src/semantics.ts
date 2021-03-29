@@ -689,11 +689,36 @@ function compileExpressionAtom(
 	} else if (e.tag === "call") {
 		return compileCallExpression(e, ops, stack, typeScope, context);
 	} else if (e.tag === "keyword") {
-		throw new Error("TODO");
+		if (e.keyword === "false" || e.keyword === "true") {
+			const v = stack.defineTemporary(ir.T_BOOLEAN, e.location);
+			ops.push({
+				tag: "op-var",
+				type: v.t,
+			});
+			ops.push({
+				tag: "op-const",
+				destination: v.id,
+				value: e.keyword === "true",
+			});
+			return { values: [{ t: v.t, id: v.id }], location: e.location };
+		} else {
+			const _: never = e.keyword;
+			throw new Error("compileExpressionAtom: keyword `" + e["keyword"] + "`");
+		}
 	} else if (e.tag === "new") {
 		throw new Error("TODO");
 	} else if (e.tag === "string-literal") {
-		throw new Error("TODO");
+		const v = stack.defineTemporary(ir.T_BYTES, e.location);
+		ops.push({
+			tag: "op-var",
+			type: v.t,
+		});
+		ops.push({
+			tag: "op-const",
+			destination: v.id,
+			value: e.value,
+		});
+		return { values: [{ t: v.t, id: v.id }], location: e.location };
 	}
 
 	const _: never = e;
@@ -736,64 +761,329 @@ function compileOperand(
 	return value;
 }
 
+/// Throws `MultiExpressionGroupedErr` if `lhs` does not have exactly 1 value.
 function resolveOperator(
 	lhs: ValueInfo,
 	operator: lexer.OperatorToken,
 	typeScope: TypeScope,
 	context: FunctionContext): ir.FunctionID {
+	const opStr = operator.operator;
 	if (lhs.values.length !== 1) {
 		throw new diagnostics.MultiExpressionGroupedErr({
 			location: lhs.location,
 			valueCount: lhs.values.length,
 			grouping: "op",
-			op: operator.operator,
+			op: opStr,
 		});
 	}
 	const value = lhs.values[0];
 	if (ir.equalTypes(ir.T_INT, value.t)) {
-		if (operator.operator === "+") {
+		if (opStr === "+") {
 			return { function_id: "Int+" };
-		} else if (operator.operator === "-") {
+		} else if (opStr === "-") {
 			return { function_id: "Int-" };
-		} else if (operator.operator === "==") {
+		} else if (opStr === "==") {
 			return { function_id: "Int==" };
 		}
 	}
 
 	throw new diagnostics.TypeDoesNotProvideOperatorErr({
 		lhsType: displayType(value.t, typeScope, context.sourceContext),
-		operator: operator.operator,
+		operator: opStr,
 		operatorLocation: operator.location,
 	});
 }
 
-function compileExpression(
-	e: grammar.Expression,
+const operatorPrecedence = {
+	precedences: {
+		"implies": 0,
+		"and": 0,
+		"or": 0,
+		"==": 1,
+		"<": 1,
+		">": 1,
+		"<=": 1,
+		">=": 1,
+		"!=": 1,
+		"_default": 2,
+	} as Record<string, number>,
+	associativities: {
+		implies: "right",
+		and: "left",
+		or: "left",
+		"<": "left",
+		">": "left",
+	} as Record<string, "left" | "right" | "none">,
+	associateGroups: {
+		"<=": "<",
+		">=": ">",
+	} as Record<string, string>,
+};
+
+interface OperatorTreeLeaf {
+	tag: "leaf",
+	left: number,
+	right: number,
+
+	operand: grammar.ExpressionOperand,
+	location: ir.SourceLocation,
+}
+
+interface OperatorTreeJoin {
+	index: number,
+
+	opToken: lexer.OperatorToken | grammar.BinaryLogicalToken,
+	associativity: "none" | "left" | "right",
+
+	/// Only operations with the same `associates` can associate without
+	/// parenthesization.
+	associates: string,
+
+	precedence: number,
+}
+
+interface OperatorTreeBranch {
+	tag: "branch",
+	left: number,
+	right: number,
+
+	join: OperatorTreeJoin,
+	leftBranch: OperatorTree,
+	rightBranch: OperatorTree,
+
+	location: ir.SourceLocation,
+}
+
+type OperatorTree = OperatorTreeLeaf | OperatorTreeBranch;
+
+function checkTreeCompatible(subtree: OperatorTree, parent: OperatorTreeJoin) {
+	if (subtree.tag === "leaf") {
+		return;
+	} else if (subtree.join.precedence < parent.precedence) {
+		throw new Error("unreachable");
+	} else if (subtree.join.precedence > parent.precedence) {
+		return;
+	} else if (subtree.join.associates !== parent.associates) {
+		throw new diagnostics.OperationRequiresParenthesizationErr({
+			op1: {
+				str: subtree.join.opToken.tag === "keyword"
+					? subtree.join.opToken.keyword
+					: subtree.join.opToken.operator,
+				location: subtree.join.opToken.location,
+			},
+			op2: {
+				str: parent.opToken.tag === "keyword"
+					? parent.opToken.keyword
+					: parent.opToken.operator,
+				location: parent.opToken.location,
+			},
+			reason: "unordered",
+		});
+	} else if (parent.associativity === "none") {
+		throw new diagnostics.OperationRequiresParenthesizationErr({
+			op1: {
+				str: subtree.join.opToken.tag === "keyword"
+					? subtree.join.opToken.keyword
+					: subtree.join.opToken.operator,
+				location: subtree.join.opToken.location,
+			},
+			op2: {
+				str: parent.opToken.tag === "keyword"
+					? parent.opToken.keyword
+					: parent.opToken.operator,
+				location: parent.opToken.location,
+			},
+			reason: "non-associative",
+		});
+	}
+}
+
+function applyOrderOfOperations(
+	operators: (lexer.OperatorToken | grammar.BinaryLogicalToken)[],
+	operands: grammar.ExpressionOperand[],
+): OperatorTree {
+	if (operators.length !== operands.length - 1) {
+		throw new Error();
+	}
+
+	let joins: OperatorTreeJoin[] = [];
+	for (let i = 0; i < operators.length; i++) {
+		const operator = operators[i];
+		const opStr = operator.tag === "keyword" ? operator.keyword : operator.operator;
+
+		let precedence = operatorPrecedence.precedences[opStr];
+		if (precedence === undefined) {
+			precedence = operatorPrecedence.precedences._default;
+		}
+
+		const associativity = operatorPrecedence.associativities[opStr] || "none";
+		const associates = operatorPrecedence.associateGroups[opStr] || opStr;
+		joins.push({
+			index: i,
+			opToken: operator,
+			associativity, precedence, associates,
+		});
+	}
+
+	joins.sort((a, b) => {
+		if (a.precedence !== b.precedence) {
+			return b.precedence - a.precedence;
+		} else if (a.associativity !== b.associativity) {
+			return a.associativity.localeCompare(b.associativity);
+		} else if (a.associativity === "right") {
+			return b.index - a.index;
+		} else {
+			return b.index - a.index;
+		}
+	});
+
+	const branches: OperatorTree[] = [];
+	for (let i = 0; i < operands.length; i++) {
+		branches.push({
+			tag: "leaf",
+			left: i,
+			right: i,
+			operand: operands[i],
+			location: operands[i].location,
+		});
+	}
+	let branch = branches[0];
+	for (let join of joins) {
+		const toLeft = join.index;
+		const toRight = join.index + 1;
+		const left = branches[toLeft];
+		const right = branches[toRight];
+		branch = {
+			tag: "branch",
+			join,
+			leftBranch: left, rightBranch: right,
+			left: left.left,
+			right: right.right,
+			location: ir.locationSpan(left.location, right.location),
+		};
+
+		checkTreeCompatible(left, join);
+		checkTreeCompatible(right, join);
+
+		branches[branch.left] = branch;
+		branches[branch.right] = branch;
+	}
+	return branch;
+}
+
+function compileExpressionTree(
+	tree: OperatorTree,
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
-	context: FunctionContext): ValueInfo {
+	context: FunctionContext,
+): ValueInfo {
+	if (tree.tag === "leaf") {
+		return compileOperand(tree.operand, ops, stack, typeScope, context);
+	}
 
-	let left = compileOperand(e.left, ops, stack, typeScope, context);
+	const left = compileExpressionTree(tree.leftBranch, ops, stack, typeScope, context);
+	if (tree.join.opToken.tag === "keyword") {
+		// Compile a logical binary operation.
+		const opStr = tree.join.opToken.keyword;
 
-	if (e.operations.length !== 0) {
-		if (e.operations.length > 1) {
-			throw new Error("TODO: Handle more than 1 operation. (Use parentheses)");
+		if (left.values.length !== 1) {
+			throw new diagnostics.MultiExpressionGroupedErr({
+				location: left.location,
+				valueCount: left.values.length,
+				grouping: "op",
+				op: opStr,
+			});
 		}
 
-		const operation = e.operations[0];
-		const right = compileOperand(operation.right, ops, stack, typeScope, context);
+		const leftValue = left.values[0];
+		if (!ir.equalTypes(ir.T_BOOLEAN, leftValue.t)) {
+			throw new diagnostics.BooleanTypeExpectedErr({
+				givenType: displayType(leftValue.t, typeScope, context.sourceContext),
+				location: left.location,
+				reason: "logical-op",
+				op: opStr,
+				opLocation: tree.join.opToken.location,
+			});
+		}
 
-		const fn = resolveOperator(left, operation.operator, typeScope, context);
+		const result = stack.defineTemporary(ir.T_BOOLEAN, tree.location);
+		ops.push({
+			tag: "op-var",
+			type: result.t,
+		});
+
+		if (opStr === "or") {
+			const branch: ir.OpBranch = {
+				tag: "op-branch",
+				condition: leftValue.id,
+				trueBranch: {
+					tag: "op-block", ops: [
+						{
+							tag: "op-assign",
+							destination: result.id,
+							source: leftValue.id,
+						},
+					]
+				},
+				falseBranch: { tag: "op-block", ops: [] },
+			};
+
+			stack.openBlock();
+			const right = compileExpressionTree(tree.rightBranch, branch.falseBranch.ops, stack, typeScope, context);
+
+			if (right.values.length !== 1) {
+				throw new diagnostics.MultiExpressionGroupedErr({
+					location: right.location,
+					valueCount: right.values.length,
+					grouping: "op",
+					op: opStr,
+				});
+			}
+
+			const rightValue = right.values[0];
+			if (!ir.equalTypes(ir.T_BOOLEAN, rightValue.t)) {
+				throw new diagnostics.BooleanTypeExpectedErr({
+					givenType: displayType(rightValue.t, typeScope, context.sourceContext),
+					location: right.location,
+					reason: "logical-op",
+					op: opStr,
+					opLocation: tree.join.opToken.location,
+				});
+			}
+
+			branch.falseBranch.ops.push({
+				tag: "op-assign",
+				destination: result.id,
+				source: rightValue.id,
+			});
+			stack.closeBlock();
+
+			ops.push(branch);
+
+			return { values: [{ t: result.t, id: result.id }], location: tree.location };
+		} else if (opStr === "and") {
+			throw new Error("TODO");
+		} else if (opStr === "implies") {
+			throw new Error("TODO");
+		} else {
+			const _: never = opStr;
+			throw new Error("Unhandled logical operator `" + opStr + "`");
+		}
+
+	} else {
+		// Compile an arithmetic operation.
+		const right = compileExpressionTree(tree.rightBranch, ops, stack, typeScope, context);
+
+		const opStr = tree.join.opToken.operator;
+		const fn = resolveOperator(left, tree.join.opToken, typeScope, context);
 		const foreign = context.sourceContext.programContext.foreignSignatures[fn.function_id];
 		if (foreign === undefined) {
 			throw new Error(
 				"resolveOperator produced a bad foreign signature (`" + fn.function_id
 				+ "`) for `" + displayType(left.values[0].t, typeScope, context.sourceContext)
-				+ "` `" + operation.operator.operator + "`");
-		}
-
-		if (foreign.parameters.length !== 2) {
+				+ "` `" + opStr + "`");
+		} else if (foreign.parameters.length !== 2) {
 			throw new Error(
 				"Foreign signature `" + fn.function_id + "` cannot be used as"
 				+ "an operator since it doesn't take exactly 2 parameters");
@@ -802,20 +1092,20 @@ function compileExpression(
 
 		if (right.values.length !== 1) {
 			throw new diagnostics.MultiExpressionGroupedErr({
-				location: operation.right.location,
+				location: right.location,
 				valueCount: right.values.length,
 				grouping: "op",
-				op: operation.operator.operator,
+				op: opStr,
 			});
 		}
 
 		if (!ir.equalTypes(expectedRhsType, right.values[0].t)) {
 			throw new diagnostics.OperatorTypeMismatchErr({
 				lhsType: displayType(left.values[0].t, typeScope, context.sourceContext),
-				operator: operation.operator.operator,
+				operator: opStr,
 				givenRhsType: displayType(right.values[0].t, typeScope, context.sourceContext),
 				expectedRhsType: displayType(foreign.parameters[1], typeScope, context.sourceContext),
-				rhsLocation: operation.right.location,
+				rhsLocation: right.location,
 			});
 		}
 
@@ -839,14 +1129,26 @@ function compileExpression(
 			destinations: [result.id],
 		});
 
-		// Fake left associativity:
-		left = {
+		return {
 			values: [result],
 			location: result.bindingLocation,
 		};
 	}
+}
 
-	return left;
+function compileExpression(
+	e: grammar.Expression,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+
+	const operands = [e.left, ...e.operations.map(x => x.right)];
+	const operators = e.operations.map(x => x.operator);
+	const tree = applyOrderOfOperations(operators, operands);
+	return compileExpressionTree(tree, ops, stack, typeScope, context);
+
 }
 
 /// `displayType` formats the given IR `Type` as a string, potentially formatted
@@ -1110,6 +1412,11 @@ function compileFunction(
 		context.returnsTo.push({ t, location: r.location });
 	}
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
+	body.ops.push({
+		tag: "op-unreachable",
+		diagnostic_kind: "return",
+		diagnostic_location: def.ast.body.closing,
+	});
 	program.functions[fName] = { signature, body };
 }
 
@@ -1161,14 +1468,10 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 			type_parameters: [],
 			constraint_parameters: [],
 			preconditions: [],
-			postconditions: [
-				{
-					tag: "op-eq",
-					left: { variable_id: 0 },
-					right: { variable_id: 1 },
-					destination: { variable_id: 2 },
-				}
-			],
+			postconditions: [],
+			semantics: {
+				eq: true,
+			},
 		},
 		"Int+": {
 			// Addition

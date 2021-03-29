@@ -176,6 +176,7 @@ export function parseSource(blob: string, fileID: string) {
 }
 
 export type BooleanLiteralToken = KeywordToken & { keyword: "true" | "false" };
+export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
 
 const tokens = {
 	packageIden: tokenParser("iden"),
@@ -193,6 +194,14 @@ const tokens = {
 			return null;
 		}
 		return token as BooleanLiteralToken;
+	}),
+	logicalOperator: new TokenParser((token: Token) => {
+		if (token.tag !== "keyword") {
+			return null;
+		} else if (token.keyword !== "and" && token.keyword !== "or" && token.keyword !== "implies") {
+			return null;
+		}
+		return token as BinaryLogicalToken;
 	}),
 };
 
@@ -344,6 +353,7 @@ export type Type = TypeNamed | TypeKeywordToken;
 
 export interface Block {
 	statements: Statement[],
+	closing: SourceLocation,
 }
 
 export interface ReturnSt {
@@ -414,14 +424,12 @@ export interface ExpressionOperand {
 	location: SourceLocation,
 }
 
-export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
-
-export interface LogicalOperation {
+export interface ExpressionOperationLogical {
 	operator: BinaryLogicalToken,
 	right: ExpressionOperand,
 }
 
-export type ExpressionOperation = ExpressionOperationBinary;
+export type ExpressionOperation = ExpressionOperationBinary | ExpressionOperationLogical;
 
 export interface ExpressionOperationBinary {
 	operator: OperatorToken,
@@ -475,6 +483,7 @@ type ASTs = {
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
 	ExpressionOperationBinary: ExpressionOperationBinary,
+	ExpressionOperationLogical: ExpressionOperationLogical,
 	ExpressionParenthesized: ExpressionParenthesized,
 	Field: Field,
 	Fn: Fn,
@@ -507,10 +516,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	Block: new RecordParser(() => ({
 		_open: punctuation.curlyOpen,
 		statements: new RepeatParser(grammar.Statement),
-		_close: punctuation.curlyClose
+		closing: punctuation.curlyClose
 			.required(parseProblem(
 				"Expected a `}` at", atHead,
-				"to complete a block started at", atReference("_open"))),
+				"to complete a block started at", atReference("_open")))
+			.map(x => x.location),
 	})),
 	TypeNamed: new StructParser(() => ({
 		packageQualification: grammar.PackageQualification
@@ -585,12 +595,16 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		atom: grammar.ExpressionAtom,
 		accesses: new RepeatParser(grammar.ExpressionAccess),
 	})),
-	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary"),
+	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary", "ExpressionOperationLogical"),
 	ExpressionOperationBinary: new RecordParser(() => ({
 		operator: tokens.operator,
 		right: grammar.ExpressionOperand
 			.required(parseProblem("Expected an operand at", atHead,
 				"after the binary operator at", atReference("operator")))
+	})),
+	ExpressionOperationLogical: new RecordParser(() => ({
+		operator: tokens.logicalOperator,
+		right: grammar.ExpressionOperand,
 	})),
 	ExpressionParenthesized: new StructParser(() => ({
 		_open: punctuation.roundOpen,

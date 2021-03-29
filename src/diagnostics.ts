@@ -212,16 +212,26 @@ export class FieldAccessOnNonCompoundErr extends SemanticError {
 }
 
 export class BooleanTypeExpectedErr extends SemanticError {
-	constructor(args: {
-		givenType: string,
-		location: SourceLocation,
-		reason: "if",
-	}) {
-		super([
-			"A condition expression with type `" + args.givenType + "` at",
-			args.location,
-			"cannot be converted to the type `Boolean` as required of `if` conditions.",
-		]);
+	constructor(args: { givenType: string, location: SourceLocation } & (
+		{ reason: "if" }
+		| { reason: "logical-op", op: string, opLocation: SourceLocation })
+	) {
+		if (args.reason === "if") {
+			super([
+				"A condition expression with type `" + args.givenType + "` at",
+				args.location,
+				"cannot be converted to the type `Boolean` as required of ",
+				"`if` conditions."
+			]);
+		} else {
+			super([
+				"An expression with type `" + args.givenType + "` at",
+				args.location,
+				"cannot be converted to the type `Boolean` as required ",
+				"by the `" + args.op + "` operator at",
+				args.opLocation,
+			]);
+		}
 	}
 }
 
@@ -278,6 +288,22 @@ export class NoSuchFnErr extends SemanticError {
 		super([
 			"TODO: NoSuchFnErr: " + args.baseType + " " + args.methodName + " ",
 			args.methodNameLocation,
+		]);
+	}
+}
+
+export class OperationRequiresParenthesizationErr extends SemanticError {
+	constructor(args: {
+		op1: { str: string, location: SourceLocation },
+		op2: { str: string, location: SourceLocation },
+		reason: "unordered" | "non-associative",
+	}) {
+		super([
+			"The operators `" + args.op1.str + "` and `" + args.op2.str + "` at",
+			args.op1.location,
+			"and at",
+			args.op2.location,
+			"have ambiguous precedence, and require parentheses to specify precedence."
 		]);
 	}
 }

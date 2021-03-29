@@ -101,14 +101,10 @@ const foreign: Record<string, ir.FunctionSignature> = {
 		type_parameters: [],
 		constraint_parameters: [],
 		preconditions: [],
-		postconditions: [
-			{
-				tag: "op-eq",
-				left: { variable_id: 0 },
-				right: { variable_id: 1 },
-				destination: { variable_id: 2 },
-			}
-		],
+		postconditions: [],
+		semantics: {
+			eq: true,
+		},
 	},
 	"Int+": {
 		// Addition

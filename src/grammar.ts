@@ -217,6 +217,7 @@ const keywords = {
 	proof: keywordParser("proof"),
 	record: keywordParser("record"),
 	return: keywordParser("return"),
+	unreachable: keywordParser("unreachable"),
 	var: keywordParser("var"),
 };
 
@@ -380,7 +381,13 @@ export interface ElseClause {
 	body: Block,
 }
 
-export type Statement = VarSt | ReturnSt | IfSt;
+export type Statement = VarSt | ReturnSt | IfSt | UnreachableSt;
+
+export interface UnreachableSt {
+	tag: "unreachable",
+
+	location: SourceLocation,
+}
 
 export interface VarSt {
 	tag: "var",
@@ -508,6 +515,7 @@ type ASTs = {
 	TypeParameterConstraint: TypeConstraint,
 	TypeParameterConstraints: TypeConstraints,
 	TypeParameters: TypeParameters,
+	UnreachableSt: UnreachableSt,
 	VarDecl: VarDecl,
 	VarSt: VarSt,
 };
@@ -740,7 +748,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_semicolon: punctuation.semicolon
 			.required(parseProblem("Expected a `;` to complete a return statement at", atHead)),
 	})),
-	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt"),
+	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt", "UnreachableSt"),
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,
@@ -771,6 +779,12 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_close: punctuation.squareClose
 			.required(parseProblem("Expected a `]` at", atHead,
 				"to complete type parameters started at", atReference("_open"))),
+	})),
+	UnreachableSt: new StructParser(() => ({
+		_unreachable: keywords.unreachable,
+		tag: new ConstParser("unreachable"),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` after `unreachable` at", atHead)),
 	})),
 	VarSt: new StructParser(() => ({
 		variables: new CommaParser(grammar.VarDecl, "variable declaration", 1),

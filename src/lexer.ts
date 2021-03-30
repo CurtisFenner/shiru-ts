@@ -128,6 +128,7 @@ export const KEYWORDS = {
 	"true": true,
 	"union": true,
 	"unit": true,
+	"unreachable": true,
 	"var": true,
 	"when": true,
 };
@@ -264,6 +265,11 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 		}
 	} else if (head === "/" && blob[from + 1] === "/") {
 		// Parse a line comment.
+		let lineBreak = blob.indexOf("\n", from);
+		if (lineBreak < 0) {
+			lineBreak = blob.length;
+		}
+		return { token: null, consumed: lineBreak - from };
 	} else if ("0" <= head && head <= "9") {
 		// Parse a number literal.
 		const breaks = findWordBreak(blob, from, fileID);

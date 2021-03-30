@@ -971,6 +971,34 @@ function applyOrderOfOperations(
 	return branch;
 }
 
+function expectOneBooleanForLogical(
+	values: ValueInfo,
+	typeScope: TypeScope,
+	context: FunctionContext,
+	op: { opStr: string, location: ir.SourceLocation },
+): { t: ir.Type, id: ir.VariableID } {
+	if (values.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: values.location,
+			valueCount: values.values.length,
+			grouping: "op",
+			op: op.opStr,
+		});
+	}
+
+	const value = values.values[0];
+	if (!ir.equalTypes(ir.T_BOOLEAN, value.t)) {
+		throw new diagnostics.BooleanTypeExpectedErr({
+			givenType: displayType(value.t, typeScope, context.sourceContext),
+			location: values.location,
+			reason: "logical-op",
+			op: op.opStr,
+			opLocation: op.location,
+		});
+	}
+	return value;
+}
+
 function compileExpressionTree(
 	tree: OperatorTree,
 	ops: ir.Op[],
@@ -987,25 +1015,10 @@ function compileExpressionTree(
 		// Compile a logical binary operation.
 		const opStr = tree.join.opToken.keyword;
 
-		if (left.values.length !== 1) {
-			throw new diagnostics.MultiExpressionGroupedErr({
-				location: left.location,
-				valueCount: left.values.length,
-				grouping: "op",
-				op: opStr,
-			});
-		}
-
-		const leftValue = left.values[0];
-		if (!ir.equalTypes(ir.T_BOOLEAN, leftValue.t)) {
-			throw new diagnostics.BooleanTypeExpectedErr({
-				givenType: displayType(leftValue.t, typeScope, context.sourceContext),
-				location: left.location,
-				reason: "logical-op",
-				op: opStr,
-				opLocation: tree.join.opToken.location,
-			});
-		}
+		const leftValue = expectOneBooleanForLogical(left, typeScope, context, {
+			opStr: tree.join.opToken.keyword,
+			location: tree.join.opToken.location,
+		});
 
 		const result = stack.defineTemporary(ir.T_BOOLEAN, tree.location);
 		ops.push({
@@ -1013,44 +1026,27 @@ function compileExpressionTree(
 			type: result.t,
 		});
 
+		const branch: ir.OpBranch = {
+			tag: "op-branch",
+			condition: leftValue.id,
+			trueBranch: { ops: [] },
+			falseBranch: { ops: [] },
+		};
+		ops.push(branch);
+
 		if (opStr === "or") {
-			const branch: ir.OpBranch = {
-				tag: "op-branch",
-				condition: leftValue.id,
-				trueBranch: {
-					tag: "op-block", ops: [
-						{
-							tag: "op-assign",
-							destination: result.id,
-							source: leftValue.id,
-						},
-					]
-				},
-				falseBranch: { tag: "op-block", ops: [] },
-			};
+			branch.trueBranch.ops.push({
+				tag: "op-assign",
+				destination: result.id,
+				source: leftValue.id,
+			});
 
 			stack.openBlock();
 			const right = compileExpressionTree(tree.rightBranch, branch.falseBranch.ops, stack, typeScope, context);
-
-			if (right.values.length !== 1) {
-				throw new diagnostics.MultiExpressionGroupedErr({
-					location: right.location,
-					valueCount: right.values.length,
-					grouping: "op",
-					op: opStr,
-				});
-			}
-
-			const rightValue = right.values[0];
-			if (!ir.equalTypes(ir.T_BOOLEAN, rightValue.t)) {
-				throw new diagnostics.BooleanTypeExpectedErr({
-					givenType: displayType(rightValue.t, typeScope, context.sourceContext),
-					location: right.location,
-					reason: "logical-op",
-					op: opStr,
-					opLocation: tree.join.opToken.location,
-				});
-			}
+			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+				opStr: "or",
+				location: tree.join.opToken.location,
+			});
 
 			branch.falseBranch.ops.push({
 				tag: "op-assign",
@@ -1058,19 +1054,53 @@ function compileExpressionTree(
 				source: rightValue.id,
 			});
 			stack.closeBlock();
-
-			ops.push(branch);
-
-			return { values: [{ t: result.t, id: result.id }], location: tree.location };
 		} else if (opStr === "and") {
-			throw new Error("TODO");
+			branch.falseBranch.ops.push({
+				tag: "op-assign",
+				destination: result.id,
+				source: leftValue.id,
+			});
+
+			stack.openBlock();
+			const right = compileExpressionTree(tree.rightBranch, branch.trueBranch.ops, stack, typeScope, context);
+			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+				opStr: "and",
+				location: tree.join.opToken.location,
+			});
+
+			branch.trueBranch.ops.push({
+				tag: "op-assign",
+				destination: result.id,
+				source: rightValue.id,
+			});
+			stack.closeBlock();
 		} else if (opStr === "implies") {
-			throw new Error("TODO");
+			branch.falseBranch.ops.push({
+				tag: "op-const",
+				value: true,
+				destination: result.id,
+			});
+
+			stack.openBlock();
+			const right = compileExpressionTree(tree.rightBranch, branch.trueBranch.ops, stack, typeScope, context);
+			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+				opStr: "implies",
+				location: tree.join.opToken.location,
+			});
+
+			branch.trueBranch.ops.push({
+				tag: "op-assign",
+				destination: result.id,
+				source: rightValue.id,
+			});
+
+			stack.closeBlock();
 		} else {
 			const _: never = opStr;
 			throw new Error("Unhandled logical operator `" + opStr + "`");
 		}
 
+		return { values: [{ t: result.t, id: result.id }], location: tree.location };
 	} else {
 		// Compile an arithmetic operation.
 		const right = compileExpressionTree(tree.rightBranch, ops, stack, typeScope, context);
@@ -1308,14 +1338,13 @@ function compileIfClause(
 	const trueBranch: ir.OpBlock = compileBlock(clause.body, stack, typeScope, context);
 
 	stack.openBlock();
-	let falseBranch: ir.OpBlock = { tag: "op-block", ops: [] };
+	let falseBranch: ir.OpBlock = { ops: [] };
 	if (restIndex >= rest.length) {
 		// Reached else clause.
 		if (elseClause !== null) {
 			falseBranch = compileBlock(elseClause.body, stack, typeScope, context);
 		}
 	} else {
-		const next = rest[restIndex];
 		compileIfClause(rest[restIndex], rest, restIndex + 1, elseClause,
 			falseBranch.ops, stack, typeScope, context);
 	}
@@ -1354,6 +1383,13 @@ function compileStatement(
 	} else if (statement.tag === "if") {
 		compileIfSt(statement, ops, stack, typeScope, context);
 		return;
+	} else if (statement.tag === "unreachable") {
+		ops.push({
+			tag: "op-unreachable",
+			diagnostic_kind: "unreachable",
+			diagnostic_location: statement.location,
+		});
+		return;
 	}
 
 	const _: never = statement;
@@ -1374,7 +1410,6 @@ function compileBlock(
 
 	stack.closeBlock();
 	return {
-		tag: "op-block",
 		ops: ops,
 	};
 }
@@ -1412,11 +1447,18 @@ function compileFunction(
 		context.returnsTo.push({ t, location: r.location });
 	}
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
-	body.ops.push({
-		tag: "op-unreachable",
-		diagnostic_kind: "return",
-		diagnostic_location: def.ast.body.closing,
-	});
+
+	const terminating: Partial<Record<ir.Op["tag"], true>> = {
+		"op-unreachable": true,
+		"op-return": true,
+	};
+	if (body.ops.length === 0 || body.ops[body.ops.length - 1]) {
+		body.ops.push({
+			tag: "op-unreachable",
+			diagnostic_kind: "return",
+			diagnostic_location: def.ast.body.closing,
+		});
+	}
 	program.functions[fName] = { signature, body };
 }
 

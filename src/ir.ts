@@ -181,7 +181,6 @@ export interface OpReturn {
 };
 
 export interface OpBlock {
-	tag: "op-block",
 	ops: Op[],
 };
 
@@ -200,7 +199,7 @@ export interface OpProof {
 export interface OpUnreachable {
 	tag: "op-unreachable",
 
-	diagnostic_kind: "contract" | "return" | "match";
+	diagnostic_kind: "contract" | "return" | "match" | "unreachable";
 	diagnostic_location?: SourceLocation,
 };
 

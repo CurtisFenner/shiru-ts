@@ -33,7 +33,6 @@ export function opVar(t: ir.Type, name: string): ir.OpVar {
 
 export function opBlock(...ops: ir.Op[]): ir.OpBlock {
 	return {
-		tag: "op-block",
 		ops,
 	};
 }

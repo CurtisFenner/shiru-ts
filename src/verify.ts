@@ -69,7 +69,7 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 	}
 
 	// Execute and validate the function's body.
-	traverse(program, f.body, state, {
+	traverseBlock(program, f.body, state, {
 		returnToVariables: returnVariables,
 		postconditionReadReturns: null,
 		returnsPostConditions: f.signature.postconditions,
@@ -293,9 +293,26 @@ function learnEquality(
 	]);
 }
 
+function traverseBlock(
+	program: ir.Program,
+	block: ir.OpBlock,
+	state: VerificationState,
+	context: VerificationContext,
+) {
+	// Blocks bound variable scopes, so variables must be cleared after.
+	const stackAtBeginning = state.getStackSize();
+
+	for (let subop of block.ops) {
+		traverse(program, subop, state, context);
+	}
+
+	// Clear variables defined within this block.
+	state.truncateStackToSize(stackAtBeginning);
+}
+
 // MUTATES the verification state parameter, to add additional clauses that are 
 // ensured after the execution (and termination) of this operation.
-function traverse(program: ir.Program, op: ir.Op | ir.OpBlock, state: VerificationState, context: VerificationContext): void {
+function traverse(program: ir.Program, op: ir.Op, state: VerificationState, context: VerificationContext): void {
 	if (op.tag === "op-assign") {
 		// Update the last assignment.
 		// NOTE that since this creates no new objects, this does not require
@@ -303,28 +320,17 @@ function traverse(program: ir.Program, op: ir.Op | ir.OpBlock, state: Verificati
 		state.updateAssignment(op.destination.variable_id,
 			state.getAssignment(op.source.variable_id));
 		return;
-	} else if (op.tag === "op-block") {
-		// Blocks bound variable scopes, so variables must be cleared after.
-		const stackAtBeginning = state.getStackSize();
-
-		for (let subop of op.ops) {
-			traverse(program, subop, state, context);
-		}
-
-		// Clear variables defined within this block.
-		state.truncateStackToSize(stackAtBeginning);
-		return;
 	} else if (op.tag === "op-branch") {
 		const conditionVariable = state.getAssignment(op.condition.variable_id)
 		const trueCondition: smt.UFConstraint = {
 			tag: "predicate", predicate: conditionVariable
 		};
 		state.pathConstraints.push(trueCondition);
-		traverse(program, op.trueBranch, state, context);
+		traverseBlock(program, op.trueBranch, state, context);
 		state.pathConstraints.pop();
 
 		state.pathConstraints.push({ tag: "not", constraint: trueCondition })
-		traverse(program, op.falseBranch, state, context);
+		traverseBlock(program, op.falseBranch, state, context);
 		state.pathConstraints.pop();
 		return;
 	} else if (op.tag === "op-const") {
@@ -339,7 +345,7 @@ function traverse(program: ir.Program, op: ir.Op | ir.OpBlock, state: Verificati
 	} else if (op.tag === "op-new-record") {
 
 	} else if (op.tag === "op-proof") {
-		return traverse(program, op.body, state, context);
+		return traverseBlock(program, op.body, state, context);
 	} else if (op.tag === "op-return") {
 		for (let i = 0; i < op.sources.length; i++) {
 			addConditionalClause(state, [
@@ -454,6 +460,10 @@ function traverse(program: ir.Program, op: ir.Op | ir.OpBlock, state: Verificati
 				});
 			}
 		}
+
+		// Like a return statement, this path is subsequently treated as
+		// unreachable.
+		state.clauses.push(state.pathConstraints.map(negate));
 		return;
 	} else if (op.tag === "op-var") {
 		const sort = sortOf(op.type);

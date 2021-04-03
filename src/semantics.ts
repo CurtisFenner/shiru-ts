@@ -971,6 +971,33 @@ function applyOrderOfOperations(
 	return branch;
 }
 
+function expectOneBooleanForContract(
+	values: ValueInfo,
+	typeScope: TypeScope,
+	context: FunctionContext,
+	contract: "assert" | "requires" | "ensures"
+): { t: ir.Type, id: ir.VariableID } {
+	if (values.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: values.location,
+			valueCount: values.values.length,
+			grouping: "op",
+			op: contract,
+		});
+	}
+
+	const value = values.values[0];
+	if (!ir.equalTypes(ir.T_BOOLEAN, value.t)) {
+		throw new diagnostics.BooleanTypeExpectedErr({
+			givenType: displayType(value.t, typeScope, context.sourceContext),
+			location: values.location,
+			reason: "contract",
+			contract: contract,
+		});
+	}
+	return value;
+}
+
 function expectOneBooleanForLogical(
 	values: ValueInfo,
 	typeScope: TypeScope,
@@ -1249,6 +1276,10 @@ function compileVarSt(
 	for (const v of statement.variables) {
 		const t = compileType(v.t, typeScope, context.sourceContext);
 		const d = stack.defineVariable(v.variable.name, t, v.variable.location);
+		ops.push({
+			tag: "op-var",
+			type: t,
+		});
 		destinations.push(d);
 	}
 
@@ -1446,13 +1477,27 @@ function compileFunction(
 		signature.return_types.push(t);
 		context.returnsTo.push({ t, location: r.location });
 	}
+
+	for (let precondition of def.ast.signature.requires) {
+		const block: ir.OpBlock = { ops: [] };
+		stack.openBlock();
+		const result = compileExpression(precondition.expression, block.ops, stack, typeScope, context);
+		const asserted = expectOneBooleanForContract(result, typeScope, context, "requires");
+		stack.closeBlock();
+		signature.preconditions.push({
+			block,
+			result: asserted.id,
+			location: precondition.expression.location,
+		});
+	}
+
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
 
 	const terminating: Partial<Record<ir.Op["tag"], true>> = {
 		"op-unreachable": true,
 		"op-return": true,
 	};
-	if (body.ops.length === 0 || body.ops[body.ops.length - 1]) {
+	if (body.ops.length === 0 || !terminating[body.ops[body.ops.length - 1].tag]) {
 		body.ops.push({
 			tag: "op-unreachable",
 			diagnostic_kind: "return",

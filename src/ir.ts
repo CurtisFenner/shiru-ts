@@ -153,7 +153,7 @@ export interface OpStaticCall {
 	/// appropriate instantiation of any `type_arguments`).
 	destinations: VariableID[],
 
-	diagnostic_callsite?: SourceLocation,
+	diagnostic_callsite: SourceLocation,
 };
 
 export interface OpDynamicCall {
@@ -200,7 +200,7 @@ export interface OpUnreachable {
 	tag: "op-unreachable",
 
 	diagnostic_kind: "contract" | "return" | "match" | "unreachable";
-	diagnostic_location?: SourceLocation,
+	diagnostic_location: SourceLocation,
 };
 
 /// `OpForeign` represents a call to a pure function provided by the host of the 
@@ -256,17 +256,18 @@ export interface FunctionSignature {
 	// TODO: Add termination-measure function.
 
 	/// The first `parameters.length` variables are the arguments.
-	/// The Op returns a single boolean, which must be _verified_ to be true at
-	/// callsites, and may be _assumed_ to be true in subsequent preconditions
-	/// and measures, and the implementation.
-	preconditions: Op[],
+	/// The block computes a boolean variable stored in `result`.
+	/// At callsites, it must be _verified_ that this result is `true`.
+	/// In subsequent preconditions and the function's implementation,
+	/// it may be _assumed_ to be `true`.
+	preconditions: { block: OpBlock, result: VariableID, location: SourceLocation }[],
 
 	/// The first `parameters.length` variables are the arguments.
 	/// The next `return_types.length` variables are the returned values.
-	/// The Op returns a single boolean, which must be _verified_ to be true in
-	/// the implementation, and may be _assumed_ to be true in subsequent 
-	/// postconditions and at callsites.
-	postconditions: Op[],
+	/// The block computes a boolean variable stored in `result`.
+	/// At callsites, it may be _assumed_ that this result is `true`.
+	/// In implementations, it must be  _verified_ that this result is `true`.
+	postconditions: { block: OpBlock, result: VariableID, location: SourceLocation }[],
 
 	semantics?: {
 		/// Indicates that this is a congruence relation, which is an 

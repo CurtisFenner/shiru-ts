@@ -95,8 +95,8 @@ export abstract class SMTSolver<E, Counterexample> {
 }
 
 export interface UFCounter { }
-export type UFVariable = string
-export type UFFunction = string
+export type UFVariable = string;
+export type UFFunction = string;
 export type UFValue = UFVariable
 	| { tag: "app", f: UFFunction, args: UFValue[] }
 	| UFConstValue;

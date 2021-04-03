@@ -216,6 +216,7 @@ const keywords = {
 	package: keywordParser("package"),
 	proof: keywordParser("proof"),
 	record: keywordParser("record"),
+	requires: keywordParser("requires"),
 	return: keywordParser("return"),
 	unreachable: keywordParser("unreachable"),
 	var: keywordParser("var"),
@@ -309,6 +310,11 @@ export interface FnSignature {
 	name: IdenToken,
 	parameters: FnParameter[],
 	returns: Type[],
+	requires: RequiresClause[],
+}
+
+export interface RequiresClause {
+	expression: Expression,
 }
 
 export interface Fn {
@@ -506,6 +512,7 @@ type ASTs = {
 	PackageDef: PackageDef,
 	PackageQualification: PackageQualification,
 	RecordDefinition: RecordDefinition,
+	RequiresClause: RequiresClause,
 	ReturnSt: ReturnSt,
 	Source: Source,
 	Statement: Statement,
@@ -662,6 +669,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `:` after function parameters at", atHead)),
 		returns: new CommaParser(grammar.Type, "Expected a return type at")
 			.map(requireAtLeastOne("return type")),
+		requires: new RepeatParser(grammar.RequiresClause),
 	})),
 	IfSt: new RecordParser(() => ({
 		_if: keywords.if,
@@ -740,6 +748,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_close: punctuation.curlyClose
 			.required(parseProblem("Expected a `}` at", atHead,
 				"to complete a record definition beginning at", atReference("_open"))),
+	})),
+	RequiresClause: new RecordParser(() => ({
+		_requires: keywords.requires,
+		expression: grammar.Expression
+			.required(parseProblem("Expected an expression after `requires` at", atHead)),
 	})),
 	ReturnSt: new StructParser(() => ({
 		_return: keywords.return,

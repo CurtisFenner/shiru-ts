@@ -150,7 +150,7 @@ export class MultiExpressionGroupedErr extends SemanticError {
 	constructor(args: {
 		location: SourceLocation,
 		valueCount: number,
-		grouping: "parens" | "field" | "method" | "if" | "op",
+		grouping: "parens" | "field" | "method" | "if" | "op" | "contract",
 		op?: string,
 	}) {
 		const by = {
@@ -159,6 +159,7 @@ export class MultiExpressionGroupedErr extends SemanticError {
 			method: "a method access",
 			if: "an `if` condition",
 			op: "a `" + args.op + "` operation",
+			contract: "a `" + args.op + "` contract",
 		};
 		super([
 			"An expression has " + args.valueCount + " values and so cannot be grouped",
@@ -214,7 +215,8 @@ export class FieldAccessOnNonCompoundErr extends SemanticError {
 export class BooleanTypeExpectedErr extends SemanticError {
 	constructor(args: { givenType: string, location: SourceLocation } & (
 		{ reason: "if" }
-		| { reason: "logical-op", op: string, opLocation: SourceLocation })
+		| { reason: "logical-op", op: string, opLocation: SourceLocation }
+		| { reason: "contract", contract: "requires" | "ensures" | "assert" })
 	) {
 		if (args.reason === "if") {
 			super([
@@ -222,6 +224,13 @@ export class BooleanTypeExpectedErr extends SemanticError {
 				args.location,
 				"cannot be converted to the type `Boolean` as required of ",
 				"`if` conditions."
+			]);
+		} else if (args.reason === "contract") {
+			super([
+				"A contract expression with type `" + args.givenType + "` at",
+				args.location,
+				"cannot be converted to the type `Boolean` as required of ",
+				"`" + args.contract + "` conditions."
 			]);
 		} else {
 			super([
@@ -304,6 +313,19 @@ export class OperationRequiresParenthesizationErr extends SemanticError {
 			"and at",
 			args.op2.location,
 			"have ambiguous precedence, and require parentheses to specify precedence."
+		]);
+	}
+}
+
+export class RecursivePreconditionErr extends SemanticError {
+	constructor(args: {
+		callsite?: SourceLocation,
+		fn: string,
+	}) {
+		super([
+			"The function `" + args.fn + "` was recursively invoked in a `requires` clause at",
+			args.callsite || "???",
+			"Try moving this reference to an `ensures` clause.",
 		]);
 	}
 }

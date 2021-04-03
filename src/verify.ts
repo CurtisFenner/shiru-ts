@@ -1,3 +1,4 @@
+import { RecursivePreconditionErr } from "./diagnostics";
 import * as ir from "./ir";
 import * as smt from "./smt";
 
@@ -39,39 +40,29 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 		// Define a constant for the parameter.
 		const p = `sh_arg_${i}`;
 		const sort = sortOf(f.signature.parameters[i]);
-		state.variableSorts[p] = sort;
+		state.constantSorts[p] = sort;
 
 		// Update the stack.
-		state.stackInitialize(sort, p, i);
+		state.stackInitialize(f.signature.parameters[i], p, i);
 	}
 
 	// Execute and validate the function's preconditions.
 	for (let i = 0; i < f.signature.preconditions.length; i++) {
-		let preconditionEvaluation = `sh_pre_${i}`;
-		state.variableSorts[preconditionEvaluation] = "bool";
-		traverse(program, f.signature.preconditions[i], state, {
-			returnToVariables: [preconditionEvaluation],
-			postconditionReadReturns: null,
-
-			// "Returns" inside the preconditions are just the boolean to 
-			// require; no verification needs to be done at them.
+		const precondition = f.signature.preconditions[i];
+		traverseBlock(program, precondition.block, state, {
+			// Return statements do not return a value.
 			returnsPostConditions: [],
+		}, () => {
+			state.clauses.push([
+				{
+					tag: "predicate",
+					predicate: state.getLocal(precondition.result.variable_id).assignment,
+				},
+			]);
 		});
-		state.clauses.push([{ tag: "predicate", predicate: preconditionEvaluation }]);
 	}
 
-	// Prepare the return variables for the function's body and postconditions.
-	const returnVariables = [];
-	for (let i = 0; i < f.signature.return_types.length; i++) {
-		const v = `sh_ret_${i}`;
-		state.variableSorts[v] = sortOf(f.signature.return_types[i]);
-		returnVariables.push(v);
-	}
-
-	// Execute and validate the function's body.
 	traverseBlock(program, f.body, state, {
-		returnToVariables: returnVariables,
-		postconditionReadReturns: null,
 		returnsPostConditions: f.signature.postconditions,
 	});
 
@@ -81,16 +72,8 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 }
 
 interface VerificationContext {
-	/// The variables to return to (via assignment clauses), and to inspect in
-	/// postconditions.
-	returnToVariables: string[],
-
-	/// The variables that a "return expression" reads from. This is only set in
-	/// post-conditions.
-	postconditionReadReturns: string[] | null,
-
 	/// The post-conditions to verify at a ReturnStatement.
-	returnsPostConditions: ir.Op[],
+	returnsPostConditions: { block: ir.OpBlock, result: ir.VariableID }[],
 }
 
 type FailedVerification = FailedPreconditionVerification
@@ -105,7 +88,7 @@ interface FailedPreconditionVerification {
 
 interface FailedAssertVerification {
 	tag: "failed-assert",
-	assertLocation?: ir.SourceLocation,
+	assertLocation: ir.SourceLocation,
 }
 
 interface FailedReturnVerification {
@@ -113,17 +96,29 @@ interface FailedReturnVerification {
 	blockEndLocation?: ir.SourceLocation,
 }
 
+interface SignatureSet {
+	blockedFunctions: Record<string, boolean>,
+	blockedInterfaces: Record<string, Record<string, string>>,
+}
+
 class VerificationState {
-	variableSorts: Record<string, smt.UFSort> = {};
+	constantSorts: Record<string, smt.UFSort> = {};
 	functionSorts: Record<string, smt.UFSort> = {};
+
+	recursivePreconditions: SignatureSet = {
+		blockedFunctions: {},
+		blockedInterfaces: {},
+	};
+
+	recursivePostconditions: SignatureSet = {
+		blockedFunctions: {},
+		blockedInterfaces: {},
+	};
 
 	private nextConstant: number = 1000;
 
-	/// Mapping from Shiru local variable to UFTheory sort.
-	private stackSorts: smt.UFSort[] = [];
-
-	/// Mapping from Shiru local variable to UFTheory variable.
-	private lastAssignment: smt.UFValue[] = [];
+	/// Mapping from Shiru local variable to value/type/sort.
+	stack: { sort: smt.UFSort, assignment: smt.UFValue, t: ir.Type }[] = [];
 
 	// An append-only set of constraints that grow, regardless of path.
 	clauses: smt.UFConstraint[][] = [];
@@ -140,69 +135,55 @@ class VerificationState {
 		// TODO: Instead of doing this, do an analysis that ensures all 
 		// variables are assigned before use, and simply allow no references.
 		const name = "_default_inhabitant_" + sort;
-		if (this.variableSorts[name] === undefined) {
-			this.variableSorts[name] = sort;
+		if (this.constantSorts[name] === undefined) {
+			this.constantSorts[name] = sort;
 		}
 		return name;
 	}
 
-	stackInitialize(sort: smt.UFSort, value: smt.UFValue, expectedIndex?: number | undefined) {
-		const id = this.stackSorts.length;
+	stackInitialize(t: ir.Type, value: smt.UFValue, expectedIndex?: number | undefined) {
+		const id = this.stack.length;
 		if (expectedIndex !== undefined) {
 			if (expectedIndex !== id) {
 				throw new Error("bad expectedIndex");
 			}
 		}
 
-		if (this.stackSorts.length !== this.lastAssignment.length) {
-			throw new Error("bad state");
-		}
-		this.stackSorts.push(sort);
-		this.lastAssignment.push(value);
+		this.stack.push({
+			sort: sortOf(t),
+			assignment: value,
+			t,
+		});
 		return id;
 	}
 
-	getStackSort(v: number): smt.UFSort {
-		if (this.stackSorts[v] === undefined) {
-			throw new Error("out of bounds");
+	getLocal(v: number) {
+		if (this.stack[v] === undefined) {
+			throw new Error(`Local ${v} is out of bounds for read in stack [${this.stack.map((x, i) => i + ": " + showType(x.t)).join(", ")}]`);
 		}
-		return this.stackSorts[v];
+		return this.stack[v];
 	}
 
 	vendConstant(sort: smt.UFSort, hint: string = "v") {
 		const n = `sh_var_${this.nextConstant}_${hint}`;
 		this.nextConstant += 1;
-		this.variableSorts[n] = sort;
+		this.constantSorts[n] = sort;
 		return n;
 	}
 
 	updateAssignment(destination: number, value: smt.UFValue) {
-		if (this.lastAssignment[destination] === undefined) {
-			throw new Error("out of bounds");
+		if (this.stack[destination] === undefined) {
+			throw new Error(`Local ${destination} is out of bounds for write in stack [${this.stack.map((x, i) => i + ": " + showType(x.t)).join(", ")}]`);
 		}
-		this.lastAssignment[destination] = value;
-	}
-
-	getAssignment(source: number): smt.UFValue {
-		const v = this.lastAssignment[source];
-		if (v === undefined) {
-			console.log("Attempted to get assignment of #" + source);
-			for (let i = 0; i < this.stackSorts.length; i++) {
-				console.log("\t#" + i + " ::", this.stackSorts[i]);
-				console.log("\t\t=", this.lastAssignment[i]);
-			}
-			throw new Error("out of bounds");
-		}
-		return v;
+		this.stack[destination].assignment = value;
 	}
 
 	getStackSize() {
-		return this.lastAssignment.length;
+		return this.stack.length;
 	}
 
 	truncateStackToSize(size: number) {
-		this.lastAssignment.splice(size);
-		this.stackSorts.splice(size);
+		this.stack.splice(size);
 	}
 }
 
@@ -240,7 +221,7 @@ function createFunctionIDs(state: VerificationState, destinations: ir.VariableID
 		const f = `${prefix}:${i}`;
 		fs.push(f);
 		if (state.functionSorts[f] === undefined) {
-			state.functionSorts[f] = state.getStackSort(destinations[i].variable_id);
+			state.functionSorts[f] = state.getLocal(destinations[i].variable_id).sort;
 		}
 	}
 	return fs;
@@ -256,10 +237,28 @@ function createDynamicFunctionID(state: VerificationState, op: ir.OpDynamicCall)
 		const f = `${prefix}:${i}`;
 		fs.push(f);
 		if (state.functionSorts[f] == undefined) {
-			state.functionSorts[f] = state.getStackSort(op.destinations[i].variable_id);
+			state.functionSorts[f] = state.getLocal(op.destinations[i].variable_id).sort;
 		}
 	}
 	return fs;
+}
+
+function createFieldFunctionID(state: VerificationState, base: ir.Type, field: string, fieldType: ir.Type): string {
+	const t = showType(base);
+	const name = `field_${t}:${field}`;
+	if (state.functionSorts[name] === undefined) {
+		state.functionSorts[name] = sortOf(fieldType);
+	}
+	return name;
+}
+
+function createConstructorFunctionID(state: VerificationState, base: ir.Type) {
+	const t = showType(base);
+	const name = `new_${t}`;
+	if (state.functionSorts[name] === undefined) {
+		state.functionSorts[name] = sortOf(base);
+	}
+	return name;
 }
 
 function addConditionalClause(state: VerificationState, clause: smt.UFConstraint[]) {
@@ -298,12 +297,18 @@ function traverseBlock(
 	block: ir.OpBlock,
 	state: VerificationState,
 	context: VerificationContext,
+	then?: () => unknown,
 ) {
 	// Blocks bound variable scopes, so variables must be cleared after.
 	const stackAtBeginning = state.getStackSize();
 
 	for (let subop of block.ops) {
 		traverse(program, subop, state, context);
+	}
+
+	// Execute the final computation before exiting this scope.
+	if (then !== undefined) {
+		then();
 	}
 
 	// Clear variables defined within this block.
@@ -318,10 +323,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		// NOTE that since this creates no new objects, this does not require
 		// any manipulation of constraints.
 		state.updateAssignment(op.destination.variable_id,
-			state.getAssignment(op.source.variable_id));
+			state.getLocal(op.source.variable_id).assignment);
 		return;
 	} else if (op.tag === "op-branch") {
-		const conditionVariable = state.getAssignment(op.condition.variable_id)
+		const conditionVariable = state.getLocal(op.condition.variable_id).assignment;
 		const trueCondition: smt.UFConstraint = {
 			tag: "predicate", predicate: conditionVariable
 		};
@@ -336,27 +341,50 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-const") {
 		// Like assignment, this requires no manipulation of constraints, only
 		// the state of variables.
-		const sort = state.getStackSort(op.destination.variable_id);
+		const sort = state.getLocal(op.destination.variable_id).sort;
 		state.updateAssignment(op.destination.variable_id, {
 			tag: "const", value: op.value, sort
 		});
 		return;
 	} else if (op.tag === "op-field") {
+		const baseType = state.getLocal(op.object.variable_id).t;
+		const dstType = state.getLocal(op.destination.variable_id).t;
+		const f = createFieldFunctionID(state, baseType, op.field, dstType);
+		state.updateAssignment(op.destination.variable_id, {
+			tag: "app",
+			f,
+			args: [state.getLocal(op.object.variable_id).assignment],
+		});
+		return;
 	} else if (op.tag === "op-new-record") {
-
-	} else if (op.tag === "op-proof") {
-		return traverseBlock(program, op.body, state, context);
-	} else if (op.tag === "op-return") {
-		for (let i = 0; i < op.sources.length; i++) {
+		const fieldNames = Object.keys(op.fields).sort();
+		const fields = [];
+		for (let field of fieldNames) {
+			fields.push(state.getLocal(op.fields[field].variable_id).assignment);
+		}
+		const dstType = state.getLocal(op.destination.variable_id).t;
+		const f = createConstructorFunctionID(state, dstType);
+		const app: smt.UFValue = {
+			tag: "app",
+			f,
+			args: fields,
+		};
+		state.updateAssignment(op.destination.variable_id, app);
+		for (let i = 0; i < fields.length; i++) {
+			const fieldType = state.getLocal(op.fields[fieldNames[i]].variable_id).t;
+			const f = createFieldFunctionID(state, dstType, fieldNames[i], fieldType);
 			addConditionalClause(state, [
 				{
 					tag: "=",
-					left: state.getAssignment(op.sources[i].variable_id),
-					right: context.returnToVariables[i],
+					left: { tag: "app", f, args: [app] },
+					right: fields[i],
 				},
 			]);
 		}
-
+		return;
+	} else if (op.tag === "op-proof") {
+		return traverseBlock(program, op.body, state, context);
+	} else if (op.tag === "op-return") {
 		for (let post of context.returnsPostConditions) {
 			throw new Error("TODO: Verify postcondition at op-return");
 		}
@@ -381,8 +409,8 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				throw new Error("Foreign signature with `eq` semantics"
 					+ " must take exactly 2 arguments (" + op.operation + ")");
 			}
-			const left = state.getAssignment(op.arguments[0].variable_id);
-			const right = state.getAssignment(op.arguments[1].variable_id);
+			const left = state.getLocal(op.arguments[0].variable_id).assignment;
+			const right = state.getLocal(op.arguments[1].variable_id).assignment;
 			if (op.destinations.length !== 1) {
 				throw new Error("Foreign signature with `eq` semantics"
 					+ " must return exactly 1 value");
@@ -392,22 +420,59 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		}
 		return;
 	} else if (op.tag === "op-static-call") {
-		const sf = op.function.function_id;
-		const signature = program.functions[sf].signature;
-		const fs = createFunctionIDs(state, op.destinations, sf, signature, op.type_arguments);
-
-		for (let precondition of signature.preconditions) {
-			throw new Error("TODO: Check precondition of op-static-call");
-		}
+		const fn = op.function.function_id;
+		const signature = program.functions[fn].signature;
 
 		const args = [];
 		for (let i = 0; i < op.arguments.length; i++) {
-			args.push(state.getAssignment(op.arguments[i].variable_id));
+			args.push(state.getLocal(op.arguments[i].variable_id).assignment);
 		}
 
+		if (state.recursivePreconditions.blockedFunctions[fn] !== undefined) {
+			throw new RecursivePreconditionErr({
+				callsite: op.diagnostic_callsite,
+				fn: fn,
+			});
+		} else {
+			state.recursivePreconditions.blockedFunctions[fn] = true;
+			const oldStack = state.stack;
+			state.stack = [];
+			for (let i = 0; i < op.arguments.length; i++) {
+				const local = oldStack[op.arguments[i].variable_id];
+				state.stack.push({
+					sort: local.sort,
+					assignment: local.assignment,
+					t: local.t,
+				});
+			}
+			for (let precondition of signature.preconditions) {
+				traverseBlock(program, precondition.block, state, {
+					...context,
+				}, () => {
+					const r = checkUnreachable(state, [{
+						tag: "not",
+						constraint: {
+							tag: "predicate",
+							predicate: state.getLocal(precondition.result.variable_id).assignment,
+						},
+					}]);
+					if (r !== "refuted") {
+						state.failedVerifications.push({
+							tag: "failed-precondition",
+							callLocation: op.diagnostic_callsite,
+							preconditionLocation: precondition.location,
+						});
+					}
+				});
+			}
+			state.stack = oldStack;
+			delete state.recursivePreconditions.blockedFunctions[fn];
+		}
+
+		const smtFnID = createFunctionIDs(state, op.destinations, fn, signature, op.type_arguments);
 		for (let i = 0; i < op.destinations.length; i++) {
 			const dst = op.destinations[i].variable_id;
-			state.updateAssignment(dst, { tag: "app", f: fs[i], args });
+			state.updateAssignment(dst, { tag: "app", f: smtFnID[i], args });
 		}
 
 		for (let postcondition of signature.postconditions) {
@@ -417,16 +482,17 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		// Handle the special semantics of functions.
 		if (signature.semantics?.eq === true) {
 			if (op.arguments.length !== 2) {
-				throw new Error("Function signature with `eq` semantics must take exactly 2 arguments (" + sf + ")");
+				throw new Error("Function signature with `eq` semantics must take exactly 2 arguments (" + fn + ")");
 			}
-			const left = state.getAssignment(op.arguments[0].variable_id);
-			const right = state.getAssignment(op.arguments[1].variable_id);
+			const left = state.getLocal(op.arguments[0].variable_id).assignment;
+			const right = state.getLocal(op.arguments[1].variable_id).assignment;
 			if (op.destinations.length !== 1) {
-				throw new Error("Function signatures with `eq` semantics must return exactly 1 value (" + sf + ")");
+				throw new Error("Function signatures with `eq` semantics must return exactly 1 value (" + fn + ")");
 			}
 			const destination = op.destinations[0];
 			learnEquality(state, left, right, destination);
 		}
+
 		return;
 	} else if (op.tag === "op-dynamic-call") {
 		const fs = createDynamicFunctionID(state, op);
@@ -444,6 +510,8 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		if (signature.semantics?.eq === true) {
 			throw new Error("TODO");
 		}
+
+		throw new Error("TODO");
 		return;
 	} else if (op.tag === "op-unreachable") {
 		if (checkUnreachable(state) !== "refuted") {
@@ -466,8 +534,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.clauses.push(state.pathConstraints.map(negate));
 		return;
 	} else if (op.tag === "op-var") {
-		const sort = sortOf(op.type);
-		state.stackInitialize(sort, state.defaultInhabitant(sort));
+		state.stackInitialize(op.type, state.defaultInhabitant(sortOf(op.type)));
 		return;
 	}
 
@@ -475,10 +542,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	throw new Error(`unhandled op ${op["tag"]}`);
 }
 
-function checkUnreachable(state: VerificationState) {
+function checkUnreachable(state: VerificationState, additionalConstraints?: smt.UFConstraint[]): "refuted" | {} {
 	const theory = new smt.UFTheory();
-	for (let variable in state.variableSorts) {
-		theory.defineVariable(variable, state.variableSorts[variable]);
+	for (let variable in state.constantSorts) {
+		theory.defineVariable(variable, state.constantSorts[variable]);
 	}
 	for (let func in state.functionSorts) {
 		theory.defineFunction(func, state.functionSorts[func]);
@@ -491,6 +558,11 @@ function checkUnreachable(state: VerificationState) {
 	}
 	for (let clause of state.pathConstraints) {
 		theory.addConstraint([clause]);
+	}
+	if (additionalConstraints !== undefined) {
+		for (let c of additionalConstraints) {
+			theory.addConstraint([c]);
+		}
 	}
 
 	return theory.attemptRefutation();

@@ -77,6 +77,7 @@ export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], a
 		destinations: dst.map(x => ({ variable_id: x })),
 		arguments: args.map(x => ({ variable_id: x })),
 		type_arguments: ts,
+		diagnostic_callsite: { fileID: "unknown", offset: 0, length: 0 },
 	};
 }
 

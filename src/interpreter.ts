@@ -406,7 +406,13 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 		parameters.push(context.stack[i] + ": " + showType(fn.signature.parameters[i], context));
 	}
 	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
-	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ") {");
+	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ")");
+	for (let pre of fn.signature.preconditions) {
+		lines.push("precondition (#" + pre.result.variable_id + ") {");
+		printBlockContents(pre.block, "", context, lines);
+		lines.push("}");
+	}
+	lines.push("body {");
 	printBlockContents(fn.body, "", context, lines);
 	lines.push("}");
 	lines.push("");
@@ -433,7 +439,10 @@ export function printOp(
 ) {
 	if (op.tag === "op-assign") {
 		const src = context.stack[op.source.variable_id];
-		const dst = context.stack[op.destination.variable_id];
+		let dst = context.stack[op.destination.variable_id];
+		if (!dst) {
+			dst = "???(" + op.destination.variable_id + ")???";
+		}
 		lines.push(indent + dst + " = " + src + ";");
 		return;
 	} else if (op.tag === "op-branch") {
@@ -453,12 +462,12 @@ export function printOp(
 		const id = context.stack.length;
 		const n = "v" + id;
 		context.stack.push(n);
-		lines.push(indent + "var " + n + ": " + t + "; // " + id);
+		lines.push(indent + "var " + n + ": " + t + "; // #" + id);
 		return;
 	} else if (op.tag === "op-const") {
 		let dst = context.stack[op.destination.variable_id];
 		if (!dst) {
-			dst = "<bad " + op.destination.variable_id + ">";
+			dst = "???(" + + op.destination.variable_id + ")???";
 		}
 		lines.push(indent + dst + " = " + op.value + ";");
 		return;

@@ -79,7 +79,17 @@ function processInterpretCommand(args: string[]): number {
 		console.log(line);
 	}
 
-	const verificationErrors = verify.verifyProgram(compiled);
+	let verificationErrors;
+	try {
+		verificationErrors = verify.verifyProgram(compiled);
+	} catch (e) {
+		if (e instanceof diagnostics.SemanticError) {
+			printError(e, sourceFiles);
+			return 4;
+		} else {
+			throw e;
+		}
+	}
 	for (let v of verificationErrors) {
 		let err: diagnostics.SemanticError;
 		if (v.tag === "failed-assert") {
@@ -113,7 +123,7 @@ function processInterpretCommand(args: string[]): number {
 		console.error("");
 	}
 	if (verificationErrors.length !== 0) {
-		return 4;
+		return 5;
 	}
 
 	const result = interpreter.interpret(mainFunction, [], compiled, {

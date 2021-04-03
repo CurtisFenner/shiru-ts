@@ -130,4 +130,26 @@ export const tests = {
 			{ fileID: "test-file", offset: 0, length: 3 }
 		]));
 	},
+	"comments"() {
+		const blob = `
+		one // alpha beta
+		two // gamma delta`;
+		const tokens = tokenize(blob, "test-file");
+		assert(tokens, "is equal to", [
+			{
+				tag: "iden",
+				name: "one",
+				location: { fileID: "test-file", offset: 3, length: 3 },
+			},
+			{
+				tag: "iden",
+				name: "two",
+				location: { fileID: "test-file", offset: 23, length: 3 },
+			},
+			{
+				tag: "eof",
+				location: { fileID: "test-file", offset: 41, length: 0 },
+			},
+		]);
+	},
 };

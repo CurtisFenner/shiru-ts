@@ -67,6 +67,7 @@ export function opReturn(...srcs: number[]): ir.OpReturn {
 	return {
 		tag: "op-return",
 		sources: srcs.map(x => ({ variable_id: x })),
+		diagnostic_return_site: { fileID: "unknown", offset: 0, length: 0 },
 	};
 }
 

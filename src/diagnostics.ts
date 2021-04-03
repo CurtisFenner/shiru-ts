@@ -329,3 +329,14 @@ export class RecursivePreconditionErr extends SemanticError {
 		]);
 	}
 }
+
+export class ReturnExpressionUsedOutsideEnsuresErr extends SemanticError {
+	constructor(args: {
+		returnLocation: SourceLocation,
+	}) {
+		super([
+			"A `return` expression cannot be used outside an `ensures` clause like it is at",
+			args.returnLocation,
+		]);
+	}
+}

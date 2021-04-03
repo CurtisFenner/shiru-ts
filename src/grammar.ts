@@ -2,11 +2,11 @@ import { SourceLocation } from "./ir";
 import { ErrorElement, IdenToken, KeywordToken, NumberLiteralToken, OperatorToken, PUNCTUATION, PunctuationToken, StringLiteralToken, Token, tokenize, TypeIdenToken, TypeKeywordToken, TypeVarToken } from "./lexer";
 import { RecordParserDescription, ConstParser, Parser, ParsersFor, RecordParser, RepeatParser, TokenParser, DebugContext, ParseResult, choice, ChoiceParser, TokenSpan, FailHandler } from "./parser";
 
-function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken> {
+function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken & { keyword: K }> {
 	return new TokenParser((t) => {
 		if (t.tag === "keyword") {
 			if (t.keyword === keyword) {
-				return t;
+				return t as KeywordToken & { keyword: K };
 			}
 		}
 		return null;
@@ -203,11 +203,13 @@ const tokens = {
 		}
 		return token as BinaryLogicalToken;
 	}),
+	returnKeyword: keywordParser("return"),
 };
 
 const keywords = {
 	class: keywordParser("class"),
 	else: keywordParser("else"),
+	ensures: keywordParser("ensures"),
 	fn: keywordParser("fn"),
 	if: keywordParser("if"),
 	import: keywordParser("import"),
@@ -311,9 +313,14 @@ export interface FnSignature {
 	parameters: FnParameter[],
 	returns: Type[],
 	requires: RequiresClause[],
+	ensures: EnsuresClause[],
 }
 
 export interface RequiresClause {
+	expression: Expression,
+}
+
+export interface EnsuresClause {
 	expression: Expression,
 }
 
@@ -478,6 +485,7 @@ export interface ExpressionNewArg {
 export type ExpressionAtom = ExpressionParenthesized
 	| StringLiteralToken | NumberLiteralToken
 	| BooleanLiteralToken
+	| (KeywordToken & { keyword: "return" })
 	| IdenToken
 	| ExpressionCall
 	| ExpressionNew;
@@ -487,6 +495,7 @@ type ASTs = {
 	Definition: Definition,
 	ElseClause: ElseClause,
 	ElseIfClause: ElseIfClause,
+	EnsuresClause: EnsuresClause,
 	Expression: Expression,
 	ExpressionAccess: ExpressionAccess,
 	ExpressionAccessField: ExpressionAccessField,
@@ -558,6 +567,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		body: grammar.Block
 			.required(parseProblem("Expected a block after condition at", atHead)),
 	})),
+	EnsuresClause: new RecordParser(() => ({
+		_ensures: keywords.ensures,
+		expression: grammar.Expression
+			.required(parseProblem("Expected an expression after `ensures` at", atHead)),
+	})),
 	Expression: new StructParser(() => ({
 		left: grammar.ExpressionOperand,
 		operations: new RepeatParser(grammar.ExpressionOperation),
@@ -585,6 +599,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tokens.stringLiteral,
 		tokens.numberLiteral,
 		tokens.booleanLiteral,
+		tokens.returnKeyword,
 		tokens.iden,
 		grammar.ExpressionCall,
 	]),
@@ -670,6 +685,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		returns: new CommaParser(grammar.Type, "Expected a return type at")
 			.map(requireAtLeastOne("return type")),
 		requires: new RepeatParser(grammar.RequiresClause),
+		ensures: new RepeatParser(grammar.EnsuresClause),
 	})),
 	IfSt: new RecordParser(() => ({
 		_if: keywords.if,

@@ -52,6 +52,7 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 		traverseBlock(program, precondition.block, state, {
 			// Return statements do not return a value.
 			returnsPostConditions: [],
+			parameterCount: f.signature.parameters.length,
 		}, () => {
 			state.clauses.push([
 				{
@@ -64,6 +65,7 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 
 	traverseBlock(program, f.body, state, {
 		returnsPostConditions: f.signature.postconditions,
+		parameterCount: f.signature.parameters.length,
 	});
 
 	// The IR type-checker verifies that functions must end with a op-return or
@@ -73,17 +75,28 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 
 interface VerificationContext {
 	/// The post-conditions to verify at a ReturnStatement.
-	returnsPostConditions: { block: ir.OpBlock, result: ir.VariableID }[],
+	returnsPostConditions: { block: ir.OpBlock, result: ir.VariableID, location: ir.SourceLocation }[],
+
+	/// The number of function parameters. The first entries in the stack are
+	/// the parameters.
+	parameterCount: number,
 }
 
 type FailedVerification = FailedPreconditionVerification
 	| FailedAssertVerification
-	| FailedReturnVerification;
+	| FailedReturnVerification
+	| FailedPostconditionValidation;
 
 interface FailedPreconditionVerification {
 	tag: "failed-precondition",
 	callLocation: ir.SourceLocation,
 	preconditionLocation: ir.SourceLocation,
+}
+
+interface FailedPostconditionValidation {
+	tag: "failed-postcondition",
+	returnLocation: ir.SourceLocation,
+	postconditionLocation: ir.SourceLocation,
 }
 
 interface FailedAssertVerification {
@@ -385,8 +398,32 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, op.body, state, context);
 	} else if (op.tag === "op-return") {
-		for (let post of context.returnsPostConditions) {
-			throw new Error("TODO: Verify postcondition at op-return");
+		if (context.returnsPostConditions.length !== 0) {
+			const oldStack = state.stack;
+			state.stack = oldStack.slice(0, context.parameterCount);
+			for (let v of op.sources) {
+				const entry = oldStack[v.variable_id];
+				state.stack.push({ sort: entry.sort, assignment: entry.assignment, t: entry.t });
+			}
+			for (let postcondition of context.returnsPostConditions) {
+				traverseBlock(program, postcondition.block, state, context, () => {
+					const r = checkUnreachable(state, [{
+						tag: "not",
+						constraint: {
+							tag: "predicate",
+							predicate: state.getLocal(postcondition.result.variable_id).assignment,
+						},
+					}]);
+					if (r !== "refuted") {
+						state.failedVerifications.push({
+							tag: "failed-postcondition",
+							returnLocation: op.diagnostic_return_site,
+							postconditionLocation: postcondition.location,
+						});
+					}
+				});
+			}
+			state.stack = oldStack;
 		}
 
 		// Subsequently, this path is treated as unreachable, since the function

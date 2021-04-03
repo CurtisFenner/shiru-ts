@@ -132,4 +132,32 @@ export const tests = {
 			],
 		});
 	},
+	"return-expression-illegal-in-requires"() {
+		const source = `package example; record A { fn f(): Boolean requires return { return true; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"A `return` expression cannot be used outside an `ensures` clause like it is at",
+				{ fileID: "test-file", offset: 53, length: 6 },
+			]
+		});
+	},
+	"return-expression-illegal-in-body"() {
+		const source = `package example; record A { fn f(): Boolean { return return; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources([ast]), "throws", {
+			message: [
+				"A `return` expression cannot be used outside an `ensures` clause like it is at",
+				{ fileID: "test-file", offset: 53, length: 6 },
+			]
+		});
+	},
+	"return-expression-legal-in-ensures"() {
+		const source = `package example; record A { fn f(): Boolean ensures return { return true; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		semantics.compileSources([ast]);
+	},
 };

@@ -178,6 +178,8 @@ export interface OpDynamicCall {
 export interface OpReturn {
 	tag: "op-return",
 	sources: VariableID[],
+
+	diagnostic_return_site: SourceLocation,
 };
 
 export interface OpBlock {

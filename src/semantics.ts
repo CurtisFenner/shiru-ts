@@ -468,9 +468,14 @@ function canonicalFunctionName(entityName: string, memberName: string) {
 }
 
 interface FunctionContext {
-	/// `returnsTo` indicates the types that the containing function returns,
+	/// `returnsTo` indicates the types that an `op-return` returns to,
 	/// and where those return types can be found annotated in the source.
 	returnsTo: { t: ir.Type, location: ir.SourceLocation }[],
+
+	/// `proofReturns` indicates the variables  that a `return` expression 
+	/// refers to. It is `null` if a `return` expression is not valid in the
+	/// given context.
+	proofReturns: null | ValueInfo,
 
 	sourceContext: SourceContext,
 }
@@ -701,6 +706,13 @@ function compileExpressionAtom(
 				value: e.keyword === "true",
 			});
 			return { values: [{ t: v.t, id: v.id }], location: e.location };
+		} else if (e.keyword === "return") {
+			if (context.proofReturns === null) {
+				throw new diagnostics.ReturnExpressionUsedOutsideEnsuresErr({
+					returnLocation: e.location,
+				});
+			}
+			return { values: context.proofReturns.values, location: e.location };
 		} else {
 			const _: never = e.keyword;
 			throw new Error("compileExpressionAtom: keyword `" + e["keyword"] + "`");
@@ -1320,7 +1332,11 @@ function compileReturnSt(
 			expectedLocation: signatureReturn,
 		});
 	}
-	let op: ir.OpReturn = { tag: "op-return", sources: [] };
+	let op: ir.OpReturn = {
+		tag: "op-return",
+		sources: [],
+		diagnostic_return_site: statement.location,
+	};
 	for (let i = 0; i < values.length; i++) {
 		const v = values[i];
 		const source = v.tuple.values[v.i];
@@ -1471,6 +1487,7 @@ function compileFunction(
 	const context: FunctionContext = {
 		returnsTo: [],
 		sourceContext,
+		proofReturns: null,
 	};
 	for (const r of def.ast.signature.returns) {
 		const t = compileType(r, typeScope, sourceContext);
@@ -1489,6 +1506,35 @@ function compileFunction(
 			result: asserted.id,
 			location: precondition.expression.location,
 		});
+	}
+
+	if (def.ast.signature.ensures.length !== 0) {
+		stack.openBlock();
+		const proofReturns: ValueInfo = {
+			location: ir.locationsSpan(def.ast.signature.returns),
+			values: [],
+		};
+		for (let i = 0; i < signature.return_types.length; i++) {
+			const v = stack.defineTemporary(signature.return_types[i], def.ast.signature.returns[i].location);
+			proofReturns.values.push(v);
+		}
+
+		for (let postcondition of def.ast.signature.ensures) {
+			const block: ir.OpBlock = { ops: [] };
+			stack.openBlock();
+			const result = compileExpression(postcondition.expression, block.ops, stack, typeScope, {
+				...context,
+				proofReturns,
+			});
+			const asserted = expectOneBooleanForContract(result, typeScope, context, "ensures");
+			stack.closeBlock();
+			signature.postconditions.push({
+				block,
+				result: asserted.id,
+				location: postcondition.expression.location,
+			});
+		}
+		stack.closeBlock();
 	}
 
 	const body = compileBlock(def.ast.body, stack, typeScope, context);

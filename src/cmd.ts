@@ -19,7 +19,7 @@ export function processCommands(args: string[]): number {
 	return 1;
 }
 
-interface SourceFile {
+export interface SourceFile {
 	path: string,
 	content: string,
 }
@@ -114,6 +114,15 @@ function processInterpretCommand(args: string[]): number {
 					"A function has not been shown to always return a value at",
 					v.blockEndLocation ? v.blockEndLocation : " (unknown location)",
 				],
+			};
+		} else if (v.tag === "failed-postcondition") {
+			err = {
+				message: [
+					"A postcondition has not been shown to hold at",
+					v.returnLocation,
+					"The postcondition was defined at",
+					v.postconditionLocation,
+				]
 			};
 		} else {
 			const _: never = v;
@@ -258,7 +267,7 @@ class TextDocument {
 	}
 }
 
-function printError(e: { message: lexer.ErrorElement[] }, sourceList: SourceFile[]) {
+export function printError(e: { message: lexer.ErrorElement[] }, sourceList: SourceFile[]) {
 	const sources: Record<string, TextDocument> = {};
 
 	let s = "ERROR: ";

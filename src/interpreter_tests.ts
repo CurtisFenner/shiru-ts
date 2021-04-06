@@ -8,6 +8,8 @@ import { compileSources } from "./semantics";
 const T_INT: ir.Type = ir.T_INT;
 const T_BOOL: ir.Type = ir.T_BOOLEAN;
 
+export const UNKNOWN_LOCATION: ir.SourceLocation = { fileID: "unknown", offset: 0, length: 0 };
+
 export function classType(name: string, ...args: ir.Type[]): ir.Type {
 	return {
 		tag: "type-compound",
@@ -67,7 +69,7 @@ export function opReturn(...srcs: number[]): ir.OpReturn {
 	return {
 		tag: "op-return",
 		sources: srcs.map(x => ({ variable_id: x })),
-		diagnostic_return_site: { fileID: "unknown", offset: 0, length: 0 },
+		diagnostic_return_site: UNKNOWN_LOCATION,
 	};
 }
 
@@ -78,11 +80,11 @@ export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], a
 		destinations: dst.map(x => ({ variable_id: x })),
 		arguments: args.map(x => ({ variable_id: x })),
 		type_arguments: ts,
-		diagnostic_callsite: { fileID: "unknown", offset: 0, length: 0 },
+		diagnostic_callsite: UNKNOWN_LOCATION,
 	};
 }
 
-export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: number, ts: ir.Type[], dst: number[], args: number[] }): ir.OpDynamicCall {
+export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: string, ts: ir.Type[], dst: number[], args: number[] }): ir.OpDynamicCall {
 	return {
 		tag: "op-dynamic-call",
 		constraint: { interface_id: i },
@@ -91,6 +93,7 @@ export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir
 		signature_type_arguments: ts,
 		destinations: dst.map(x => ({ variable_id: x })),
 		arguments: args.map(x => ({ variable_id: x })),
+		diagnostic_callsite: UNKNOWN_LOCATION,
 	};
 }
 
@@ -226,12 +229,12 @@ export const tests = {
 					interface: { interface_id: "Favorite" },
 					subjects: [classType("FortyTwo")],
 					for_any: [],
-					entries: [
-						{
+					entries: {
+						"get": {
 							implementation: { function_id: "fortyTwo" },
 							constraint_parameters: [],
 						}
-					],
+					},
 				},
 			},
 			functions: {
@@ -264,7 +267,7 @@ export const tests = {
 						opVar(T_INT, "favorite: #0"),
 						// Invoke op-dynamic-call.
 						// No constraints are passed in this invocation.
-						opDynamicCall({ i: "Favorite", its: [classType("FortyTwo")], f: 0, args: [], dst: [0], ts: [] }),
+						opDynamicCall({ i: "Favorite", its: [classType("FortyTwo")], f: "get", args: [], dst: [0], ts: [] }),
 						opReturn(0),
 					),
 				},
@@ -272,8 +275,8 @@ export const tests = {
 			interfaces: {
 				"Favorite": {
 					type_parameters: ["#This"],
-					signatures: [
-						{
+					signatures: {
+						"get": {
 							type_parameters: [],
 							constraint_parameters: [],
 							parameters: [],
@@ -281,7 +284,7 @@ export const tests = {
 							preconditions: [],
 							postconditions: [],
 						},
-					]
+					},
 				},
 			},
 			records: {
@@ -306,12 +309,12 @@ export const tests = {
 					interface: { interface_id: "Favorite" },
 					subjects: [classType("Thirteen")],
 					for_any: [],
-					entries: [
-						{
+					entries: {
+						"get": {
 							implementation: { "function_id": "thirteen" },
 							constraint_parameters: [],
 						},
-					],
+					},
 				},
 			},
 			functions: {
@@ -352,7 +355,7 @@ export const tests = {
 						opVar(T_INT, "favorite: #0"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: 0, args: [], dst: [0], ts: [],
+							f: "get", args: [], dst: [0], ts: [],
 						}),
 						opReturn(0),
 					),
@@ -378,8 +381,8 @@ export const tests = {
 			interfaces: {
 				"Favorite": {
 					type_parameters: ["#This"],
-					signatures: [
-						{
+					signatures: {
+						"get": {
 							type_parameters: [],
 							constraint_parameters: [],
 							parameters: [],
@@ -387,7 +390,7 @@ export const tests = {
 							preconditions: [],
 							postconditions: [],
 						},
-					]
+					},
 				},
 			},
 			records: {
@@ -412,19 +415,19 @@ export const tests = {
 					interface: { interface_id: "Favorite" },
 					subjects: [classType("Seven")],
 					for_any: [],
-					entries: [
-						{
+					entries: {
+						"get": {
 							implementation: { "function_id": "seven" },
 							constraint_parameters: [],
 						},
-					],
+					},
 				},
 				"SquarerIsFavorite": {
 					interface: { interface_id: "Favorite" },
 					subjects: [classType("Squarer", variableType(0))],
 					for_any: [variableType(0)],
-					entries: [
-						{
+					entries: {
+						"get": {
 							implementation: { function_id: "squareFavorite" },
 							constraint_parameters: [
 								{
@@ -433,7 +436,7 @@ export const tests = {
 								},
 							],
 						},
-					],
+					},
 				},
 			},
 			functions: {
@@ -455,7 +458,7 @@ export const tests = {
 						opVar(T_INT, "fav: #0"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: 0, dst: [0], args: [], ts: [],
+							f: "get", dst: [0], args: [], ts: [],
 						}),
 						opForeign({ f: "int*", dst: [0], args: [0, 0] }),
 						opReturn(0),
@@ -498,7 +501,7 @@ export const tests = {
 						opVar(T_INT, "favorite: #0"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: 0, args: [], dst: [0], ts: [],
+							f: "get", args: [], dst: [0], ts: [],
 						}),
 						opReturn(0),
 					),
@@ -525,8 +528,8 @@ export const tests = {
 			interfaces: {
 				"Favorite": {
 					type_parameters: ["#This"],
-					signatures: [
-						{
+					signatures: {
+						"get": {
 							type_parameters: [],
 							constraint_parameters: [],
 							parameters: [],
@@ -534,7 +537,7 @@ export const tests = {
 							preconditions: [],
 							postconditions: [],
 						},
-					]
+					},
 				},
 			},
 			records: {
@@ -580,7 +583,7 @@ export const tests = {
 			}
 		}`;
 		const ast = parseSource(text, "test-file");
-		const program = compileSources([ast]);
+		const program = compileSources({ ast });
 		const result = interpret("example.Main.main", [], program, {
 			"Int+": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");

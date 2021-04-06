@@ -162,17 +162,18 @@ export interface OpDynamicCall {
 	subjects: Type[],
 
 	// The index of the function to call within the interface's signature list.
-	signature_id: number,
+	signature_id: string,
 
-	// TODO: The type parameters as declared in the interface's signature.
-	// Note that the v-table closure may ultimately pass different constraints
-	// to the underlying implementation.
+	/// The type arguments to pass, corresponding to the `type_parameters` array
+	/// of the corresponding constraint signature.
+	/// Note that the v-table closure may use only some of these, in addition to
+	/// others stored in the closure context.
 	signature_type_arguments: Type[],
 
 	arguments: VariableID[],
 	destinations: VariableID[],
 
-	diagnostic_callsite?: SourceLocation;
+	diagnostic_callsite: SourceLocation;
 };
 
 export interface OpReturn {
@@ -231,8 +232,8 @@ export interface IRInterface {
 	// The names in this array are currently unused.
 	type_parameters: string[],
 
-	/// N.B.: The type_parameters method of each is the same as the inteface's.
-	signatures: FunctionSignature[],
+	/// N.B.: The type_parameters of each method is the same as the inteface's.
+	signatures: Record<string, FunctionSignature>,
 };
 
 export interface ConstraintParameter {
@@ -310,7 +311,7 @@ export interface VTableFactory {
 	subjects: Type[],
 
 	// The functions to call for the corresponding signatures in the interface.
-	entries: VTableEntry[],
+	entries: Record<string, VTableEntry>,
 };
 
 export interface VTableEntry {
@@ -362,7 +363,7 @@ export function typecheckProgram(program: Program): Problem[] {
 	return problems;
 }
 
-function opTerminates(op: Op) {
+export function opTerminates(op: Op) {
 	return op.tag === "op-return" || op.tag === "op-unreachable";
 }
 

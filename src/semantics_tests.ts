@@ -8,7 +8,7 @@ export const tests = {
 		const source = `package example; record A { } record A { }`;
 		const ast = grammar.parseSource(source, "file-0");
 
-		assert(() => semantics.compileSources([ast]), "throws", new SemanticError([
+		assert(() => semantics.compileSources({ ast }), "throws", new SemanticError([
 			"Entity `example.A` was defined for a second time at",
 			{ fileID: "file-0", offset: 37, length: 1 },
 			"The first definition was at",
@@ -22,7 +22,7 @@ export const tests = {
 		const source1 = `package example; record A { } `;
 		const ast1 = grammar.parseSource(source1, "file-1");
 
-		assert(() => semantics.compileSources([ast0, ast1]), "throws", new SemanticError([
+		assert(() => semantics.compileSources({ ast0, ast1 }), "throws", new SemanticError([
 			"Entity `example.A` was defined for a second time at",
 			{ fileID: "file-1", offset: 24, length: 1 },
 			"The first definition was at",
@@ -35,7 +35,7 @@ export const tests = {
 		const astA = grammar.parseSource(sourceA, "file-a");
 		const astB = grammar.parseSource(sourceB, "file-b");
 
-		assert(() => semantics.compileSources([astA, astB]), "throws", {
+		assert(() => semantics.compileSources({ astA, astB }), "throws", {
 			message: [
 				"Entity `A` was defined for a second time at",
 				{ fileID: "file-b", offset: 27, length: 1 },
@@ -52,7 +52,7 @@ export const tests = {
 		const astB = grammar.parseSource(sourceB, "file-b");
 		const astC = grammar.parseSource(sourceC, "file-c");
 
-		assert(() => semantics.compileSources([astA, astB, astC]), "throws", {
+		assert(() => semantics.compileSources({ astA, astB, astC }), "throws", {
 			message: [
 				"Entity `A` was defined for a second time at",
 				{ fileID: "file-c", offset: 43, length: 1 },
@@ -65,7 +65,7 @@ export const tests = {
 		const source = `package example;`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		assert(program.records, "is equal to", {});
 		assert(program.functions, "is equal to", {});
 	},
@@ -73,7 +73,7 @@ export const tests = {
 		const source = `package example; record A { var f1: A; var f1: A; }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"The member `f1` was defined for a second time at",
 				{ fileID: "test-file", offset: 43, length: 2 },
@@ -86,7 +86,7 @@ export const tests = {
 		const source = `package example; record A { var b: B; }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"Entity `B` has not been defined, but it was referenced at",
 				{ fileID: "test-file", offset: 35, length: 1 },
@@ -97,7 +97,7 @@ export const tests = {
 		const source = `package example; record A { fn f(): Unit { var a: Int = 1; var b: A = a; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A value with type `Int` at",
 				{ fileID: "test-file", offset: 70, length: 1 },
@@ -110,7 +110,7 @@ export const tests = {
 		const source = `package example; record A { fn f(): Int { return 1, 1; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"An expression has 2 values at",
 				{ fileID: "test-file", offset: 49, length: 4 },
@@ -123,7 +123,7 @@ export const tests = {
 		const source = `package example; record A { fn f(): Int, Int { return 1; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"An expression has 1 value at",
 				{ fileID: "test-file", offset: 54, length: 1 },
@@ -136,7 +136,7 @@ export const tests = {
 		const source = `package example; record A { fn f(): Boolean requires return { return true; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A `return` expression cannot be used outside an `ensures` clause like it is at",
 				{ fileID: "test-file", offset: 53, length: 6 },
@@ -147,7 +147,7 @@ export const tests = {
 		const source = `package example; record A { fn f(): Boolean { return return; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		assert(() => semantics.compileSources([ast]), "throws", {
+		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A `return` expression cannot be used outside an `ensures` clause like it is at",
 				{ fileID: "test-file", offset: 53, length: 6 },
@@ -158,6 +158,6 @@ export const tests = {
 		const source = `package example; record A { fn f(): Boolean ensures return { return true; } }`;
 		const ast = grammar.parseSource(source, "test-file");
 
-		semantics.compileSources([ast]);
+		semantics.compileSources({ ast });
 	},
 };

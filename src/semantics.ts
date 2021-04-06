@@ -2,6 +2,7 @@ import * as grammar from "./grammar";
 import * as ir from "./ir";
 import * as diagnostics from "./diagnostics";
 import * as lexer from "./lexer";
+import { execFile } from "child_process";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,
@@ -23,10 +24,17 @@ interface FnBinding {
 	id: ir.FunctionID,
 }
 
+interface InterfaceFnBinding {
+	nameLocation: ir.SourceLocation,
+	parameters: TypeBinding[],
+	returns: TypeBinding[],
+	ast: grammar.InterfaceMember,
+}
+
 interface RecordEntityDef {
 	tag: "record",
 	ast: grammar.RecordDefinition,
-	sourceContext: SourceContext,
+	sourceID: string,
 	bindingLocation: ir.SourceLocation,
 
 	typeScope: TypeScope,
@@ -38,10 +46,11 @@ interface RecordEntityDef {
 interface InterfaceEntityDef {
 	tag: "interface",
 	ast: grammar.InterfaceDefinition,
-	sourceContext: SourceContext,
+	sourceID: string,
 	bindingLocation: ir.SourceLocation,
 
 	typeScope: TypeScope,
+	fns: Record<string, InterfaceFnBinding>,
 }
 
 type EntityDef = RecordEntityDef | InterfaceEntityDef;
@@ -68,6 +77,8 @@ interface ProgramContext {
 	entitiesByCanonical: Record<string, EntityDef>,
 
 	foreignSignatures: Record<string, ir.FunctionSignature>,
+
+	sourceContexts: Record<string, SourceContext>,
 }
 
 /// `SourceContext` represents the "view" of the program from the perspective of
@@ -89,14 +100,16 @@ interface SourceContext {
 }
 
 // Collects the set of entities defined across all given sources.
-function collectAllEntities(sources: grammar.Source[]) {
+function collectAllEntities(sources: Record<string, grammar.Source>) {
 	const programContext: ProgramContext = {
 		canonicalByQualifiedName: {},
 		entitiesByCanonical: {},
 		foreignSignatures: getBasicForeign(),
+		sourceContexts: {},
 	};
 
-	for (const source of sources) {
+	for (const sourceID in sources) {
+		const source = sources[sourceID];
 		const packageName = source.package.packageName.name;
 		const pack = programContext.canonicalByQualifiedName[packageName] || {};
 		programContext.canonicalByQualifiedName[packageName] = pack;
@@ -119,9 +132,7 @@ function collectAllEntities(sources: grammar.Source[]) {
 				tag: "record",
 				ast: definition,
 				bindingLocation,
-
-				// TODO:
-				sourceContext: null as any,
+				sourceID,
 
 				typeScope: {
 					// The `This` type keyword cannot be used in record
@@ -246,8 +257,6 @@ function compileType(
 		// Resolve the entity.
 		const canonicalName = resolveEntity(t, sourceContext);
 		const entity = sourceContext.programContext.entitiesByCanonical[canonicalName];
-		// TODO: Check that entity is a record, etc.
-
 		if (entity.tag !== "record") {
 			throw new diagnostics.NonTypeEntityUsedAsTypeErr({
 				entity: canonicalName,
@@ -326,6 +335,7 @@ function resolveImport(
 }
 
 function resolveSourceContext(
+	sourceID: string,
 	source: grammar.Source,
 	programContext: Readonly<ProgramContext>) {
 	const packageName = source.package.packageName.name;
@@ -345,9 +355,6 @@ function resolveSourceContext(
 			canonicalName,
 			bindingLocation: binding.bindingLocation,
 		};
-
-		// TODO: Do this in a more straightforward way.
-		programContext.entitiesByCanonical[canonicalName].sourceContext = sourceContext;
 	}
 
 	// Bring all imports into scope.
@@ -355,7 +362,46 @@ function resolveSourceContext(
 		resolveImport(imported, source.package, sourceContext, programContext);
 	}
 
-	return sourceContext;
+	programContext.sourceContexts[sourceID] = sourceContext;
+}
+
+function collectTypeScope(
+	programContext: ProgramContext,
+	sourceID: string,
+	typeScope: TypeScope,
+	typeParameters: grammar.TypeParameters,
+) {
+	for (const parameter of typeParameters.parameters) {
+		const existingBinding = typeScope.typeVariables[parameter.name];
+		if (existingBinding !== undefined) {
+			throw new diagnostics.TypeVariableRedefinedErr({
+				typeVariableName: parameter.name,
+				firstBinding: existingBinding.bindingLocation,
+				secondBinding: parameter.location,
+			});
+		}
+		typeScope.typeVariables[parameter.name] = {
+			variable: {
+				tag: "type-variable",
+				id: {
+					type_variable_id: typeScope.typeVariableDebugNames.length,
+				},
+			},
+			bindingLocation: parameter.location,
+		};
+		typeScope.typeVariableDebugNames.push(parameter.name);
+	}
+	for (let c of typeParameters.constraints) {
+		if (c.constraint.tag === "type-keyword") {
+			throw new diagnostics.TypeUsedAsConstraintErr({
+				kind: "keyword",
+				typeLocation: c.constraint.location,
+			});
+		}
+		const constraint = compileConstraint(c.constraint,
+			programContext.sourceContexts[sourceID], typeScope, programContext);
+		throw new Error("TODO");
+	}
 }
 
 // Calculates "signatures" such that references to this entity within other 
@@ -364,38 +410,11 @@ function resolveSourceContext(
 // instantiated by the verifier.
 function collectMembers(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
+	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	if (entity.tag === "record") {
 		// Bring the type parameters into scope.
-		for (let parameter of entity.ast.typeParameters.parameters) {
-			const existingBinding = entity.typeScope.typeVariables[parameter.name];
-			if (existingBinding !== undefined) {
-				throw new diagnostics.TypeVariableRedefinedErr({
-					typeVariableName: parameter.name,
-					firstBinding: existingBinding.bindingLocation,
-					secondBinding: parameter.location,
-				});
-			}
-			entity.typeScope.typeVariables[parameter.name] = {
-				variable: {
-					tag: "type-variable",
-					id: {
-						type_variable_id: entity.typeScope.typeVariableDebugNames.length,
-					},
-				},
-				bindingLocation: parameter.location,
-			};
-			entity.typeScope.typeVariableDebugNames.push(parameter.name);
-		}
-		for (let c of entity.ast.typeParameters.constraints) {
-			if (c.constraint.tag === "type-keyword") {
-				throw new diagnostics.TypeUsedAsConstraintErr({
-					kind: "keyword",
-					typeLocation: c.constraint.location,
-				});
-			}
-			const constraint = compileConstraint(c.constraint,
-				entity.sourceContext, entity.typeScope, programContext);
-		}
+		collectTypeScope(programContext, entity.sourceID,
+			entity.typeScope, entity.ast.typeParameters);
 
 		// Collect the defined fields.
 		for (let field of entity.ast.fields) {
@@ -410,7 +429,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const fieldType = compileType(field.t,
-				entity.typeScope, entity.sourceContext);
+				entity.typeScope, sourceContext);
 
 			entity.fields[fieldName] = {
 				nameLocation: field.name.location,
@@ -439,14 +458,14 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 				});
 			}
 
-			const parameterTypes: TypeBinding[] = fn.signature.parameters.map(t => ({
-				t: compileType(t.t, entity.typeScope, entity.sourceContext),
-				location: t.t.location,
+			const parameterTypes = fn.signature.parameters.map(p => ({
+				t: compileType(p.t, entity.typeScope, sourceContext),
+				location: p.t.location,
 			}));
 
-			const returnTypes: TypeBinding[] = fn.signature.returns.map(t => ({
-				t: compileType(t, entity.typeScope, entity.sourceContext),
-				location: t.location,
+			const returnTypes = fn.signature.returns.map(r => ({
+				t: compileType(r, entity.typeScope, sourceContext),
+				location: r.location,
 			}));
 
 			entity.fns[fnName] = {
@@ -459,8 +478,45 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 		}
 
 		return;
+	} else if (entity.tag === "interface") {
+		collectTypeScope(programContext, entity.sourceID,
+			entity.typeScope, entity.ast.typeParameters);
+
+		// Collect the defined methods.
+		for (const member of entity.ast.members) {
+			const fnName = member.signature.name.name;
+			const existingFn = entity.fns[fnName];
+			if (existingFn !== undefined) {
+				throw new diagnostics.MemberRedefinedErr({
+					memberName: fnName,
+					firstBinding: existingFn.nameLocation,
+					secondBinding: member.signature.name.location,
+				});
+			}
+
+			const parameterTypes = member.signature.parameters.map(p => ({
+				t: compileType(p.t, entity.typeScope, sourceContext),
+				location: p.t.location,
+			}));
+
+			const returnTypes = member.signature.returns.map(r => ({
+				t: compileType(r, entity.typeScope, sourceContext),
+				location: r.location,
+			}));
+
+			entity.fns[fnName] = {
+				nameLocation: member.signature.name.location,
+				parameters: parameterTypes,
+				returns: returnTypes,
+				ast: member,
+			};
+		}
+
+		return;
 	}
-	throw new Error("TODO: collectMembers for unhandled " + entity.ast.tag);
+
+	const _: never = entity;
+	throw new Error("collectMembers: unhandled tag `" + entity["tag"] + "`");
 }
 
 function canonicalFunctionName(entityName: string, memberName: string) {
@@ -1539,24 +1595,25 @@ function compileFunction(
 
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
 
-	const terminating: Partial<Record<ir.Op["tag"], true>> = {
-		"op-unreachable": true,
-		"op-return": true,
-	};
-	if (body.ops.length === 0 || !terminating[body.ops[body.ops.length - 1].tag]) {
+	// Make the verifier prove that this function definitely does not exit 
+	// without returning.
+	if (body.ops.length === 0 || !ir.opTerminates(body.ops[body.ops.length - 1])) {
 		body.ops.push({
 			tag: "op-unreachable",
 			diagnostic_kind: "return",
 			diagnostic_location: def.ast.body.closing,
 		});
 	}
+
 	program.functions[fName] = { signature, body };
 }
 
 function compileRecordEntity(
 	program: ir.Program,
 	entity: RecordEntityDef,
-	entityName: string) {
+	entityName: string,
+	programContext: ProgramContext,
+) {
 	// Layout storage for this record.
 	program.records[entityName] = {
 		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
@@ -1570,7 +1627,8 @@ function compileRecordEntity(
 	for (const f in entity.fns) {
 		const def = entity.fns[f];
 		const fName = def.id.function_id;
-		compileFunction(program, def, fName, entity.sourceContext, entity.typeScope);
+		compileFunction(program, def, fName,
+			programContext.sourceContexts[entity.sourceID], entity.typeScope);
 	}
 
 	// TODO: Implement vtable factories.
@@ -1586,10 +1644,13 @@ function compileEntity(
 	entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
 	if (entity.tag === "record") {
-		compileRecordEntity(program, entity, entityName);
-	} else {
-		throw new Error("Unhandled tag in compileEntity: " + entity.tag);
+		return compileRecordEntity(program, entity, entityName, programContext);
+	} else if (entity.tag === "interface") {
+		throw new Error("TODO");
 	}
+
+	const _: never = entity;
+	throw new Error("compileEntity: unhandled tag `" + entity["tag"] + "`");
 }
 
 function getBasicForeign(): Record<string, ir.FunctionSignature> {
@@ -1631,13 +1692,12 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 /// `ir.Program`.
 /// THROWS `SemanticError` if a type-error is discovered within the given source
 /// files.
-export function compileSources(sources: grammar.Source[]): ir.Program {
+export function compileSources(sources: Record<string, grammar.Source>): ir.Program {
 	const programContext = collectAllEntities(sources);
 
 	// Collect all entities and source contexts.
-	const sourceContexts = [];
-	for (const source of sources) {
-		sourceContexts.push(resolveSourceContext(source, programContext));
+	for (const sourceID in sources) {
+		resolveSourceContext(sourceID, sources[sourceID], programContext);
 	}
 
 	// Resolve members of entities, without checking the validity of

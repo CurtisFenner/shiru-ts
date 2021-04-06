@@ -283,7 +283,8 @@ export class CallOnNonCompoundErr extends SemanticError {
 		location: SourceLocation,
 	}) {
 		super([
-			"TODO: CallOnNonCompoundErr",
+			"The type `" + args.baseType + "` does not have function members, so a function call is illegal at",
+			args.location,
 		]);
 	}
 }
@@ -295,7 +296,9 @@ export class NoSuchFnErr extends SemanticError {
 		methodNameLocation: SourceLocation,
 	}) {
 		super([
-			"TODO: NoSuchFnErr: " + args.baseType + " " + args.methodName + " ",
+			"The type `" + args.baseType + "` ",
+			"does not have a function member named `" + args.methodName + "` ",
+			"so the function call is illegal at",
 			args.methodNameLocation,
 		]);
 	}
@@ -319,12 +322,12 @@ export class OperationRequiresParenthesizationErr extends SemanticError {
 
 export class RecursivePreconditionErr extends SemanticError {
 	constructor(args: {
-		callsite?: SourceLocation,
+		callsite: SourceLocation,
 		fn: string,
 	}) {
 		super([
 			"The function `" + args.fn + "` was recursively invoked in a `requires` clause at",
-			args.callsite || "???",
+			args.callsite,
 			"Try moving this reference to an `ensures` clause.",
 		]);
 	}

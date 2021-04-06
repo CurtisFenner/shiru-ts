@@ -46,11 +46,12 @@ function processInterpretCommand(args: string[]): number {
 		});
 	}
 
-	const asts = [];
-	for (let sourceFile of sourceFiles) {
+	const asts: Record<string, grammar.Source> = {};
+	for (let i = 0; i < sourceFiles.length; i++) {
+		const sourceFile = sourceFiles[i];
 		try {
 			const ast = grammar.parseSource(sourceFile.content, sourceFile.path);
-			asts.push(ast);
+			asts[i.toFixed(0)] = ast;
 		} catch (e) {
 			if (e instanceof lexer.LexError || e instanceof grammar.ParseError) {
 				printError(e, sourceFiles);

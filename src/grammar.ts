@@ -330,7 +330,7 @@ export interface Fn {
 }
 
 // For bringing new type variables into a scope.
-interface TypeParameters {
+export interface TypeParameters {
 	parameters: TypeVarToken[],
 	constraints: TypeConstraint[],
 }

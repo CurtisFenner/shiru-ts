@@ -24,7 +24,7 @@ export type IntValue = {
 
 interface VTable {
 	tag: "dictionary",
-	entries: VTableEntry[],
+	entries: Record<string, VTableEntry>,
 }
 
 interface VTableEntry {
@@ -137,8 +137,9 @@ function satisfyConstraint(
 		const match = matchTypes(factory.for_any, factory.subjects, subjects);
 		if (match !== null) {
 			// Collect the entries to use in the v-table.
-			const vtable: VTable = { tag: "dictionary", entries: [] };
-			for (let entryPattern of factory.entries) {
+			const vtable: VTable = { tag: "dictionary", entries: {} };
+			for (let key in factory.entries) {
+				const entryPattern = factory.entries[key];
 				const entry: VTableEntry = {
 					implementation: entryPattern.implementation,
 					closureConstraints: [],
@@ -157,7 +158,7 @@ function satisfyConstraint(
 						entry.closureConstraints.push(subVTableReference);
 					}
 				}
-				vtable.entries.push(entry);
+				vtable.entries[key] = entry;
 			}
 			return vtable;
 		}

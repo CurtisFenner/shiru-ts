@@ -33,7 +33,7 @@ export const tests = {
 			}
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", [
 			{
@@ -64,7 +64,7 @@ export const tests = {
 			}
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
@@ -87,7 +87,7 @@ export const tests = {
 			}
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
@@ -108,7 +108,7 @@ export const tests = {
 			}
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", [
 			{
@@ -136,7 +136,7 @@ export const tests = {
 			}
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
-		const program = semantics.compileSources([ast]);
+		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},

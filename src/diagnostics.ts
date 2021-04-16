@@ -103,6 +103,15 @@ export class TypeVariableRedefinedErr extends SemanticError {
 	}
 }
 
+export class NoSuchTypeVariableErr extends SemanticError {
+	constructor(args: { typeVariableName: string, location: SourceLocation }) {
+		super([
+			"Type variable `#" + args.typeVariableName + "` has not been defined, but it was referenced at",
+			args.location,
+		]);
+	}
+}
+
 export class NonTypeEntityUsedAsTypeErr extends SemanticError {
 	constructor(args: { entity: string, entityTag: "interface", entityBinding: SourceLocation, useLocation: SourceLocation }) {
 		super([
@@ -340,6 +349,23 @@ export class ReturnExpressionUsedOutsideEnsuresErr extends SemanticError {
 		super([
 			"A `return` expression cannot be used outside an `ensures` clause like it is at",
 			args.returnLocation,
+		]);
+	}
+}
+
+export class TypesDontSatisfyConstraintErr extends SemanticError {
+	constructor(args: {
+		/// `neededConstraint` is a constraint-implementation in the form
+		/// `"X is Y[Z]"`.
+		neededConstraint: string,
+		neededLocation: SourceLocation,
+		constraintLocation: SourceLocation,
+	}) {
+		super([
+			"There is no implementation for `" + args.neededConstraint + "` at",
+			args.neededLocation,
+			"This implementation is required by the constraint at",
+			args.constraintLocation,
 		]);
 	}
 }

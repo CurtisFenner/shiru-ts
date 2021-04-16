@@ -115,7 +115,7 @@ export const tests = {
 		const source = `package example; record A[#X | #X] {}`;
 		assert(() => grammar.parseSource(source, "test-a"), "throws", {
 			message: [
-				"Expected `is` after type constraint subject at",
+				"Expected `is` after type constraint method subject at",
 				{ fileID: "test-a", offset: 33, length: 1 },
 			],
 		});

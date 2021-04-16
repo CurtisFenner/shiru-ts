@@ -65,20 +65,25 @@ interface PackageBinding {
 	bindingLocation: ir.SourceLocation,
 }
 
-/// `ProgramContext` is built up over time to include the "signature" 
+/// `ProgramContext` is built up over time to include the "signature"
 /// information needed to check references of one entity by another.
 interface ProgramContext {
 	/// `canonicalByQualifiedName` is map from package name to entity name to
 	/// canonical name.
 	canonicalByQualifiedName: Record<string, Record<string, string>>,
 
-	/// `entitiesByCanonical` identifies information of the entity with the 
+	/// `entitiesByCanonical` identifies information of the entity with the
 	/// given "canonical" name.of the entity.
 	entitiesByCanonical: Record<string, EntityDef>,
 
 	foreignSignatures: Record<string, ir.FunctionSignature>,
 
 	sourceContexts: Record<string, SourceContext>,
+
+	/// `hasCollectedMembers` is initially `false`, and becomes `true` once
+	/// enough members have been collected to check that type arguments
+	/// implement the required constraints.
+	hasCollectedMembers: boolean,
 }
 
 /// `SourceContext` represents the "view" of the program from the perspective of
@@ -106,6 +111,7 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 		entitiesByCanonical: {},
 		foreignSignatures: getBasicForeign(),
 		sourceContexts: {},
+		hasCollectedMembers: false,
 	};
 
 	for (const sourceID in sources) {
@@ -128,26 +134,50 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 			const canonicalName = packageName + "." + entityName;
 
 			let entity: EntityDef;
-			entity = {
-				tag: "record",
-				ast: definition,
-				bindingLocation,
-				sourceID,
+			if (definition.tag === "record-definition") {
+				entity = {
+					tag: "record",
+					ast: definition,
+					bindingLocation,
+					sourceID,
 
-				typeScope: {
-					// The `This` type keyword cannot be used in record
-					// definitions.
-					thisType: null,
+					typeScope: {
+						// The `This` type keyword cannot be used in record
+						// definitions.
+						thisType: null,
 
-					constraints: [],
-					typeVariables: {},
-					typeVariableDebugNames: [],
-				},
+						constraints: [],
+						typeVariables: {},
+						typeVariableDebugNames: [],
+					},
 
-				// These are filled in by `collectMembers`.
-				fields: {},
-				fns: {},
-			};
+					// These are filled in by `collectMembers`.
+					fields: {},
+					fns: {},
+				};
+			} else {
+				entity = {
+					tag: "interface",
+					ast: definition,
+					bindingLocation,
+					sourceID,
+
+					// The "first" type-parameter is `This` rather than a named
+					// `#T` type-variable.
+					typeScope: {
+						thisType: {
+							tag: "type-variable",
+							id: { type_variable_id: 0 },
+						},
+						constraints: [],
+						typeVariables: {},
+						typeVariableDebugNames: ["This"],
+					},
+
+					// These are filled in by `collectMembers`.
+					fns: {},
+				};
+			}
 			programContext.entitiesByCanonical[canonicalName] = entity;
 			pack[entityName] = canonicalName;
 		}
@@ -160,13 +190,18 @@ interface TypeVariableBinding {
 	variable: ir.TypeVariable,
 }
 
+interface ConstraintBinding {
+	constraint: ir.ConstraintParameter,
+	location: ir.SourceLocation,
+}
+
 interface TypeScope {
 	thisType: null | ir.TypeVariable,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
 	typeVariables: Record<string, TypeVariableBinding>,
 
-	constraints: ir.ConstraintParameter[],
+	constraints: ConstraintBinding[],
 
 	// These names do NOT include "#".
 	typeVariableDebugNames: string[],
@@ -207,33 +242,91 @@ function resolveEntity(
 	}
 }
 
-function compileConstraint(t: grammar.TypeNamed,
+function compileConstraint(
+	// TODO: Use a `grammar.TypeConstraint` instead.
+	c: grammar.TypeNamed,
+	methodSubject: grammar.Type,
 	sourceContext: Readonly<SourceContext>,
 	scope: TypeScope,
-	programContext: Readonly<ProgramContext>): ir.ConstraintParameter {
+	programContext: Readonly<ProgramContext>,
+	checkConstraints: "check" | "skip",
+): ir.ConstraintParameter {
+	if ((checkConstraints === "skip") === sourceContext.programContext.hasCollectedMembers) {
+		throw new Error("Invalid `checkConstraints` argument.");
+	}
+
 	// Resolve the entity.
-	const canonicalName = resolveEntity(t, sourceContext);
+	const canonicalName = resolveEntity(c, sourceContext);
 	const entity = programContext.entitiesByCanonical[canonicalName];
 	if (entity.tag !== "interface") {
 		throw new diagnostics.TypeUsedAsConstraintErr({
 			name: canonicalName,
 			kind: "record",
-			typeLocation: t.location,
+			typeLocation: c.location,
 		});
 	}
 
-	const args = t.arguments.map(a => compileType(a, scope, sourceContext));
+	const subjects = [methodSubject, ...c.arguments].map(a =>
+		compileType(a, scope, sourceContext, checkConstraints));
+
+	if (checkConstraints === "check") {
+		for (const constraint of entity.typeScope.constraints) {
+			throw new Error("TODO");
+		}
+	}
 
 	return {
 		constraint: { interface_id: canonicalName },
-		subjects: args,
+		subjects: subjects,
 	};
 }
 
+function checkTypeConstraintSatisfied(
+	typeArguments: ir.Type[],
+	constraint: ConstraintBinding,
+	neededLocation: ir.SourceLocation,
+	typeScope: TypeScope,
+	sourceContext: SourceContext,
+) {
+	const map = new Map();
+	for (let i = 0; i < typeArguments.length; i++) {
+		map.set(i, typeArguments[i]);
+	}
+
+	if (constraint.constraint.subjects.length === 0) {
+		throw new Error("ICE: Expected at least one subject");
+	}
+
+	const subjects = constraint.constraint.subjects.map(s =>
+		ir.typeSubstitute(s, map));
+
+	const substituted = {
+		constraint: constraint.constraint.constraint,
+		subjects,
+	};
+
+	// TODO: Search for implementations in `typeScope` and in the `programContext`.
+	throw new diagnostics.TypesDontSatisfyConstraintErr({
+		neededConstraint: displayConstraint(substituted, typeScope, sourceContext),
+		neededLocation,
+		constraintLocation: constraint.location,
+	});
+}
+
+/// `compileType` transforms an AST type into an IR type.
+/// When `checkConstraints` is `"check"`, type arguments must satisfy the
+/// constraints indicated by the base type. However, this cannot be `"skip"`
+/// until `ProgramContext.hasCollectedMembers` becomes `true`.
 function compileType(
 	t: grammar.Type,
 	scope: TypeScope,
-	sourceContext: Readonly<SourceContext>): ir.Type {
+	sourceContext: Readonly<SourceContext>,
+	checkConstraints: "check" | "skip",
+): ir.Type {
+	if ((checkConstraints === "skip") === sourceContext.programContext.hasCollectedMembers) {
+		throw new Error("Invalid `checkConstraints` argument.");
+	}
+
 	if (t.tag === "type-keyword") {
 		if (t.keyword === "This") {
 			if (scope.thisType === null) {
@@ -267,17 +360,36 @@ function compileType(
 		}
 
 		const typeArguments = t.arguments.map(a =>
-			compileType(a, scope, sourceContext));
+			compileType(a, scope, sourceContext, checkConstraints));
+
+		if (checkConstraints === "check") {
+			for (let constraint of entity.typeScope.constraints) {
+				checkTypeConstraintSatisfied(typeArguments, constraint,
+					t.location, scope, sourceContext);
+			}
+		}
+
 		return {
 			tag: "type-compound",
 			record: { record_id: canonicalName },
 			type_arguments: typeArguments,
 		};
+	} else if (t.tag === "type-var") {
+		const id = scope.typeVariables[t.name];
+		if (id === undefined) {
+			throw new diagnostics.NoSuchTypeVariableErr({
+				typeVariableName: t.name,
+				location: t.location,
+			});
+		}
+		return id.variable;
 	}
-	throw new Error("Unhandled tag in compileType: " + t);
+
+	const _: never = t;
+	throw new Error("compileType: unhandled tag `" + t["tag"] + "`");
 }
 
-/// `resolveImport` MODIFIES the given `sourceContext` to include the 
+/// `resolveImport` MODIFIES the given `sourceContext` to include the
 /// entity or namespace introduced by the given import.
 function resolveImport(
 	imported: grammar.ImportOfObject | grammar.ImportOfPackage,
@@ -392,21 +504,19 @@ function collectTypeScope(
 		typeScope.typeVariableDebugNames.push(parameter.name);
 	}
 	for (let c of typeParameters.constraints) {
-		if (c.constraint.tag === "type-keyword") {
-			throw new diagnostics.TypeUsedAsConstraintErr({
-				kind: "keyword",
-				typeLocation: c.constraint.location,
-			});
-		}
-		const constraint = compileConstraint(c.constraint,
-			programContext.sourceContexts[sourceID], typeScope, programContext);
-		throw new Error("TODO");
+		const constraint = compileConstraint(c.constraint, c.methodSubject,
+			programContext.sourceContexts[sourceID], typeScope, programContext,
+			"skip");
+		typeScope.constraints.push({
+			constraint,
+			location: c.location,
+		});
 	}
 }
 
-// Calculates "signatures" such that references to this entity within other 
+// Calculates "signatures" such that references to this entity within other
 // entities can be type-checked. NOTE that this does NOT include compiling pre-
-// and post-conditions, which are instead compiled separately and only 
+// and post-conditions, which are instead compiled separately and only
 // instantiated by the verifier.
 function collectMembers(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
@@ -429,7 +539,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const fieldType = compileType(field.t,
-				entity.typeScope, sourceContext);
+				entity.typeScope, sourceContext, "skip");
 
 			entity.fields[fieldName] = {
 				nameLocation: field.name.location,
@@ -459,12 +569,12 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const parameterTypes = fn.signature.parameters.map(p => ({
-				t: compileType(p.t, entity.typeScope, sourceContext),
+				t: compileType(p.t, entity.typeScope, sourceContext, "skip"),
 				location: p.t.location,
 			}));
 
 			const returnTypes = fn.signature.returns.map(r => ({
-				t: compileType(r, entity.typeScope, sourceContext),
+				t: compileType(r, entity.typeScope, sourceContext, "skip"),
 				location: r.location,
 			}));
 
@@ -495,12 +605,12 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 			}
 
 			const parameterTypes = member.signature.parameters.map(p => ({
-				t: compileType(p.t, entity.typeScope, sourceContext),
+				t: compileType(p.t, entity.typeScope, sourceContext, "skip"),
 				location: p.t.location,
 			}));
 
 			const returnTypes = member.signature.returns.map(r => ({
-				t: compileType(r, entity.typeScope, sourceContext),
+				t: compileType(r, entity.typeScope, sourceContext, "skip"),
 				location: r.location,
 			}));
 
@@ -528,10 +638,10 @@ interface FunctionContext {
 	/// and where those return types can be found annotated in the source.
 	returnsTo: { t: ir.Type, location: ir.SourceLocation }[],
 
-	/// `proofReturns` indicates the variables  that a `return` expression 
-	/// refers to. It is `null` if a `return` expression is not valid in the
-	/// given context.
-	proofReturns: null | ValueInfo,
+	/// `ensuresReturnExpression` indicates the variables  that a `return`
+	/// expression refers to. It is `null` if a `return` expression is not valid
+	/// in the given context (i.e., it's not in an `ensures` clause).
+	ensuresReturnExpression: null | ValueInfo,
 
 	sourceContext: SourceContext,
 }
@@ -616,7 +726,7 @@ function compileCallExpression(
 	stack: VariableStack,
 	typeScope: TypeScope,
 	context: FunctionContext): ValueInfo {
-	const baseType = compileType(e.t, typeScope, context.sourceContext);
+	const baseType = compileType(e.t, typeScope, context.sourceContext, "check");
 	if (baseType.tag !== "type-compound") {
 		// TODO: Handle dynamic dispatch on type parameters.
 		throw new diagnostics.CallOnNonCompoundErr({
@@ -763,12 +873,15 @@ function compileExpressionAtom(
 			});
 			return { values: [{ t: v.t, id: v.id }], location: e.location };
 		} else if (e.keyword === "return") {
-			if (context.proofReturns === null) {
+			if (context.ensuresReturnExpression === null) {
 				throw new diagnostics.ReturnExpressionUsedOutsideEnsuresErr({
 					returnLocation: e.location,
 				});
 			}
-			return { values: context.proofReturns.values, location: e.location };
+			return {
+				values: context.ensuresReturnExpression.values,
+				location: e.location,
+			};
 		} else {
 			const _: never = e.keyword;
 			throw new Error("compileExpressionAtom: keyword `" + e["keyword"] + "`");
@@ -1298,7 +1411,30 @@ function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: 
 	}
 }
 
-/// `compileAssignment` adds operations to `ops` to move the value from the 
+/// `displayConstraint` formats the given IR constraint as a string, potentially
+/// formatted for the given `SourceContext` (considering import aliases and
+/// such).
+function displayConstraint(
+	c: ir.ConstraintParameter,
+	typeScope: Readonly<TypeScope>,
+	sourceContext: Readonly<SourceContext>,
+): string {
+	const base = c.constraint.interface_id;
+	if (c.subjects.length === 0) {
+		throw new Error("ICE: Invalid constraint `" + base + "`");
+	}
+
+	const lhs = displayType(c.subjects[0], typeScope, sourceContext);
+	const rhs = c.subjects.slice(1).map(t =>
+		displayType(t, typeScope, sourceContext));
+	if (rhs.length === 0) {
+		return `${lhs} is ${base}`;
+	} else {
+		return `${lhs} is ${base}[${rhs.join(", ")}]`;
+	}
+}
+
+/// `compileAssignment` adds operations to `ops` to move the value from the
 /// source variable to the destination variable.
 /// THROWS a `SemanticError` if doing such is a type error.
 function compileAssignment(
@@ -1342,7 +1478,7 @@ function compileVarSt(
 
 	const destinations = [];
 	for (const v of statement.variables) {
-		const t = compileType(v.t, typeScope, context.sourceContext);
+		const t = compileType(v.t, typeScope, context.sourceContext, "check");
 		const d = stack.defineVariable(v.variable.name, t, v.variable.location);
 		ops.push({
 			tag: "op-var",
@@ -1517,41 +1653,45 @@ function compileBlock(
 	};
 }
 
-function compileFunction(
-	program: ir.Program,
-	def: FnBinding,
-	fName: string,
+function compileFunctionSignature(
+	signatureAST: grammar.FnSignature,
+	typeScope: TypeScope,
 	sourceContext: SourceContext,
-	typeScope: TypeScope) {
+): {
+	signature: ir.FunctionSignature,
+	stack: VariableStack,
+	context: FunctionContext,
+} {
 	const signature: ir.FunctionSignature = {
 		type_parameters: typeScope.typeVariableDebugNames,
-		constraint_parameters: typeScope.constraints,
+		constraint_parameters: typeScope.constraints.map(c => c.constraint),
 
 		parameters: [],
 		return_types: [],
 
-		// TODO:
 		preconditions: [],
 		postconditions: [],
 	};
+
 	const stack = new VariableStack();
-	for (const p of def.ast.signature.parameters) {
-		const t = compileType(p.t, typeScope, sourceContext);
+	for (const parameterAST of signatureAST.parameters) {
+		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
 		signature.parameters.push(t);
-		stack.defineVariable(p.name.name, t, p.name.location);
+		stack.defineVariable(parameterAST.name.name, t, parameterAST.name.location);
 	}
+
 	const context: FunctionContext = {
 		returnsTo: [],
 		sourceContext,
-		proofReturns: null,
+		ensuresReturnExpression: null,
 	};
-	for (const r of def.ast.signature.returns) {
-		const t = compileType(r, typeScope, sourceContext);
+	for (const r of signatureAST.returns) {
+		const t = compileType(r, typeScope, sourceContext, "check");
 		signature.return_types.push(t);
 		context.returnsTo.push({ t, location: r.location });
 	}
 
-	for (let precondition of def.ast.signature.requires) {
+	for (let precondition of signatureAST.requires) {
 		const block: ir.OpBlock = { ops: [] };
 		stack.openBlock();
 		const result = compileExpression(precondition.expression, block.ops, stack, typeScope, context);
@@ -1564,23 +1704,25 @@ function compileFunction(
 		});
 	}
 
-	if (def.ast.signature.ensures.length !== 0) {
+	if (signatureAST.ensures.length !== 0) {
 		stack.openBlock();
-		const proofReturns: ValueInfo = {
-			location: ir.locationsSpan(def.ast.signature.returns),
+		// The variables in a "return" expression are treated as "parameter"
+		// variables for the ensures block.
+		const ensuresReturnExpression: ValueInfo = {
+			location: ir.locationsSpan(signatureAST.returns),
 			values: [],
 		};
 		for (let i = 0; i < signature.return_types.length; i++) {
-			const v = stack.defineTemporary(signature.return_types[i], def.ast.signature.returns[i].location);
-			proofReturns.values.push(v);
+			const v = stack.defineTemporary(signature.return_types[i], signatureAST.returns[i].location);
+			ensuresReturnExpression.values.push(v);
 		}
 
-		for (let postcondition of def.ast.signature.ensures) {
+		for (let postcondition of signatureAST.ensures) {
 			const block: ir.OpBlock = { ops: [] };
 			stack.openBlock();
 			const result = compileExpression(postcondition.expression, block.ops, stack, typeScope, {
 				...context,
-				proofReturns,
+				ensuresReturnExpression,
 			});
 			const asserted = expectOneBooleanForContract(result, typeScope, context, "ensures");
 			stack.closeBlock();
@@ -1593,9 +1735,21 @@ function compileFunction(
 		stack.closeBlock();
 	}
 
+	return { signature, stack, context };
+}
+
+function compileFunction(
+	program: ir.Program,
+	def: FnBinding,
+	fName: string,
+	sourceContext: SourceContext,
+	typeScope: TypeScope) {
+
+	const { signature, stack, context } = compileFunctionSignature(
+		def.ast.signature, typeScope, sourceContext);
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
 
-	// Make the verifier prove that this function definitely does not exit 
+	// Make the verifier prove that this function definitely does not exit
 	// without returning.
 	if (body.ops.length === 0 || !ir.opTerminates(body.ops[body.ops.length - 1])) {
 		body.ops.push({
@@ -1606,6 +1760,27 @@ function compileFunction(
 	}
 
 	program.functions[fName] = { signature, body };
+}
+
+function compileInterfaceEntity(
+	program: ir.Program,
+	entity: InterfaceEntityDef,
+	entityName: string,
+	programContext: ProgramContext,
+) {
+	const compiled: ir.IRInterface = {
+		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
+		signatures: {},
+	};
+	const sourceContext = programContext.sourceContexts[entity.sourceID];
+	for (const fnName in entity.fns) {
+		const fn = entity.fns[fnName];
+		const signature = compileFunctionSignature(
+			fn.ast.signature, entity.typeScope, sourceContext);
+		compiled.signatures[fnName] = signature.signature;
+	}
+
+	program.interfaces[entityName] = compiled;
 }
 
 function compileRecordEntity(
@@ -1619,8 +1794,8 @@ function compileRecordEntity(
 		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
 		fields: {},
 	};
-	for (const f in entity.fields) {
-		program.records[entityName].fields[f] = entity.fields[f].t;
+	for (const fieldName in entity.fields) {
+		program.records[entityName].fields[fieldName] = entity.fields[fieldName].t;
 	}
 
 	// Implement functions.
@@ -1636,7 +1811,7 @@ function compileRecordEntity(
 
 /// `compileEntity` compiles the indicated entity into records, functions,
 /// interfaces, vtable-factories, etc in the given `program`.
-/// THROWS `SemanticError` if a type-error is discovered within the 
+/// THROWS `SemanticError` if a type-error is discovered within the
 /// implementation of this entity.
 function compileEntity(
 	program: ir.Program,
@@ -1646,7 +1821,7 @@ function compileEntity(
 	if (entity.tag === "record") {
 		return compileRecordEntity(program, entity, entityName, programContext);
 	} else if (entity.tag === "interface") {
-		throw new Error("TODO");
+		return compileInterfaceEntity(program, entity, entityName, programContext);
 	}
 
 	const _: never = entity;
@@ -1705,6 +1880,8 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	for (let canonicalEntityName in programContext.entitiesByCanonical) {
 		collectMembers(programContext, canonicalEntityName);
 	}
+
+	programContext.hasCollectedMembers = true;
 
 	const program: ir.Program = {
 		functions: {},

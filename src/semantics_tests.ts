@@ -160,4 +160,47 @@ export const tests = {
 
 		semantics.compileSources({ ast });
 	},
+	"no-such-type-variable"() {
+		const source = `
+		package example;
+		record Main {
+			fn f(a: #A): Int {
+				return 0;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"Type variable `#A` has not been defined, but it was referenced at",
+				{ fileID: "test-file", offset: 47, length: 2 },
+			],
+		});
+	},
+	"function-parameter-type-argument-doesnt-satisfy-constraint"() {
+		const source = `
+		package example;
+		interface Good {
+		}
+
+		record A[#T | #T is Good] {
+		}
+
+		record Main {
+			fn f(a: A[Int]): Int {
+				return 0;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"There is no implementation for `Int is example.Good` at",
+				{ fileID: "test-file", offset: 106, length: 6 },
+				"This implementation is required by the constraint at",
+				{ fileID: "test-file", offset: 60, length: 10 },
+			],
+		});
+	},
 };

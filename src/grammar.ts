@@ -34,7 +34,7 @@ function punctuationParser<K extends keyof typeof PUNCTUATION>(symbol: K): Parse
 
 const eofParser: Parser<Token, SourceLocation> = new TokenParser(t => t.tag === "eof" ? t.location : null);
 
-/// `CommaParser` is a combinator that parses a comma-separated sequence of 
+/// `CommaParser` is a combinator that parses a comma-separated sequence of
 /// elements.
 class CommaParser<T> extends Parser<Token, T[]> {
 	constructor(
@@ -270,7 +270,7 @@ export interface Import {
 	imported: ImportOfObject | ImportOfPackage,
 }
 
-export type Definition = RecordDefinition;
+export type Definition = RecordDefinition | InterfaceDefinition;
 
 export interface RecordDefinition {
 	tag: "record-definition",
@@ -341,8 +341,10 @@ interface TypeArguments {
 }
 
 interface TypeConstraint {
-	subject: TypeVarToken,
-	constraint: Type,
+	methodSubject: TypeVarToken,
+	constraint: TypeNamed,
+
+	location: SourceLocation,
 }
 
 interface TypeConstraints {
@@ -363,7 +365,7 @@ export interface PackageQualification {
 	location: SourceLocation,
 }
 
-export type Type = TypeNamed | TypeKeywordToken;
+export type Type = TypeNamed | TypeKeywordToken | TypeVarToken;
 
 export interface Block {
 	statements: Statement[],
@@ -553,7 +555,8 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tag: new ConstParser("named"),
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
-	Definition: new ChoiceParser(() => [grammar.RecordDefinition]),
+	Definition: choice(() => grammar,
+		"RecordDefinition", "InterfaceDefinition"),
 	ElseClause: new RecordParser(() => ({
 		_else: keywords.else,
 		body: grammar.Block
@@ -778,7 +781,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `;` to complete a return statement at", atHead)),
 	})),
 	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt", "UnreachableSt"),
-	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword]),
+	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword, tokens.typeVarIden]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,
 		arguments: new CommaParser(grammar.Type, "Expected a type argument at")
@@ -787,11 +790,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `]` at", atHead,
 				"to complete type arguments started at", atReference("_open"))),
 	})),
-	TypeParameterConstraint: new RecordParser(() => ({
-		subject: tokens.typeVarIden,
+	TypeParameterConstraint: new StructParser(() => ({
+		methodSubject: tokens.typeVarIden,
 		_is: keywords.is
-			.required(parseProblem("Expected `is` after type constraint subject at", atHead)),
-		constraint: grammar.Type
+			.required(parseProblem("Expected `is` after type constraint method subject at", atHead)),
+		constraint: grammar.TypeNamed
 			.required(parseProblem("Expected a constraint to be named after `is` at", atHead)),
 	})),
 	TypeParameterConstraints: new RecordParser(() => ({

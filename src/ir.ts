@@ -107,7 +107,7 @@ export interface OpBranch {
 	falseBranch: OpBlock,
 };
 
-/// `OpNewRecord` overwrites a `destination` variable with a newly created 
+/// `OpNewRecord` overwrites a `destination` variable with a newly created
 /// instance of a specified record.
 export interface OpNewRecord {
 	tag: "op-new-record",
@@ -128,7 +128,7 @@ export interface OpField {
 	/// The `object` variable must be a record type.
 	object: VariableID,
 
-	/// The `field` must be one of the keys in the `fields` map of the 
+	/// The `field` must be one of the keys in the `fields` map of the
 	/// `RecordDefinition` corresponding to the record type of this `object`.
 	field: string,
 
@@ -143,7 +143,7 @@ export interface OpStaticCall {
 	function: FunctionID,
 
 	/// The types of arguments must be equal to the types of the `parameters` in
-	/// the corresponding `parameters` of the `FunctionSignature` for this 
+	/// the corresponding `parameters` of the `FunctionSignature` for this
 	/// function call (with appropriate instantiation of any `type_arguments`).
 	arguments: VariableID[],
 	type_arguments: Type[],
@@ -187,16 +187,16 @@ export interface OpBlock {
 	ops: Op[],
 };
 
-/// `OpProof` represents a "proof" -- code that isn't run. All statements (i.e., 
+/// `OpProof` represents a "proof" -- code that isn't run. All statements (i.e.,
 /// function calls) in the body of an OpProof must be total (terminate).
 export interface OpProof {
 	tag: "op-proof",
 	body: OpBlock,
 };
 
-/// `OpUnreachable` indicates a point in the program which is unreachable 
+/// `OpUnreachable` indicates a point in the program which is unreachable
 /// assuming static analysis was properly performed. If reached at runtime (this
-/// should only be possible when verification is skipped), the interpreter will 
+/// should only be possible when verification is skipped), the interpreter will
 /// crash. However, a "fast" backend may instead choose to invoke undefined
 /// behavior.
 export interface OpUnreachable {
@@ -206,8 +206,8 @@ export interface OpUnreachable {
 	diagnostic_location: SourceLocation,
 };
 
-/// `OpForeign` represents a call to a pure function provided by the host of the 
-/// interpreter. This includes the operations on primitive types, like 
+/// `OpForeign` represents a call to a pure function provided by the host of the
+/// interpreter. This includes the operations on primitive types, like
 /// arithmetic and byte-slicing.
 export interface OpForeign {
 	tag: "op-foreign",
@@ -237,7 +237,7 @@ export interface IRInterface {
 };
 
 export interface ConstraintParameter {
-	constraint: InterfaceID,
+	interface: InterfaceID,
 	subjects: Type[],
 };
 
@@ -246,7 +246,7 @@ export interface FunctionSignature {
 	/// The names in this array are currently unused.
 	type_parameters: string[],
 
-	/// A v-table is passed at runtime for each constraint in 
+	/// A v-table is passed at runtime for each constraint in
 	/// `constraint_parameters`.
 	constraint_parameters: ConstraintParameter[],
 
@@ -273,8 +273,8 @@ export interface FunctionSignature {
 	postconditions: { block: OpBlock, result: VariableID, location: SourceLocation }[],
 
 	semantics?: {
-		/// Indicates that this is a congruence relation, which is an 
-		/// equivalence relation that respects extensionality. 
+		/// Indicates that this is a congruence relation, which is an
+		/// equivalence relation that respects extensionality.
 		/// That is, a == b implies f(a) == f(b).
 		eq?: true,
 	},
@@ -317,13 +317,13 @@ export interface VTableFactory {
 export interface VTableEntry {
 	implementation: FunctionID,
 
-	/// `constraint_parameters` has one entry for each of the 
-	/// `constraint_parameters` in the `FunctionSignature` of the 
+	/// `constraint_parameters` has one entry for each of the
+	/// `constraint_parameters` in the `FunctionSignature` of the
 	/// implementating function.
-	/// A `number` element indicates the index within the _interface_'s 
-	/// signature to use; a `ConstraintParameter` indicates a v-table to be 
+	/// A `number` element indicates the index within the _interface_'s
+	/// signature to use; a `ConstraintParameter` indicates a v-table to be
 	/// captured as a closure when this v-table entry is constructed. These
-	/// specifications may reference variables from the `for_any` 
+	/// specifications may reference variables from the `for_any`
 	/// parameterization.
 	constraint_parameters: (number | ConstraintParameter)[],
 };

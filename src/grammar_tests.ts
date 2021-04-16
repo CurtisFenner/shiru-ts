@@ -66,6 +66,7 @@ export const tests = {
 					parameters: [],
 					constraints: [],
 				},
+				implementations: { claimed: [] },
 				fields: [],
 				fns: [],
 				location: { fileID: "test-file", offset: 0, length: 11 },

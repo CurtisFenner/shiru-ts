@@ -342,7 +342,7 @@ export const tests = {
 						type_parameters: ["#T"],
 						constraint_parameters: [
 							{
-								constraint: { interface_id: "Favorite" },
+								interface: { interface_id: "Favorite" },
 								subjects: [variableType(0)],
 							}
 						],
@@ -431,7 +431,7 @@ export const tests = {
 							implementation: { function_id: "squareFavorite" },
 							constraint_parameters: [
 								{
-									constraint: { interface_id: "Favorite" },
+									interface: { interface_id: "Favorite" },
 									subjects: [variableType(0)]
 								},
 							],
@@ -445,7 +445,7 @@ export const tests = {
 						type_parameters: ["#F"],
 						constraint_parameters: [
 							{
-								constraint: { interface_id: "Favorite" },
+								interface: { interface_id: "Favorite" },
 								subjects: [variableType(0)],
 							}
 						],
@@ -488,7 +488,7 @@ export const tests = {
 						type_parameters: ["#T"],
 						constraint_parameters: [
 							{
-								constraint: { interface_id: "Favorite" },
+								interface: { interface_id: "Favorite" },
 								subjects: [variableType(0)],
 							},
 						],

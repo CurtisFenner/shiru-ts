@@ -276,10 +276,15 @@ export interface RecordDefinition {
 	tag: "record-definition",
 	entityName: TypeIdenToken,
 	typeParameters: TypeParameters,
+	implementations: ImplementationClaims,
 	fields: Field[],
 	fns: Fn[],
 
 	location: SourceLocation,
+}
+
+export interface ImplementationClaims {
+	claimed: TypeNamed[],
 }
 
 export interface InterfaceMember {
@@ -515,6 +520,7 @@ type ASTs = {
 	FnParameters: FnParameters,
 	FnSignature: FnSignature,
 	IfSt: IfSt,
+	ImplementationClaims: ImplementationClaims,
 	Import: Import,
 	ImportOfObject: ImportOfObject,
 	ImportOfPackage: ImportOfPackage,
@@ -700,6 +706,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		elseIfClauses: new RepeatParser(grammar.ElseIfClause),
 		elseClause: grammar.ElseClause.otherwise(null),
 	})),
+	ImplementationClaims: new RecordParser(() => ({
+		_is: keywords.is,
+		claimed: new CommaParser(grammar.TypeNamed, "Expected an interface at", 1)
+			.required(parseProblem("Expected at least one interface after `is` in implementation claims at", atHead)),
+	})),
 	InterfaceMember: new RecordParser(() => ({
 		signature: grammar.FnSignature,
 		_semicolon: punctuation.semicolon
@@ -758,10 +769,14 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	RecordDefinition: new StructParser(() => ({
 		_record: keywords.record,
 		tag: new ConstParser("record-definition"),
-		entityName: tokens.typeIden,
+		entityName: tokens.typeIden
+			.required(parseProblem("Expected a type name after `record` at", atHead)),
 		typeParameters: grammar.TypeParameters
 			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
-		_open: punctuation.curlyOpen,
+		implementations: grammar.ImplementationClaims
+			.otherwise({ claimed: [] }),
+		_open: punctuation.curlyOpen
+			.required(parseProblem("Expected a `{` to begin record body at", atHead)),
 		fields: new RepeatParser(grammar.Field),
 		fns: new RepeatParser(grammar.Fn),
 		_close: punctuation.curlyClose

@@ -203,4 +203,22 @@ export const tests = {
 			],
 		});
 	},
+	"record-type-satisfies-constraint"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T | #T is Good] {}
+
+		record B is Good {}
+
+		record Main {
+			fn f(a: A[B]): Int {
+				return 0;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const compiled = semantics.compileSources({ ast });
+	},
 };

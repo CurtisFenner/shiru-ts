@@ -123,7 +123,7 @@ function satisfyConstraint(
 
 	for (let i = 0; i < availableSignatures.length; i++) {
 		const signature = availableSignatures[i];
-		if (signature.constraint.interface_id !== constraint.interface_id) {
+		if (signature.interface.interface_id !== constraint.interface_id) {
 			continue;
 		}
 		const match = matchTypes([], signature.subjects, subjects);
@@ -153,7 +153,7 @@ function satisfyConstraint(
 					} else {
 						const subSubjects = c.subjects.map(a => ir.typeSubstitute(a, match));
 						const subVTableReference = satisfyConstraint(
-							globalVTableFactories, c.constraint, subSubjects,
+							globalVTableFactories, c.interface, subSubjects,
 							availableSignatures, availableVTables);
 						entry.closureConstraints.push(subVTableReference);
 					}
@@ -208,7 +208,7 @@ export function interpret(
 	}
 }
 
-/// Execute a Shiru program until termination, returning the result from the 
+/// Execute a Shiru program until termination, returning the result from the
 /// given `entry` function.
 export function* interpretCall(
 	fnName: string,
@@ -295,7 +295,7 @@ function* interpretOp(
 			const subjects = constraintTemplate.subjects.map(t => ir.typeSubstitute(t, instantiation));
 			const vtable = satisfyConstraint(
 				context.program.globalVTableFactories,
-				constraintTemplate.constraint, subjects,
+				constraintTemplate.interface, subjects,
 				context.availableConstraints, context.availableVTables);
 			constraintArgs.push(vtable);
 		}

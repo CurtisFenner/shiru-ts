@@ -535,9 +535,9 @@ type ASTs = {
 	Statement: Statement,
 	Type: Type,
 	TypeArguments: TypeArguments,
+	TypeConstraint: TypeConstraint,
+	TypeConstraints: TypeConstraints,
 	TypeNamed: TypeNamed,
-	TypeParameterConstraint: TypeConstraint,
-	TypeParameterConstraints: TypeConstraints,
 	TypeParameters: TypeParameters,
 	UnreachableSt: UnreachableSt,
 	VarDecl: VarDecl,
@@ -805,16 +805,16 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `]` at", atHead,
 				"to complete type arguments started at", atReference("_open"))),
 	})),
-	TypeParameterConstraint: new StructParser(() => ({
+	TypeConstraint: new StructParser(() => ({
 		methodSubject: tokens.typeVarIden,
 		_is: keywords.is
 			.required(parseProblem("Expected `is` after type constraint method subject at", atHead)),
 		constraint: grammar.TypeNamed
 			.required(parseProblem("Expected a constraint to be named after `is` at", atHead)),
 	})),
-	TypeParameterConstraints: new RecordParser(() => ({
+	TypeConstraints: new RecordParser(() => ({
 		_pipe: punctuation.pipe,
-		constraints: new CommaParser(grammar.TypeParameterConstraint,
+		constraints: new CommaParser(grammar.TypeConstraint,
 			"Expected a type constraint at", 1)
 			.required(parseProblem("Expected at least one type constraint at", atHead)),
 	})),
@@ -822,7 +822,8 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_open: punctuation.squareOpen,
 		parameters: new CommaParser(tokens.typeVarIden, "Expected a type variable at", 1)
 			.required(parseProblem("Expected a type variable at", atHead)),
-		constraints: grammar.TypeParameterConstraints.map(x => x.constraints),
+		constraints: grammar.TypeConstraints.map(x => x.constraints)
+			.otherwise([]),
 		_close: punctuation.squareClose
 			.required(parseProblem("Expected a `]` at", atHead,
 				"to complete type parameters started at", atReference("_open"))),

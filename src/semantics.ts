@@ -203,6 +203,8 @@ interface TypeVariableBinding {
 }
 
 interface ConstraintBinding {
+	/// The "method subject" of this constraint binding is the first element of
+	/// `constraint.subjects`.
 	constraint: ir.ConstraintParameter,
 	location: ir.SourceLocation,
 }
@@ -294,6 +296,18 @@ function compileConstraint(
 	};
 }
 
+function allEqualTypes(a: ir.Type[], b: ir.Type[]): boolean {
+	if (a.length !== b.length) {
+		throw new Error("length mismatch");
+	}
+	for (let i = 0; i < a.length; i++) {
+		if (!ir.equalTypes(a[i], b[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function checkConstraintSatisfied(
 	requiredConstraint: ir.ConstraintParameter,
 	typeScope: TypeScope,
@@ -324,14 +338,7 @@ function checkConstraintSatisfied(
 				map.set(i, methodSubject.type_arguments[i]);
 			}
 			const provided = implementation.constraint.subjects.map(s => ir.typeSubstitute(s, map));
-			let satisfied = true;
-			for (let i = 0; i < provided.length; i++) {
-				if (!ir.equalTypes(provided[i], requiredConstraint.subjects[i])) {
-					satisfied = false;
-					break;
-				}
-			}
-			if (satisfied) {
+			if (allEqualTypes(provided, requiredConstraint.subjects)) {
 				return;
 			}
 		}
@@ -339,7 +346,12 @@ function checkConstraintSatisfied(
 		// No implementation was found in the record entity.
 	} else if (methodSubject.tag === "type-variable") {
 		// Consult the typeScope.
-		throw new Error("TODO: type-variable");
+		for (const { constraint } of typeScope.constraints) {
+			if (allEqualTypes(constraint.subjects, requiredConstraint.subjects)) {
+				return;
+			}
+		}
+		// No implementation was found in the type scope.
 	} else if (methodSubject.tag === "type-primitive") {
 		// TODO: Defer to the "built in" set of constraints (Eq, etc).
 	} else {

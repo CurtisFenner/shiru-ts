@@ -178,7 +178,7 @@ export const tests = {
 			],
 		});
 	},
-	"function-parameter-type-argument-doesnt-satisfy-constraint"() {
+	"function-parameter-type-argument-does-not-satisfy-constraint"() {
 		const source = `
 		package example;
 		interface Good {
@@ -214,6 +214,45 @@ export const tests = {
 
 		record Main {
 			fn f(a: A[B]): Int {
+				return 0;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const compiled = semantics.compileSources({ ast });
+	},
+	"type-parameter-does-not-satisfy-constraint"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T | #T is Good] {}
+
+		record Main[#Q] {
+			fn f(a: A[#Q]): Int {
+				return 0;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"There is no implementation for `#Q is example.Good` at",
+				{ fileID: "test-file", offset: 104, length: 5 },
+				"This implementation is required by the constraint at",
+				{ fileID: "test-file", offset: 57, length: 10 },
+			],
+		});
+	},
+	"type-parameter-satisfies-constraint"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T | #T is Good] {}
+
+		record Main[#Q | #Q is Good] {
+			fn f(a: A[#Q]): Int {
 				return 0;
 			}
 		}

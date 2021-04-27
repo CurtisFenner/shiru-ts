@@ -84,10 +84,20 @@ interface ProgramContext {
 
 	sourceContexts: Record<string, SourceContext>,
 
-	/// `hasCollectedMembers` is initially `false`, and becomes `true` once
-	/// enough members have been collected to check that type arguments
-	/// implement the required constraints.
-	hasCollectedMembers: boolean,
+	/// `uncheckedTypes` and `uncheckedConstraints` are initially `[]`, and
+	/// become `null` once  enough members have been collected to check that
+	/// type arguments implement the required constraints.
+	uncheckedTypes: null | {
+		t: grammar.Type,
+		scope: TypeScope,
+		sourceContext: SourceContext,
+	}[],
+	uncheckedConstraints: null | {
+		c: grammar.TypeNamed,
+		methodSubject: ir.Type,
+		sourceContext: Readonly<SourceContext>,
+		scope: TypeScope,
+	}[],
 }
 
 /// `SourceContext` represents the "view" of the program from the perspective of
@@ -115,7 +125,9 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 		entitiesByCanonical: {},
 		foreignSignatures: getBasicForeign(),
 		sourceContexts: {},
-		hasCollectedMembers: false,
+
+		uncheckedTypes: [],
+		uncheckedConstraints: [],
 	};
 
 	for (const sourceID in sources) {
@@ -262,11 +274,21 @@ function compileConstraint(
 	methodSubject: ir.Type,
 	sourceContext: Readonly<SourceContext>,
 	scope: TypeScope,
-	programContext: Readonly<ProgramContext>,
-	checkConstraints: "check" | "skip",
+	checkConstraints: "check" | "skip" | "skip-internal",
 ): ir.ConstraintParameter {
-	if ((checkConstraints === "skip") === sourceContext.programContext.hasCollectedMembers) {
-		throw new Error("Invalid `checkConstraints` argument.");
+	const programContext = sourceContext.programContext;
+	if (programContext.uncheckedConstraints !== null) {
+		if (checkConstraints === "skip") {
+			programContext.uncheckedConstraints.push({
+				c,
+				methodSubject,
+				sourceContext,
+				scope,
+			});
+			checkConstraints = "skip-internal";
+		}
+	} else if (checkConstraints !== "check") {
+		throw new Error("compileConstraint: invalid `checkConstraints` argument.");
 	}
 
 	// Resolve the entity.
@@ -285,8 +307,37 @@ function compileConstraint(
 		compileType(a, scope, sourceContext, checkConstraints)));
 
 	if (checkConstraints === "check") {
-		for (const constraint of interfaceEntity.typeScope.constraints) {
-			throw new Error("TODO");
+		const expectedLocations = [];
+		for (let v in interfaceEntity.typeScope.typeVariables) {
+			expectedLocations.push({
+				location: interfaceEntity.typeScope.typeVariables[v].bindingLocation,
+			});
+		}
+
+		if (c.arguments.length !== expectedLocations.length) {
+			throw new diagnostics.TypeParameterCountMismatchErr({
+				entityType: "interface",
+				entityName: canonicalName,
+				expectedCount: expectedLocations.length,
+				expectedLocation: ir.locationsSpan(expectedLocations),
+				givenCount: c.arguments.length,
+				givenLocation: c.location,
+			});
+		}
+
+		const map = new Map();
+		for (let i = 0; i < subjects.length; i++) {
+			map.set(i, subjects[i]);
+		}
+		for (const requiredConstraint of interfaceEntity.typeScope.constraints) {
+			const instantiated: ir.ConstraintParameter = {
+				interface: requiredConstraint.constraint.interface,
+				subjects: requiredConstraint.constraint.subjects.map(s => ir.typeSubstitute(s, map)),
+			};
+			checkConstraintSatisfied(instantiated, scope, sourceContext, {
+				constraintDeclaredAt: requiredConstraint.location,
+				neededAt: c.location,
+			});
 		}
 	}
 
@@ -374,10 +425,17 @@ function compileType(
 	t: grammar.Type,
 	scope: TypeScope,
 	sourceContext: Readonly<SourceContext>,
-	checkConstraints: "check" | "skip",
+	checkConstraints: "check" | "skip" | "skip-internal",
 ): ir.Type {
-	if ((checkConstraints === "skip") === sourceContext.programContext.hasCollectedMembers) {
-		throw new Error("Invalid `checkConstraints` argument.");
+	if (sourceContext.programContext.uncheckedTypes !== null) {
+		if (checkConstraints === "skip") {
+			sourceContext.programContext.uncheckedTypes.push({
+				t, scope, sourceContext
+			});
+			checkConstraints = "skip-internal";
+		}
+	} else if (checkConstraints !== "check") {
+		throw new Error("compileType: invalid `checkConstraints` argument");
 	}
 
 	if (t.tag === "type-keyword") {
@@ -416,6 +474,24 @@ function compileType(
 			compileType(a, scope, sourceContext, checkConstraints));
 
 		if (checkConstraints === "check") {
+			const expectedTypeParameterCount = entity.typeScope.typeVariableDebugNames.length;
+			if (typeArguments.length !== expectedTypeParameterCount) {
+				const typeVariableLocations = [];
+				for (let v in entity.typeScope.typeVariables) {
+					typeVariableLocations.push({
+						location: entity.typeScope.typeVariables[v].bindingLocation,
+					});
+				}
+				throw new diagnostics.TypeParameterCountMismatchErr({
+					entityType: "record",
+					entityName: t.entity.name,
+					expectedCount: expectedTypeParameterCount,
+					expectedLocation: ir.locationsSpan(typeVariableLocations),
+					givenCount: t.arguments.length,
+					givenLocation: t.location,
+				});
+			}
+
 			const map = new Map();
 			for (let i = 0; i < typeArguments.length; i++) {
 				map.set(i, typeArguments[i]);
@@ -571,8 +647,7 @@ function collectTypeScope(
 		const methodSubject = compileType(c.methodSubject, typeScope,
 			sourceContext, "skip")
 		const constraint = compileConstraint(c.constraint, methodSubject,
-			sourceContext, typeScope, programContext,
-			"skip");
+			sourceContext, typeScope, "skip");
 		typeScope.constraints.push({
 			constraint,
 			location: c.location,
@@ -592,7 +667,7 @@ function collectTypeScopesAndConstraints(programContext: ProgramContext, entityN
 
 		for (let claimAST of entity.ast.implementations.claimed) {
 			const constraint = compileConstraint(claimAST, entity.typeScope.thisType,
-				sourceContext, entity.typeScope, programContext, "skip");
+				sourceContext, entity.typeScope, "skip");
 			entity.implements.push({
 				constraint,
 				location: claimAST.location,
@@ -766,9 +841,16 @@ class VariableStack {
 		return this.variables[name];
 	}
 
-	defineTemporary(t: ir.Type, location: ir.SourceLocation) {
+	defineTemporary(t: ir.Type, location: ir.SourceLocation, ops: ir.Op[] | null) {
 		const name = "$" + this.stack.length;
-		return this.defineVariable(name, t, location);
+		const id = this.defineVariable(name, t, location);
+		if (ops !== null) {
+			ops.push({
+				tag: "op-var",
+				type: t,
+			});
+		}
+		return id;
 	}
 
 	/// THROWS SemanticError when a variable of this name is not in scope.
@@ -815,7 +897,8 @@ function compileCallExpression(
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
-	context: FunctionContext): ValueInfo {
+	context: FunctionContext,
+): ValueInfo {
 	const baseType = compileType(e.t, typeScope, context.sourceContext, "check");
 	if (baseType.tag !== "type-compound") {
 		// TODO: Handle dynamic dispatch on type parameters.
@@ -883,15 +966,11 @@ function compileCallExpression(
 		const templateType = fn.returns[i].t;
 		const returnType = ir.typeSubstitute(templateType, typeArgumentMapping);
 
-		const result = stack.defineTemporary(returnType, e.location);
+		const result = stack.defineTemporary(returnType, e.location, ops);
 		destinations.push(result.id);
 		info.push({
 			t: returnType,
 			id: result.id,
-		});
-		ops.push({
-			tag: "op-var",
-			type: result.t,
 		});
 	}
 	ops.push({
@@ -907,6 +986,104 @@ function compileCallExpression(
 
 	return {
 		values: info,
+		location: e.location,
+	};
+}
+
+function compileRecordLiteral(
+	e: grammar.ExpressionRecordLiteral,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	const t = compileType(e.t, typeScope, context.sourceContext, "check");
+	if (t.tag !== "type-compound") {
+		throw new diagnostics.NonCompoundInRecordLiteralErr({
+			t: displayType(t, typeScope, context.sourceContext),
+			location: e.t.location,
+		});
+	}
+	const programContext = context.sourceContext.programContext;
+	const record = programContext.entitiesByCanonical[t.record.record_id];
+	if (record === undefined || record.tag !== "record") {
+		throw new Error("ICE: invalid record from compileType");
+	}
+
+	const map = new Map();
+	for (let i = 0; i < t.type_arguments.length; i++) {
+		map.set(i, t.type_arguments[i]);
+	}
+
+	const initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }> = {};
+	for (let initAST of e.initializations) {
+		const fieldName = initAST.fieldName.name;
+		if (initializations[fieldName] !== undefined) {
+			throw new diagnostics.FieldRepeatedInRecordLiteralErr({
+				fieldName,
+				firstLocation: initializations[fieldName].location,
+				secondLocation: initAST.fieldName.location,
+			});
+		}
+		const fieldDefinition = record.fields[fieldName];
+		if (fieldDefinition === undefined) {
+			throw new diagnostics.NoSuchFieldErr({
+				recordType: displayType(t, typeScope, context.sourceContext),
+				fieldName,
+				location: initAST.fieldName.location,
+				type: "initialization",
+			});
+		}
+
+		const value = compileExpression(initAST.value, ops, stack, typeScope, context);
+		if (value.values.length !== 1) {
+			throw new diagnostics.MultiExpressionGroupedErr({
+				location: value.location,
+				valueCount: value.values.length,
+				grouping: "field-init",
+			});
+		}
+		const givenType = value.values[0].t;
+		const expectedType = ir.typeSubstitute(fieldDefinition.t, map);
+
+		if (!ir.equalTypes(expectedType, givenType)) {
+			throw new diagnostics.TypeMismatchErr({
+				givenType: displayType(givenType, typeScope, context.sourceContext),
+				givenLocation: value.location,
+				expectedType: displayType(expectedType, typeScope, context.sourceContext),
+				expectedLocation: fieldDefinition.typeLocation,
+			});
+		}
+
+		initializations[fieldName] = {
+			...value,
+			fieldLocation: initAST.fieldName.location,
+		};
+	}
+
+	const fields: Record<string, ir.VariableID> = {};
+	for (let required in record.fields) {
+		if (initializations[required] === undefined) {
+			throw new diagnostics.UninitializedFieldErr({
+				recordType: displayType(t, typeScope, context.sourceContext),
+				missingFieldName: required,
+				definedLocation: record.fields[required].nameLocation,
+				initializerLocation: e.location,
+			});
+		}
+		fields[required] = initializations[required].values[0].id;
+	}
+
+
+	const destination = stack.defineTemporary(t, e.location, ops);
+	ops.push({
+		tag: "op-new-record",
+		record: t.record,
+		destination: destination.id,
+		fields,
+	});
+	return {
+		values: [{ t: destination.t, id: destination.id }],
 		location: e.location,
 	};
 }
@@ -936,11 +1113,7 @@ function compileExpressionAtom(
 		}
 		return component;
 	} else if (e.tag === "number-literal") {
-		const v = stack.defineTemporary(ir.T_INT, e.location);
-		ops.push({
-			tag: "op-var",
-			type: v.t,
-		});
+		const v = stack.defineTemporary(ir.T_INT, e.location, ops);
 		ops.push({
 			tag: "op-const",
 			destination: v.id,
@@ -951,11 +1124,7 @@ function compileExpressionAtom(
 		return compileCallExpression(e, ops, stack, typeScope, context);
 	} else if (e.tag === "keyword") {
 		if (e.keyword === "false" || e.keyword === "true") {
-			const v = stack.defineTemporary(ir.T_BOOLEAN, e.location);
-			ops.push({
-				tag: "op-var",
-				type: v.t,
-			});
+			const v = stack.defineTemporary(ir.T_BOOLEAN, e.location, ops);
 			ops.push({
 				tag: "op-const",
 				destination: v.id,
@@ -976,14 +1145,10 @@ function compileExpressionAtom(
 			const _: never = e.keyword;
 			throw new Error("compileExpressionAtom: keyword `" + e["keyword"] + "`");
 		}
-	} else if (e.tag === "new") {
-		throw new Error("TODO");
+	} else if (e.tag === "record-literal") {
+		return compileRecordLiteral(e, ops, stack, typeScope, context);
 	} else if (e.tag === "string-literal") {
-		const v = stack.defineTemporary(ir.T_BYTES, e.location);
-		ops.push({
-			tag: "op-var",
-			type: v.t,
-		});
+		const v = stack.defineTemporary(ir.T_BYTES, e.location, ops);
 		ops.push({
 			tag: "op-const",
 			destination: v.id,
@@ -1318,11 +1483,7 @@ function compileExpressionTree(
 			location: tree.join.opToken.location,
 		});
 
-		const result = stack.defineTemporary(ir.T_BOOLEAN, tree.location);
-		ops.push({
-			tag: "op-var",
-			type: result.t,
-		});
+		const result = stack.defineTemporary(ir.T_BOOLEAN, tree.location, ops);
 
 		const branch: ir.OpBranch = {
 			tag: "op-branch",
@@ -1444,11 +1605,7 @@ function compileExpressionTree(
 				+ foreign.return_types.length + " values");
 		}
 		const result = stack.defineTemporary(foreign.return_types[0],
-			ir.locationSpan(left.location, right.location));
-		ops.push({
-			tag: "op-var",
-			type: result.t,
-		});
+			ir.locationSpan(left.location, right.location), ops);
 
 		ops.push({
 			tag: "op-foreign",
@@ -1803,7 +1960,7 @@ function compileFunctionSignature(
 			values: [],
 		};
 		for (let i = 0; i < signature.return_types.length; i++) {
-			const v = stack.defineTemporary(signature.return_types[i], signatureAST.returns[i].location);
+			const v = stack.defineTemporary(signature.return_types[i], signatureAST.returns[i].location, null);
 			ensuresReturnExpression.values.push(v);
 		}
 
@@ -1970,7 +2127,17 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 		collectTypeScopesAndConstraints(programContext, canonicalEntityName);
 	}
 
-	programContext.hasCollectedMembers = true;
+	// Recheck all the unchecked types & constraints found in the above step:
+	const uncheckedTypes = programContext.uncheckedTypes!;
+	const uncheckedConstraints = programContext.uncheckedConstraints!;
+	programContext.uncheckedTypes = [];
+	programContext.uncheckedConstraints = [];
+	for (const { t, scope, sourceContext } of uncheckedTypes) {
+		compileType(t, scope, sourceContext, "check");
+	}
+	for (const { c, methodSubject, sourceContext, scope } of uncheckedConstraints) {
+		compileConstraint(c, methodSubject, sourceContext, scope, "check");
+	}
 
 	// Resolve members of entities. Type arguments must be validated based on
 	// collected constraints.

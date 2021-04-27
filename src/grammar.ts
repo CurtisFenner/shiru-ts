@@ -34,6 +34,35 @@ function punctuationParser<K extends keyof typeof PUNCTUATION>(symbol: K): Parse
 
 const eofParser: Parser<Token, SourceLocation> = new TokenParser(t => t.tag === "eof" ? t.location : null);
 
+/// `TrailingCommaParser` is a combinator that parses a comma-separated sequence
+/// of elements, with an optional trailing comma.
+class TrailingCommaParser<T> extends Parser<Token, T[]> {
+	constructor(
+		private element: Parser<Token, T>,
+	) {
+		super();
+	}
+
+	parse(stream: Token[], from: number,
+		debugContext: Record<string, TokenSpan<Token>>,
+	): ParseResult<T[]> {
+		let list = [];
+		while (true) {
+			const element = this.element.parse(stream, from, debugContext);
+			if (element === null) {
+				return { object: list, rest: from };
+			}
+			list.push(element.object);
+			from = element.rest;
+			const comma = punctuation.comma.parse(stream, from, debugContext);
+			if (comma === null) {
+				return { object: list, rest: from };
+			}
+			from = comma.rest;
+		}
+	}
+}
+
 /// `CommaParser` is a combinator that parses a comma-separated sequence of
 /// elements.
 class CommaParser<T> extends Parser<Token, T[]> {
@@ -479,12 +508,16 @@ export interface ExpressionCall {
 	location: SourceLocation,
 }
 
-export interface ExpressionNew {
-	tag: "new",
-	args: ExpressionNewArg[],
+
+export interface ExpressionRecordLiteral {
+	tag: "record-literal",
+	t: Type,
+	initializations: ExpressionRecordFieldInit[],
+
+	location: SourceLocation,
 }
 
-export interface ExpressionNewArg {
+export interface ExpressionRecordFieldInit {
 	fieldName: IdenToken,
 	value: Expression,
 }
@@ -495,7 +528,7 @@ export type ExpressionAtom = ExpressionParenthesized
 	| (KeywordToken & { keyword: "return" })
 	| IdenToken
 	| ExpressionCall
-	| ExpressionNew;
+	| ExpressionRecordLiteral;
 
 type ASTs = {
 	Block: Block,
@@ -509,6 +542,8 @@ type ASTs = {
 	ExpressionAccessMethod: ExpressionAccessMethod,
 	ExpressionAtom: ExpressionAtom,
 	ExpressionCall: ExpressionCall,
+	ExpressionRecordLiteral: ExpressionRecordLiteral,
+	ExpressionRecordFieldInit: ExpressionRecordFieldInit,
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
 	ExpressionOperationBinary: ExpressionOperationBinary,
@@ -611,13 +646,12 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tokens.returnKeyword,
 		tokens.iden,
 		grammar.ExpressionCall,
+		grammar.ExpressionRecordLiteral,
 	]),
 	ExpressionCall: new StructParser(() => ({
-		t: grammar.TypeNamed,
+		t: grammar.Type,
 		tag: new ConstParser("call"),
-		_dot: punctuation.dot
-			.required(parseProblem(
-				"Expected a `.` after a type in a function call expression at", atHead)),
+		_dot: punctuation.dot,
 		methodName: tokens.iden
 			.required(parseProblem(
 				"Expected a function name after `.` in a call expression", atHead)),
@@ -629,6 +663,27 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem(
 				"Expected a `)` at", atHead,
 				"to complete a function call beginning at", atReference("_open"))),
+	})),
+	ExpressionRecordLiteral: new StructParser(() => ({
+		t: grammar.Type,
+		_open: punctuation.curlyOpen
+			.required(parseProblem(
+				"Expected a `{` or `.` after type name at", atHead)),
+		tag: new ConstParser("record-literal"),
+		initializations: new TrailingCommaParser(grammar.ExpressionRecordFieldInit),
+		_close: punctuation.curlyClose
+			.required(parseProblem(
+				"Expected a `}` at", atHead,
+				"to complete a record literal beginning at", atReference("_open"))),
+	})),
+	ExpressionRecordFieldInit: new RecordParser(() => ({
+		fieldName: tokens.iden,
+		_eq: punctuation.equal
+			.required(parseProblem(
+				"Expected an `=` after a field name in a new-expression at", atHead)),
+		value: grammar.Expression
+			.required(parseProblem(
+				"Expected an expression after `=` in a new-expression argument list at", atHead)),
 	})),
 	ExpressionOperand: new StructParser(() => ({
 		atom: grammar.ExpressionAtom,
@@ -839,7 +894,8 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tag: new ConstParser("var"),
 		"_eq": punctuation.equal
 			.required(parseProblem("Expected a `=` after variable declarations at", atHead)),
-		initialization: new CommaParser(grammar.Expression, "expression", 1),
+		initialization: new CommaParser(grammar.Expression, "expression", 1)
+			.required(parseProblem("Expected an initialization expression after `=` in a variable declaration at", atHead)),
 		"_semicolon": punctuation.semicolon
 			.required(parseProblem("Expected a `;` after variable initialization at", atHead)),
 	})),

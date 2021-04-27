@@ -159,7 +159,7 @@ export class MultiExpressionGroupedErr extends SemanticError {
 	constructor(args: {
 		location: SourceLocation,
 		valueCount: number,
-		grouping: "parens" | "field" | "method" | "if" | "op" | "contract",
+		grouping: "parens" | "field" | "field-init" | "method" | "if" | "op" | "contract",
 		op?: string,
 	}) {
 		const by = {
@@ -169,6 +169,7 @@ export class MultiExpressionGroupedErr extends SemanticError {
 			if: "an `if` condition",
 			op: "a `" + args.op + "` operation",
 			contract: "a `" + args.op + "` contract",
+			"field-init": "a field initialization",
 		};
 		super([
 			"An expression has " + args.valueCount + " values and so cannot be grouped",
@@ -292,7 +293,8 @@ export class CallOnNonCompoundErr extends SemanticError {
 		location: SourceLocation,
 	}) {
 		super([
-			"The type `" + args.baseType + "` does not have function members, so a function call is illegal at",
+			"The type `" + args.baseType + "` does not have function members,"
+			+ " so a function call is illegal at",
 			args.location,
 		]);
 	}
@@ -324,7 +326,8 @@ export class OperationRequiresParenthesizationErr extends SemanticError {
 			args.op1.location,
 			"and at",
 			args.op2.location,
-			"have ambiguous precedence, and require parentheses to specify precedence."
+			"have ambiguous precedence, and require parentheses to specify "
+			+ "precedence."
 		]);
 	}
 }
@@ -335,7 +338,8 @@ export class RecursivePreconditionErr extends SemanticError {
 		fn: string,
 	}) {
 		super([
-			"The function `" + args.fn + "` was recursively invoked in a `requires` clause at",
+			"The function `" + args.fn + "` was recursively invoked in a"
+			+ " `requires` clause at",
 			args.callsite,
 			"Try moving this reference to an `ensures` clause.",
 		]);
@@ -347,7 +351,8 @@ export class ReturnExpressionUsedOutsideEnsuresErr extends SemanticError {
 		returnLocation: SourceLocation,
 	}) {
 		super([
-			"A `return` expression cannot be used outside an `ensures` clause like it is at",
+			"A `return` expression cannot be used outside an `ensures`"
+			+ " clause like it is at",
 			args.returnLocation,
 		]);
 	}
@@ -366,6 +371,89 @@ export class TypesDontSatisfyConstraintErr extends SemanticError {
 			args.neededLocation,
 			"This implementation is required by the constraint at",
 			args.constraintLocation,
+		]);
+	}
+}
+
+export class NonCompoundInRecordLiteralErr extends SemanticError {
+	constructor(args: {
+		t: string,
+		location: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.t + "` is not a record type, and"
+			+ " cannot be used in a record-literal expression like it is at",
+			args.location,
+		]);
+	}
+}
+
+export class FieldRepeatedInRecordLiteralErr extends SemanticError {
+	constructor(args: {
+		fieldName: string,
+		firstLocation: SourceLocation,
+		secondLocation: SourceLocation,
+	}) {
+		super([
+			"The field `" + args.fieldName + "` was initialized a second time at",
+			args.secondLocation,
+			"The first initialization was at",
+			args.firstLocation,
+		]);
+	}
+}
+
+export class NoSuchFieldErr extends SemanticError {
+	constructor(args: {
+		recordType: string,
+		fieldName: string,
+		location: SourceLocation,
+		type: "access" | "initialization",
+	}) {
+		super([
+			"The record type `" + args.recordType
+			+ "` does not have a field called `" + args.fieldName
+			+ "`, so the " + args.type + " is illegal at",
+			args.location,
+		]);
+	}
+}
+
+export class UninitializedFieldErr extends SemanticError {
+	constructor(args: {
+		recordType: string,
+		missingFieldName: string,
+		definedLocation: SourceLocation,
+		initializerLocation: SourceLocation,
+	}) {
+		super([
+			"The initialization of type `" + args.recordType
+			+ "` is missing field `" + args.missingFieldName + "` at",
+			args.initializerLocation,
+			"The field `" + args.missingFieldName + "` is defined at",
+			args.definedLocation,
+		]);
+	}
+}
+
+export class TypeParameterCountMismatchErr extends SemanticError {
+	constructor(args: {
+		entityType: "record" | "interface",
+		entityName: string,
+		expectedCount: number,
+		expectedLocation: SourceLocation,
+		givenCount: number,
+		givenLocation: SourceLocation,
+	}) {
+		super([
+			"The " + args.entityType + " `" + args.entityName + "` was given"
+			+ " " + args.givenCount + " "
+			+ pluralize(args.givenCount, "type parameter") + " at",
+			args.givenLocation,
+			"but " + args.expectedCount + " "
+			+ pluralize(args.expectedCount,
+				"type parameter was", "type parameters were") + " expected at",
+			args.expectedLocation,
 		]);
 	}
 }

@@ -260,4 +260,47 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		const compiled = semantics.compileSources({ ast });
 	},
+	"missing-type-arguments-in-record-literal"() {
+		const source = `
+		package example;
+
+		record A[#T] {
+			var field: #T;
+		}
+
+		record B[#T] {
+			fn f(t: #T): Int {
+				var x: A[Int] = A{ field = t };
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The record `A` was given 0 type parameters at",
+				{ fileID: "test-file", offset: 120, length: 1 },
+				"but 1 type parameter was expected at",
+				{ fileID: "test-file", offset: 32, length: 2 },
+			],
+		});
+	},
+	"missing-type-arguments-in-interface-constraint"() {
+		const source = `
+		package example;
+
+		interface I[#T] { }
+
+		record A is I {
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The interface `example.I` was given 0 type parameters at",
+				{ fileID: "test-file", offset: 58, length: 1 },
+				"but 1 type parameter was expected at",
+				{ fileID: "test-file", offset: 35, length: 2 },
+			],
+		});
+	},
 };

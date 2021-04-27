@@ -130,4 +130,19 @@ export const tests = {
 			],
 		});
 	},
+	"record-literal-expression"() {
+		const source = `
+		package example;
+		record A {
+			fn f(): Int {
+				var obj1: A = A{
+					f1 = 1,
+				};
+				var obj2: A = A{
+					f2 = 2
+				};
+			}
+		}`;
+		const ast = grammar.parseSource(source, "test-file");
+	},
 };

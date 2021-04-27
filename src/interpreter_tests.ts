@@ -2,8 +2,8 @@ import { assert } from "./test";
 import * as ir from "./ir";
 import type { Value } from "./interpreter"
 import { interpret } from "./interpreter";
-import { parseSource } from "./grammar";
-import { compileSources } from "./semantics";
+import * as grammar from "./grammar";
+import * as semantics from "./semantics";
 
 const T_INT: ir.Type = ir.T_INT;
 const T_BOOL: ir.Type = ir.T_BOOLEAN;
@@ -582,8 +582,8 @@ export const tests = {
 				return Main.lucas(1), Main.lucas(2), Main.lucas(3), Main.lucas(4), Main.lucas(5), Main.lucas(6), Main.lucas(7);
 			}
 		}`;
-		const ast = parseSource(text, "test-file");
-		const program = compileSources({ ast });
+		const ast = grammar.parseSource(text, "test-file");
+		const program = semantics.compileSources({ ast });
 		const result = interpret("example.Main.main", [], program, {
 			"Int+": ([a, b]: Value[]) => {
 				if (a.sort !== "int") throw new Error("bad argument");
@@ -609,6 +609,40 @@ export const tests = {
 			{ sort: "int", int: 11 },
 			{ sort: "int", int: 18 },
 			{ sort: "int", int: 29 },
+		]);
+	},
+	"construct-record-literal"() {
+		const source = `
+		package example;
+		
+		record V {
+			var x: Int;
+			var y: Int;
+
+			fn make(x: Int, y: Int): V {
+				return V{
+					x = x,
+					y = y,
+				};
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+
+		const inputs: Value[] = [
+			{ sort: "int", int: 13 },
+			{ sort: "int", int: 17 },
+		];
+		const result = interpret("example.V.make", inputs, program, {});
+		assert(result, "is equal to", [
+			{
+				sort: "record",
+				fields: {
+					x: { sort: "int", int: 13 },
+					y: { sort: "int", int: 17 },
+				},
+			}
 		]);
 	},
 };

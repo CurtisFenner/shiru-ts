@@ -303,4 +303,27 @@ export const tests = {
 			],
 		});
 	},
+	"wrong-field-type-when-instantiated"() {
+		const source = `
+		package example;
+
+		record A[#T] {
+			var f: #T;
+
+			fn field(s: A[Int]): #T {
+				return s.f;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"A value with type `Int` at",
+				{ fileID: "test-file", offset: 93, length: 3 },
+				"cannot be converted to the type `#T` as expected at",
+				{ fileID: "test-file", offset: 77, length: 2 },
+			],
+		});
+	},
 };

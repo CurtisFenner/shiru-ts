@@ -1185,7 +1185,41 @@ function compileOperand(
 					accessedLocation: access.fieldName.location,
 				});
 			}
-			throw new Error("TODO: compileOperand field access");
+
+			const programContext = context.sourceContext.programContext;
+			const record = programContext.entitiesByCanonical[base.t.record.record_id];
+			if (record.tag !== "record") {
+				throw new Error("ICE: non-record referenced by compound type");
+			}
+
+			const map = new Map();
+			for (let i = 0; i < base.t.type_arguments.length; i++) {
+				map.set(i, base.t.type_arguments[i]);
+			}
+
+			const field = record.fields[access.fieldName.name];
+			if (field === undefined) {
+				throw new diagnostics.NoSuchFieldErr({
+					recordType: displayType(base.t, typeScope, context.sourceContext),
+					fieldName: access.fieldName.name,
+					location: access.fieldName.location,
+					type: "access",
+				});
+			}
+
+			const fieldType = ir.typeSubstitute(field.t, map);
+			const location = ir.locationSpan(value.location, access.fieldName.location);
+			const temporary = stack.defineTemporary(fieldType, location, ops);
+			ops.push({
+				tag: "op-field",
+				object: base.id,
+				field: access.fieldName.name,
+				destination: temporary.id,
+			});
+			value = {
+				values: [{ id: temporary.id, t: temporary.t }],
+				location: location,
+			};
 		} else if (access.tag === "method") {
 			throw new Error("TODO: compileOperand method access");
 		} else {

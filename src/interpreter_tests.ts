@@ -645,4 +645,35 @@ export const tests = {
 			}
 		]);
 	},
+	"access-fields-of-record"() {
+		const source = `
+		package example;
+
+		record V {
+			var x: Int;
+			var y: Int;
+
+			fn unmake(v: V): Int, Int {
+				return v.x, v.y;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const inputs: Value[] = [
+			{
+				sort: "record",
+				fields: {
+					x: { sort: "int", int: 13 },
+					y: { sort: "int", int: 17 },
+				},
+			},
+		];
+		const result = interpret("example.V.unmake", inputs, program, {});
+		assert(result, "is equal to", [
+			{ sort: "int", int: 13 },
+			{ sort: "int", int: 17 },
+		]);
+	},
 };

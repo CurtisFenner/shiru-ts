@@ -1,13 +1,24 @@
-import { RecursivePreconditionErr } from "./diagnostics";
+import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
 import * as smt from "./smt";
 
-export function verifyProgram(program: ir.Program): FailedVerification[] {
+/// Represents a constraint solver. The `meta` is used to associated the query
+/// with a "reason" the query is being asked.
+export type ConstraintSolver = (
+	meta: FailedVerification,
+	state: VerificationState,
+	additionalConstraints: smt.UFConstraint[],
+) => "refuted" | {};
+
+export function verifyProgram(
+	program: ir.Program,
+	constraintSolver: ConstraintSolver = (_, state, cons) => checkUnreachableSMT(state, cons),
+): FailedVerification[] {
 	const problems = [];
 
 	// 1) Verify each function body,
 	for (let f in program.functions) {
-		problems.push(...verifyFunction(program, f));
+		problems.push(...verifyFunction(program, f, constraintSolver));
 	}
 
 	// 2) Verify that each interface implementation
@@ -30,7 +41,11 @@ function sortOf(t: ir.Type): smt.UFSort {
 	}
 }
 
-function verifyFunction(program: ir.Program, fName: string): FailedVerification[] {
+function verifyFunction(
+	program: ir.Program,
+	fName: string,
+	constraintSolver: ConstraintSolver,
+): FailedVerification[] {
 	const state = new VerificationState();
 
 	const f = program.functions[fName];
@@ -53,6 +68,7 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 			// Return statements do not return a value.
 			returnsPostConditions: [],
 			parameterCount: f.signature.parameters.length,
+			constraintSolver,
 		}, () => {
 			state.clauses.push([
 				{
@@ -66,6 +82,7 @@ function verifyFunction(program: ir.Program, fName: string): FailedVerification[
 	traverseBlock(program, f.body, state, {
 		returnsPostConditions: f.signature.postconditions,
 		parameterCount: f.signature.parameters.length,
+		constraintSolver,
 	});
 
 	// The IR type-checker verifies that functions must end with a op-return or
@@ -80,31 +97,34 @@ interface VerificationContext {
 	/// The number of function parameters. The first entries in the stack are
 	/// the parameters.
 	parameterCount: number,
+
+	/// The constraint solver.
+	constraintSolver: ConstraintSolver,
 }
 
-type FailedVerification = FailedPreconditionVerification
+export type FailedVerification = FailedPreconditionVerification
 	| FailedAssertVerification
 	| FailedReturnVerification
 	| FailedPostconditionValidation;
 
-interface FailedPreconditionVerification {
+export interface FailedPreconditionVerification {
 	tag: "failed-precondition",
 	callLocation: ir.SourceLocation,
 	preconditionLocation: ir.SourceLocation,
 }
 
-interface FailedPostconditionValidation {
+export interface FailedPostconditionValidation {
 	tag: "failed-postcondition",
 	returnLocation: ir.SourceLocation,
 	postconditionLocation: ir.SourceLocation,
 }
 
-interface FailedAssertVerification {
+export interface FailedAssertVerification {
 	tag: "failed-assert",
 	assertLocation: ir.SourceLocation,
 }
 
-interface FailedReturnVerification {
+export interface FailedReturnVerification {
 	tag: "failed-return",
 	blockEndLocation?: ir.SourceLocation,
 }
@@ -136,7 +156,7 @@ class VerificationState {
 	// An append-only set of constraints that grow, regardless of path.
 	clauses: smt.UFConstraint[][] = [];
 
-	// A stack of constraints that are managed by conditional control 
+	// A stack of constraints that are managed by conditional control
 	// structures.
 	pathConstraints: smt.UFConstraint[] = [];
 
@@ -145,7 +165,7 @@ class VerificationState {
 	failedVerifications: FailedVerification[] = [];
 
 	defaultInhabitant(sort: smt.UFSort) {
-		// TODO: Instead of doing this, do an analysis that ensures all 
+		// TODO: Instead of doing this, do an analysis that ensures all
 		// variables are assigned before use, and simply allow no references.
 		const name = "_default_inhabitant_" + sort;
 		if (this.constantSorts[name] === undefined) {
@@ -222,7 +242,7 @@ function showType(t: ir.Type): string {
 	throw new Error(`unhandled ${t}`);
 }
 
-/// RETURNS an array of strings, being the SMT function names for each of the 
+/// RETURNS an array of strings, being the SMT function names for each of the
 /// given function's return values.
 /// TODO: A better way to encode generic functions is to treat type constraint
 /// parameters as arguments.
@@ -242,7 +262,7 @@ function createFunctionIDs(state: VerificationState, destinations: ir.VariableID
 
 function createDynamicFunctionID(state: VerificationState, op: ir.OpDynamicCall): string[] {
 	const args = op.subjects.concat(op.signature_type_arguments).map(showType);
-	// TODO: This is a bad way to do this, particularly because it makes 
+	// TODO: This is a bad way to do this, particularly because it makes
 	// encoding parametricity relationships harder.
 	const prefix = `dyn_${op.constraint.interface_id}:${op.signature_id}[${args.join(",")}]`;
 	const fs = [];
@@ -328,7 +348,7 @@ function traverseBlock(
 	state.truncateStackToSize(stackAtBeginning);
 }
 
-// MUTATES the verification state parameter, to add additional clauses that are 
+// MUTATES the verification state parameter, to add additional clauses that are
 // ensured after the execution (and termination) of this operation.
 function traverse(program: ir.Program, op: ir.Op, state: VerificationState, context: VerificationContext): void {
 	if (op.tag === "op-assign") {
@@ -407,19 +427,20 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			}
 			for (let postcondition of context.returnsPostConditions) {
 				traverseBlock(program, postcondition.block, state, context, () => {
-					const r = checkUnreachable(state, [{
+					const reason: FailedVerification = {
+						tag: "failed-postcondition",
+						returnLocation: op.diagnostic_return_site,
+						postconditionLocation: postcondition.location,
+					};
+					const refutation = context.constraintSolver(reason, state, [{
 						tag: "not",
 						constraint: {
 							tag: "predicate",
 							predicate: state.getLocal(postcondition.result.variable_id).assignment,
 						},
 					}]);
-					if (r !== "refuted") {
-						state.failedVerifications.push({
-							tag: "failed-postcondition",
-							returnLocation: op.diagnostic_return_site,
-							postconditionLocation: postcondition.location,
-						});
+					if (refutation !== "refuted") {
+						state.failedVerifications.push(reason);
 					}
 				});
 			}
@@ -466,7 +487,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		}
 
 		if (state.recursivePreconditions.blockedFunctions[fn] !== undefined) {
-			throw new RecursivePreconditionErr({
+			throw new diagnostics.RecursivePreconditionErr({
 				callsite: op.diagnostic_callsite,
 				fn: fn,
 			});
@@ -486,19 +507,20 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				traverseBlock(program, precondition.block, state, {
 					...context,
 				}, () => {
-					const r = checkUnreachable(state, [{
+					const reason: FailedVerification = {
+						tag: "failed-precondition",
+						callLocation: op.diagnostic_callsite,
+						preconditionLocation: precondition.location,
+					};
+					const refutation = context.constraintSolver(reason, state, [{
 						tag: "not",
 						constraint: {
 							tag: "predicate",
 							predicate: state.getLocal(precondition.result.variable_id).assignment,
 						},
 					}]);
-					if (r !== "refuted") {
-						state.failedVerifications.push({
-							tag: "failed-precondition",
-							callLocation: op.diagnostic_callsite,
-							preconditionLocation: precondition.location,
-						});
+					if (refutation !== "refuted") {
+						state.failedVerifications.push(reason);
 					}
 				});
 			}
@@ -551,19 +573,18 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		throw new Error("TODO");
 		return;
 	} else if (op.tag === "op-unreachable") {
-		if (checkUnreachable(state) !== "refuted") {
-			// TODO: Better classify verification failures.
-			if (op.diagnostic_kind === "return") {
-				state.failedVerifications.push({
-					tag: "failed-return",
-					blockEndLocation: op.diagnostic_location,
-				});
-			} else {
-				state.failedVerifications.push({
-					tag: "failed-assert",
-					assertLocation: op.diagnostic_location,
-				});
+		// TODO: Better classify verification failures.
+		const reason: FailedVerification = op.diagnostic_kind === "return"
+			? {
+				tag: "failed-return",
+				blockEndLocation: op.diagnostic_location,
 			}
+			: {
+				tag: "failed-assert",
+				assertLocation: op.diagnostic_location,
+			};
+		if (context.constraintSolver(reason, state, []) !== "refuted") {
+			state.failedVerifications.push(reason);
 		}
 
 		// Like a return statement, this path is subsequently treated as
@@ -579,7 +600,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	throw new Error(`unhandled op ${op["tag"]}`);
 }
 
-function checkUnreachable(state: VerificationState, additionalConstraints?: smt.UFConstraint[]): "refuted" | {} {
+export function checkUnreachableSMT(
+	state: VerificationState,
+	additionalConstraints: smt.UFConstraint[],
+): "refuted" | {} {
 	const theory = new smt.UFTheory();
 	for (let variable in state.constantSorts) {
 		theory.defineVariable(variable, state.constantSorts[variable]);
@@ -596,10 +620,8 @@ function checkUnreachable(state: VerificationState, additionalConstraints?: smt.
 	for (let clause of state.pathConstraints) {
 		theory.addConstraint([clause]);
 	}
-	if (additionalConstraints !== undefined) {
-		for (let c of additionalConstraints) {
-			theory.addConstraint([c]);
-		}
+	for (let c of additionalConstraints) {
+		theory.addConstraint([c]);
 	}
 
 	return theory.attemptRefutation();

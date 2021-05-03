@@ -8,7 +8,7 @@ import * as lexer_tests from "./lexer_tests";
 import * as grammar_tests from "./grammar_tests";
 import * as semantics_tests from "./semantics_tests";
 
-import util = require("util");
+import * as util from "util";
 
 export type Run = PassRun | FailRun;
 

@@ -21,7 +21,7 @@ export type DebugContext<Token> = Record<string, TokenSpan<Token>>;
 /// attempting to parse this object.
 export type ParseResult<Result> = { object: Result, rest: number } | null;
 
-/// Parser represents a parser from a stream of `Token`s to a particular 
+/// Parser represents a parser from a stream of `Token`s to a particular
 /// `Result` AST.
 export abstract class Parser<Token, Result> {
 	abstract parse(stream: Token[], from: number, debugContext: DebugContext<Token>): ParseResult<Result>;

@@ -1,9 +1,10 @@
 {
 	"scripts": {
-		"test": "node --enable-source-maps built/test.js",
-		"dimacs": "node --enable-source-maps built/dimacs.js",
-		"cmd": "node --enable-source-maps built/cmd.js",
-		"build": "tsc"
+		"test": "node --enable-source-maps built/shiru/test.js",
+		"dimacs": "node --enable-source-maps built/shiru/dimacs.js",
+		"cmd": "node --enable-source-maps built/shiru/cmd.js",
+		"build": "tsc",
+		"pack-amd": "tsc --project tsconfig-amd.json"
 	},
 	"dependencies": {
 		"@types/node": "^14.6.4"

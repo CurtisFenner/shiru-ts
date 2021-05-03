@@ -1,7 +1,7 @@
 import { TrieMap, DisjointSet } from "./data";
 import { Literal, SATSolver } from "./sat";
 
-/// SMTSolver represents an "satisfiability modulo theories" instance, with 
+/// SMTSolver represents an "satisfiability modulo theories" instance, with
 /// support for quantifier instantiation.
 /// With respect to refutation, SMTSolver is sound but not complete -- some
 /// returned "satisfactions" do not actually satisfy the instance, but all
@@ -39,7 +39,7 @@ export abstract class SMTSolver<E, Counterexample> {
 	/// RETURNS "refuted" when the given constraints can provably not be
 	/// satisfied.
 	/// RETURNS a counter example (satisfaction) when refutation fails; this may
-	/// not be a truly realizable counter-examples, as instantiation and the 
+	/// not be a truly realizable counter-examples, as instantiation and the
 	/// theory solver may be incomplete.
 	attemptRefutation(): "refuted" | Counterexample {
 		if (!this.addedAdditional) {
@@ -57,8 +57,8 @@ export abstract class SMTSolver<E, Counterexample> {
 			} else {
 				// Clausal proof adds additional constraints to the formula, which
 				// preserve satisfiablity (but not necessarily logical equivalence).
-				// These are useful in subsequent runs of the solver; HOWEVER, 
-				// clauses which merely preserve satisfiability and not logical 
+				// These are useful in subsequent runs of the solver; HOWEVER,
+				// clauses which merely preserve satisfiability and not logical
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
 				const theoryClause = this.rejectModel(booleanModel);
@@ -79,7 +79,7 @@ export abstract class SMTSolver<E, Counterexample> {
 	}
 
 
-	/// rejectModel returns a new clause to add to the SAT solver which 
+	/// rejectModel returns a new clause to add to the SAT solver which
 	/// rejects this concrete assignment.
 	/// The returned clause should be an asserting clause in reference to the
 	/// concrete assignment.
@@ -122,7 +122,7 @@ type DSObjectData = string
 	| { tag: "app", f: string, args: number[] }
 	| { tag: "const", value: unknown, sort: UFSort };
 
-/// Data structure to track object identities to be used in a SATSolver and 
+/// Data structure to track object identities to be used in a SATSolver and
 /// DisjointSet data structure.
 class UFValueTracker {
 	// Map from a function name to its return sort.
@@ -320,7 +320,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 					ds.union(info.leftDS, info.rightDS, [literal]);
 				}
 			} else {
-				// For bool sorted objects, join them to the literals true and 
+				// For bool sorted objects, join them to the literals true and
 				// false.
 				let obj: number;
 				if (info.tag === "app") {
@@ -356,8 +356,8 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 								}
 							}
 
-							// The reason for this equivalence is the 
-							// conjunction of the reasons for each argument 
+							// The reason for this equivalence is the
+							// conjunction of the reasons for each argument
 							// being equal.
 							congruenceEqualities.push({
 								left: applicationIdentity.dsIndex,
@@ -393,7 +393,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 					const leftRep = ds.representative(info.leftDS);
 					const rightRep = ds.representative(info.rightDS);
 					if (leftRep === rightRep) {
-						// Some equality literals imply they are in the same 
+						// Some equality literals imply they are in the same
 						// component, but this disequality implies they must be
 						// in different components.
 						const explanation = ds.explainEquality(info.leftDS, info.rightDS);
@@ -438,7 +438,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 				}
 			}
 
-			// Search for a "triangle" of inequalities in the boolean-sorted 
+			// Search for a "triangle" of inequalities in the boolean-sorted
 			// components.
 			if (sort === "bool") {
 				for (let [edge, edgeLiteral] of disequal) {

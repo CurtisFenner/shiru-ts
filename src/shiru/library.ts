@@ -1,5 +1,3 @@
-import * as fs from "fs";
-import * as process from "process";
 import * as diagnostics from "./diagnostics";
 import * as grammar from "./grammar";
 import * as interpreter from "./interpreter";
@@ -8,135 +6,52 @@ import * as lexer from "./lexer";
 import * as semantics from "./semantics";
 import * as verify from "./verify";
 
-export function processCommands(args: string[]): number {
-	if (args[0] === "interpret") {
-		return processInterpretCommand(args.slice(1));
-	}
-
-	console.error("Unknown command `" + args[0] + "`");
-	console.error("Supported commands:");
-	console.error("\tinterpret <main> - <files>");
-	return 1;
-}
-
 export interface SourceFile {
 	path: string,
 	content: string,
 }
 
-function processInterpretCommand(args: string[]): number {
-	if (args[1] !== "-") {
-		console.error("Expected `-` in interpret command");
-		return 1;
-	}
-
-	const mainFunction = args[0];
-	const sourcePaths = args.slice(2);
-	if (new Set(sourcePaths).size !== sourcePaths.length) {
-		console.error("Do not repeat south paths");
-		return 1;
-	}
-
-	const sourceFiles = [];
-	for (let sourcePath of sourcePaths) {
-		const content = fs.readFileSync(sourcePath, { encoding: "utf-8" });
-		sourceFiles.push({
-			path: sourcePath,
-			content,
-		});
-	}
-
-	const asts: Record<string, grammar.Source> = {};
-	for (let i = 0; i < sourceFiles.length; i++) {
-		const sourceFile = sourceFiles[i];
-		try {
-			const ast = grammar.parseSource(sourceFile.content, sourceFile.path);
-			asts[i.toFixed(0)] = ast;
-		} catch (e) {
-			if (e instanceof lexer.LexError || e instanceof grammar.ParseError) {
-				printError(e, sourceFiles);
-				return 2;
-			} else {
-				throw e;
-			}
-		}
-	}
-
-	let compiled;
+export function parseSource(sourceFile: SourceFile): grammar.Source | lexer.LexError | grammar.ParseError {
 	try {
-		compiled = semantics.compileSources(asts);
+		return grammar.parseSource(sourceFile.content, sourceFile.path);
+	} catch (e) {
+		if (e instanceof lexer.LexError || e instanceof grammar.ParseError) {
+			return e;
+		}
+		throw e;
+	}
+}
+
+export function compileASTs(asts: Record<string, grammar.Source>): ir.Program | diagnostics.SemanticError {
+	try {
+		return semantics.compileSources(asts);
 	} catch (e) {
 		if (e instanceof diagnostics.SemanticError) {
-			printError(e, sourceFiles);
-			return 3;
-		} else {
-			throw e;
+			return e;
 		}
+		throw e;
 	}
+}
 
-	const lines: string[] = [];
-	interpreter.printProgram(compiled, lines);
-	for (const line of lines) {
-		console.log(line);
-	}
-
-	let verificationErrors;
+export function verifyProgram(
+	program: ir.Program,
+): diagnostics.SemanticError | verify.FailedVerification[] {
 	try {
-		verificationErrors = verify.verifyProgram(compiled);
+		return verify.verifyProgram(program);
 	} catch (e) {
 		if (e instanceof diagnostics.SemanticError) {
-			printError(e, sourceFiles);
-			return 4;
-		} else {
-			throw e;
+			return e;
 		}
+		throw e;
 	}
-	for (let v of verificationErrors) {
-		let err: diagnostics.SemanticError;
-		if (v.tag === "failed-assert") {
-			err = {
-				message: [
-					"An assert has not been shown to hold at",
-					v.assertLocation ? v.assertLocation : " (unknown location)",
-				],
-			};
-		} else if (v.tag === "failed-precondition") {
-			err = {
-				message: [
-					"A precondition has not been shown to hold at",
-					v.callLocation,
-					"The precondition was defined at",
-					v.preconditionLocation,
-				],
-			};
-		} else if (v.tag === "failed-return") {
-			err = {
-				message: [
-					"A function has not been shown to always return a value at",
-					v.blockEndLocation ? v.blockEndLocation : " (unknown location)",
-				],
-			};
-		} else if (v.tag === "failed-postcondition") {
-			err = {
-				message: [
-					"A postcondition has not been shown to hold at",
-					v.returnLocation,
-					"The postcondition was defined at",
-					v.postconditionLocation,
-				]
-			};
-		} else {
-			const _: never = v;
-			throw new Error("unhandled `" + v["tag"] + "`");
-		}
-		printError(err, sourceFiles);
-		console.error("");
-	}
-	if (verificationErrors.length !== 0) {
-		return 5;
-	}
+}
 
-	const result = interpreter.interpret(mainFunction, [], compiled, {
+export function interpret(
+	program: ir.Program,
+	fn: string,
+	args: interpreter.Value[],
+): interpreter.Value[] {
+	return interpreter.interpret(fn, args, program, {
 		"Int+": ([a, b]: interpreter.Value[]) => {
 			if (a.sort !== "int") throw new Error("bad argument");
 			if (b.sort !== "int") throw new Error("bad argument");
@@ -153,11 +68,50 @@ function processInterpretCommand(args: string[]): number {
 			return [{ sort: "boolean", boolean: a.int == b.int }];
 		},
 	});
-	console.log(JSON.stringify(result, null, "\t"));
-	return 0;
 }
 
-class TextDocument {
+export function formatVerificationFailure(
+	v: verify.FailedVerification,
+): diagnostics.SemanticError {
+	if (v.tag === "failed-assert") {
+		return {
+			message: [
+				"An assert has not been shown to hold at",
+				v.assertLocation ? v.assertLocation : " (unknown location)",
+			],
+		};
+	} else if (v.tag === "failed-precondition") {
+		return {
+			message: [
+				"A precondition has not been shown to hold at",
+				v.callLocation,
+				"The precondition was defined at",
+				v.preconditionLocation,
+			],
+		};
+	} else if (v.tag === "failed-return") {
+		return {
+			message: [
+				"A function has not been shown to always return a value at",
+				v.blockEndLocation ? v.blockEndLocation : " (unknown location)",
+			],
+		};
+	} else if (v.tag === "failed-postcondition") {
+		return {
+			message: [
+				"A postcondition has not been shown to hold at",
+				v.returnLocation,
+				"The postcondition was defined at",
+				v.postconditionLocation,
+			]
+		};
+	} else {
+		const _: never = v;
+		throw new Error("unhandled `" + v["tag"] + "`");
+	}
+}
+
+export class TextDocument {
 	public lines: { content: string, offset: number }[] = [];
 	constructor(private path: string, private content: string) {
 		let offset = 0;
@@ -268,7 +222,7 @@ class TextDocument {
 	}
 }
 
-export function printError(e: { message: lexer.ErrorElement[] }, sourceList: SourceFile[]) {
+export function displayError(e: { message: lexer.ErrorElement[] }, sourceList: SourceFile[]) {
 	const sources: Record<string, TextDocument> = {};
 
 	let s = "ERROR: ";
@@ -313,10 +267,5 @@ export function printError(e: { message: lexer.ErrorElement[] }, sourceList: Sou
 			s += "\n";
 		}
 	}
-	console.error(s);
-}
-
-
-if (require.main === module) {
-	processCommands(process.argv.slice(2));
+	return s;
 }

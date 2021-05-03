@@ -614,7 +614,7 @@ export const tests = {
 	"construct-record-literal"() {
 		const source = `
 		package example;
-		
+
 		record V {
 			var x: Int;
 			var y: Int;

@@ -467,7 +467,7 @@ export class SATSolver {
 			// clause.
 			if (satisfiedIndex >= 0) {
 				if (satisfiedIndex <= 1) {
-					// There are no unwatched satisfied literals in this clause, 
+					// There are no unwatched satisfied literals in this clause,
 					// so this literal will remain the watcher.
 					// N.B.: without this, this watcher would be cleared at the
 					// end of this loop.
@@ -491,26 +491,26 @@ export class SATSolver {
 			}
 
 			if (unfalsfiedCount == 1) {
-				// `this.assignments` is not yet updated; thus the only 
+				// `this.assignments` is not yet updated; thus the only
 				// falsified literal is the one being deleted; so this is a
 				// conflicting unit-clause.
 				throw new Error(`This assignment falsifies the clause #${watchingClauseID}.`
 					+ `\n(adding assignment ${assignedLiteral} to stack [${this.assignmentStack}];`
 					+ `\nwatchingClause =#${watchingClauseID} ${watchingClause})`);
 			} else if (unfalsfiedCount == 2) {
-				// `watchingClause` is not yet satisfied, and has no unfalsified 
+				// `watchingClause` is not yet satisfied, and has no unfalsified
 				// literals other than its two watched literals.
 				// Thus, this is becoming a unit clause of only the other
 				// watched literal.
 				discoveredUnitLiterals.push(watchingClause[1 - destination]);
 				discoveredAntecedents.push(watchingClauseID);
 
-				// Keep the literal watched, since there isn't another literal 
+				// Keep the literal watched, since there isn't another literal
 				// to watch it.
 				watchers[watchersKeepIndex] = watchingClauseID;
 				watchersKeepIndex += 1;
 			} else {
-				// There remains an unfalsified literal, other than the two 
+				// There remains an unfalsified literal, other than the two
 				// watched literals, in this unsatisfied watchingClause.
 				const newWatchedLiteral = watchingClause[latestUnfalsfiedLiteralIndex];
 				if (newWatchedLiteral > 0) {
@@ -550,13 +550,13 @@ export class SATSolver {
 		// This method has to "diagnose" the conflict, producing a new clause
 		// which rejects previous "decisions".
 
-		// The simplest diagnosis is to reject the entire set of decision 
+		// The simplest diagnosis is to reject the entire set of decision
 		// currently in the assignment stack. However, some of those decisions
-		// may not be relevant to this particular conflict; generating a more 
-		// general conflict clause will prune more of the remaining search 
+		// may not be relevant to this particular conflict; generating a more
+		// general conflict clause will prune more of the remaining search
 		// space.
 
-		// The `antecedentClause` mapping can be used to generate an 
+		// The `antecedentClause` mapping can be used to generate an
 		// "implication graph". The vertices of the graph are literals.
 		// For non-decision variables, an edge exists for the negation of each
 		// other literal in the vertex's antecedent clause.

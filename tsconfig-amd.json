@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"module": "AMD",
+		"outFile": "built/shiru-amd.js",
+		"sourceMap": true,
+		"inlineSources": true,
+		"declaration": true,
+		"moduleResolution": "node",
+		"types": [
+			"node"
+		]
+	},
+	"include": [
+		"src/shiru/library.ts"
+	],
+	"extends": "./tsconfig.json"
+}

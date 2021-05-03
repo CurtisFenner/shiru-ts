@@ -23,7 +23,7 @@ export const tests = {
 				return n == 7;
 			}
 
-			fn picky(n: Int): Int 
+			fn picky(n: Int): Int
 			requires A.isGood(n) {
 				return n + n;
 			}
@@ -38,8 +38,8 @@ export const tests = {
 		assert(failures, "is equal to", [
 			{
 				tag: "failed-precondition",
-				callLocation: { fileID: "test-file", offset: 197, length: 10 },
-				preconditionLocation: { fileID: "test-file", offset: 128, length: 11 },
+				callLocation: { fileID: "test-file", offset: 196, length: 10 },
+				preconditionLocation: { fileID: "test-file", offset: 127, length: 11 },
 			}
 		]);
 	},
@@ -51,7 +51,7 @@ export const tests = {
 				return n == 7;
 			}
 
-			fn picky(n: Int): Int 
+			fn picky(n: Int): Int
 			requires A.isGood(n) {
 				return n + n;
 			}
@@ -76,12 +76,12 @@ export const tests = {
 				return n == 7;
 			}
 
-			fn picky(n: Int): Int 
+			fn picky(n: Int): Int
 			requires A.isGood(n) {
 				return n + n;
 			}
 
-			fn main(x: Int): Int 
+			fn main(x: Int): Int
 			requires A.isGood(x) {
 				return A.picky(x);
 			}

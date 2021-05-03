@@ -120,7 +120,7 @@ function compareSolvers(instance: string) {
 function fuzzSolvers() {
 	let numVariables = 100 + Math.floor(10 * Math.random());
 
-	// The "satisfiability threshold" for 3-sat 
+	// The "satisfiability threshold" for 3-sat
 	// (the ratio of clauses to variables where approximately 50% of random instances are satisfiable)
 	// is approximately 4.3, with a lower bound of about 3.5.
 	let ratio = 3.9 + Math.random() * 0.8;

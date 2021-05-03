@@ -446,7 +446,7 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 	throw new LexError(["Found an unexpected symbol at", location]);
 }
 
-/// RETURNS the first index after from which is not a letter/number/underscore 
+/// RETURNS the first index after from which is not a letter/number/underscore
 /// that is valid within Shiru identifiers.
 function findWordBreak(blob: string, from: number, fileID: string) {
 	let end = blob.length;

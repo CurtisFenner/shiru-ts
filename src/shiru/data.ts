@@ -37,7 +37,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	}
 
 	/// Iterate over [K[], V] pairs in this map.
-	/// N.B.: The key array is retained and mutated by this generator, so it 
+	/// N.B.: The key array is retained and mutated by this generator, so it
 	// should not be retained or modified by the caller.
 	*[Symbol.iterator](progress: KS[number][] = []): Generator<[KS, V]> {
 		if (this.value !== undefined) {
@@ -61,7 +61,7 @@ type BFS<K> = { n: number, parent: null } | { n: number, parent: BFS<K>, key: K 
 /// DisjointSet implements the "disjoint set" (a.k.a. "union find") data-
 /// structure, which tracks the set of components in an undirected graph between
 /// a set of integers {0, 1, 2, ... n} as edges are added.
-/// This implementation is augmented with information about "keys" so that 
+/// This implementation is augmented with information about "keys" so that
 /// queries can find a path between two nodes in the same component.
 export class DisjointSet<K> {
 	parents: number[] = [];
@@ -77,7 +77,7 @@ export class DisjointSet<K> {
 	}
 
 	/// representative returns a "representative" element of the given object's
-	/// equivalence class, such that two elements are members of the same 
+	/// equivalence class, such that two elements are members of the same
 	/// equivalence class if and only if their representatives are the same.
 	representative(n: number): number {
 		this.expandTo(n);
@@ -123,9 +123,9 @@ export class DisjointSet<K> {
 		throw new Error(`objects ${a} and ${b} are in different components`);
 	}
 
-	/// union updates this datastructure to join the equivalence classes of 
+	/// union updates this datastructure to join the equivalence classes of
 	/// objects a and b.
-	/// RETURNS false when the objects were already members of the same 
+	/// RETURNS false when the objects were already members of the same
 	///         equivalence class.
 	union(a: number, b: number, key: K): boolean {
 		this.expandTo(a < b ? b : a);

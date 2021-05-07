@@ -808,14 +808,6 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_semicolon: punctuation.semicolon
 			.required(parseProblem("Expected a `;` to end the package declaration at", atHead)),
 	})),
-	Source: new RecordParser(() => ({
-		package: grammar.PackageDef
-			.required(parseProblem("Expected a package declaration to begin the source file at", atHead)),
-		imports: new RepeatParser(grammar.Import),
-		definitions: new RepeatParser(grammar.Definition),
-		_eof: eofParser
-			.required(parseProblem("Expected another definition at", atHead)),
-	})),
 	PackageQualification: new StructParser(() => ({
 		package: tokens.iden,
 		_dot: punctuation.dot
@@ -846,9 +838,18 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	ReturnSt: new StructParser(() => ({
 		_return: keywords.return,
 		tag: new ConstParser("return"),
-		values: new CommaParser(grammar.Expression, "Expected an expression at"),
+		values: new CommaParser(grammar.Expression, "Expected an expression at", 1)
+			.required(parseProblem("Expected at least one value after `return` at", atHead)),
 		_semicolon: punctuation.semicolon
 			.required(parseProblem("Expected a `;` to complete a return statement at", atHead)),
+	})),
+	Source: new RecordParser(() => ({
+		package: grammar.PackageDef
+			.required(parseProblem("Expected a package declaration to begin the source file at", atHead)),
+		imports: new RepeatParser(grammar.Import),
+		definitions: new RepeatParser(grammar.Definition),
+		_eof: eofParser
+			.required(parseProblem("Expected another definition at", atHead)),
 	})),
 	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt", "UnreachableSt"),
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword, tokens.typeVarIden]),

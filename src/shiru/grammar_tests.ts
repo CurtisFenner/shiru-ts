@@ -145,4 +145,22 @@ export const tests = {
 		}`;
 		const ast = grammar.parseSource(source, "test-file");
 	},
+	"bad-empty-return"() {
+		const source = `
+		package example;
+
+		record A {
+			fn f(): Int {
+				return;
+			}
+		}
+		`;
+
+		assert(() => grammar.parseSource(source, "test-file"), "throws", {
+			message: [
+				"Expected at least one value after `return` at",
+				{ fileID: "test-file", offset: 61, length: 1 },
+			],
+		});
+	},
 };

@@ -1796,6 +1796,10 @@ function compileReturnSt(
 		}
 	}
 
+	if (values.length === 0) {
+		throw new Error("ICE: return must take at least 1 value");
+	}
+
 	if (values.length !== context.returnsTo.length) {
 		const signatureReturn = ir.locationsSpan(context.returnsTo);
 		throw new diagnostics.ValueCountMismatchErr({

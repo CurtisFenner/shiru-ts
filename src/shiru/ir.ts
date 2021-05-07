@@ -65,7 +65,7 @@ export interface TypeVariable {
 export type Type = TypePrimitive | TypeCompound | TypeVariable;
 
 export type FunctionID = { function_id: string };
-export type VariableID = { variable_id: number };
+export type VariableID = { variable_id: string };
 export type RecordID = { record_id: string };
 export type InterfaceID = { interface_id: string };
 export type TypeVariableID = { type_variable_id: number };
@@ -74,8 +74,9 @@ export type TypeVariableID = { type_variable_id: number };
 /// frame.
 export interface OpVar {
 	tag: "op-var",
+	id: VariableID,
 	type: Type,
-	debug_name?: string,
+	sourceLocation: SourceLocation,
 };
 
 /// `OpConst` overwrites a primitive-typed destination variable with a constant.
@@ -241,6 +242,32 @@ export interface ConstraintParameter {
 	subjects: Type[],
 };
 
+export interface Precondition {
+	block: OpBlock,
+
+	// Executing `block` results in a assignment to the boolean `precondition`
+	// variable, which is defined by an op-var and visible within this block.
+	precondition: VariableID,
+
+	location: SourceLocation,
+}
+
+export interface Postcondition {
+	block: OpBlock,
+
+	// Bindings for the returned values. (The parameters of the containing
+	// `FunctionSignature` are also in scope for a `Postcondition`)
+	returnedValues: VariableID[],
+
+	// Executing `block` results in an assignment to the boolean `postcondition`
+	// variable, which is defined by an op-var and visible within this block.
+	// Callsites may assume that the result is true.
+	// Implementations must verify that the result is true.
+	postcondition: VariableID,
+
+	location: SourceLocation,
+}
+
 export interface FunctionSignature {
 	/// The length of `type_parameters` indicates the number of type parameters.
 	/// The names in this array are currently unused.
@@ -251,26 +278,15 @@ export interface FunctionSignature {
 	constraint_parameters: ConstraintParameter[],
 
 	/// `parameters` is the sequence of types for each function parameter.
-	parameters: Type[],
+	parameters: { id: VariableID, type: Type }[],
 
 	/// `returns` is the sequence of types for each function return.
 	return_types: Type[],
 
 	// TODO: Add termination-measure function.
 
-	/// The first `parameters.length` variables are the arguments.
-	/// The block computes a boolean variable stored in `result`.
-	/// At callsites, it must be _verified_ that this result is `true`.
-	/// In subsequent preconditions and the function's implementation,
-	/// it may be _assumed_ to be `true`.
-	preconditions: { block: OpBlock, result: VariableID, location: SourceLocation }[],
-
-	/// The first `parameters.length` variables are the arguments.
-	/// The next `return_types.length` variables are the returned values.
-	/// The block computes a boolean variable stored in `result`.
-	/// At callsites, it may be _assumed_ that this result is `true`.
-	/// In implementations, it must be  _verified_ that this result is `true`.
-	postconditions: { block: OpBlock, result: VariableID, location: SourceLocation }[],
+	preconditions: Precondition[],
+	postconditions: Postcondition[],
 
 	semantics?: {
 		/// Indicates that this is a congruence relation, which is an

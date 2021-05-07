@@ -29,7 +29,8 @@ export function opVar(t: ir.Type, name: string): ir.OpVar {
 	return {
 		tag: "op-var",
 		type: t,
-		debug_name: name,
+		id: { variable_id: name },
+		sourceLocation: UNKNOWN_LOCATION,
 	};
 }
 
@@ -39,7 +40,7 @@ export function opBlock(...ops: ir.Op[]): ir.OpBlock {
 	};
 }
 
-export function opBranch(condition: number, trueBranch: ir.OpBlock, falseBranch: ir.OpBlock): ir.OpBranch {
+export function opBranch(condition: string, trueBranch: ir.OpBlock, falseBranch: ir.OpBlock): ir.OpBranch {
 	return {
 		tag: "op-branch",
 		condition: { variable_id: condition },
@@ -48,7 +49,7 @@ export function opBranch(condition: number, trueBranch: ir.OpBlock, falseBranch:
 	};
 }
 
-export function opConst(destination: number, value: number | boolean): ir.OpConst {
+export function opConst(destination: string, value: number | boolean): ir.OpConst {
 	return {
 		tag: "op-const",
 		destination: { variable_id: destination },
@@ -56,7 +57,7 @@ export function opConst(destination: number, value: number | boolean): ir.OpCons
 	};
 }
 
-export function opForeign({ dst, args, f }: { dst: number[], args: number[], f: string }): ir.OpForeign {
+export function opForeign({ dst, args, f }: { dst: string[], args: string[], f: string }): ir.OpForeign {
 	return {
 		tag: "op-foreign",
 		operation: f,
@@ -65,7 +66,7 @@ export function opForeign({ dst, args, f }: { dst: number[], args: number[], f: 
 	};
 }
 
-export function opReturn(...srcs: number[]): ir.OpReturn {
+export function opReturn(...srcs: string[]): ir.OpReturn {
 	return {
 		tag: "op-return",
 		sources: srcs.map(x => ({ variable_id: x })),
@@ -73,7 +74,7 @@ export function opReturn(...srcs: number[]): ir.OpReturn {
 	};
 }
 
-export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], args: number[], ts: ir.Type[] }): ir.OpStaticCall {
+export function opStaticCall({ f, dst, args, ts }: { f: string, dst: string[], args: string[], ts: ir.Type[] }): ir.OpStaticCall {
 	return {
 		tag: "op-static-call",
 		function: { function_id: f },
@@ -84,7 +85,7 @@ export function opStaticCall({ f, dst, args, ts }: { f: string, dst: number[], a
 	};
 }
 
-export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: string, ts: ir.Type[], dst: number[], args: number[] }): ir.OpDynamicCall {
+export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir.Type[], f: string, ts: ir.Type[], dst: string[], args: string[] }): ir.OpDynamicCall {
 	return {
 		tag: "op-dynamic-call",
 		constraint: { interface_id: i },
@@ -100,7 +101,10 @@ export function opDynamicCall({ i, its, f, ts, dst, args }: { i: string, its: ir
 const foreign: Record<string, ir.FunctionSignature> = {
 	"Int==": {
 		// Equality
-		parameters: [T_INT, T_INT],
+		parameters: [
+			{ id: { variable_id: "left" }, type: ir.T_INT },
+			{ id: { variable_id: "right" }, type: ir.T_INT },
+		],
 		return_types: [T_BOOL],
 		type_parameters: [],
 		constraint_parameters: [],
@@ -112,7 +116,10 @@ const foreign: Record<string, ir.FunctionSignature> = {
 	},
 	"Int+": {
 		// Addition
-		parameters: [T_INT, T_INT],
+		parameters: [
+			{ id: { variable_id: "left" }, type: ir.T_INT },
+			{ id: { variable_id: "right" }, type: ir.T_INT },
+		],
 		return_types: [T_INT],
 		type_parameters: [],
 		constraint_parameters: [],
@@ -121,7 +128,10 @@ const foreign: Record<string, ir.FunctionSignature> = {
 	},
 	"Int-": {
 		// Addition
-		parameters: [T_INT, T_INT],
+		parameters: [
+			{ id: { variable_id: "left" }, type: ir.T_INT },
+			{ id: { variable_id: "right" }, type: ir.T_INT },
+		],
 		return_types: [T_INT],
 		type_parameters: [],
 		constraint_parameters: [],
@@ -149,15 +159,15 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "n: #0"),
-						opConst(0, 5),
-						opStaticCall({ f: "fib", dst: [0], args: [0], ts: [] }),
-						opReturn(0),
+						opVar(T_INT, "n"),
+						opConst("n", 5),
+						opStaticCall({ f: "fib", dst: ["n"], args: ["n"], ts: [] }),
+						opReturn("n"),
 					),
 				},
 				"fib": {
 					signature: {
-						parameters: [T_INT],
+						parameters: [{ id: { variable_id: "k" }, type: T_INT }],
 						return_types: [T_INT],
 						type_parameters: [],
 						constraint_parameters: [],
@@ -165,33 +175,31 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "zero: #1"),
-						opConst(1, 0),
-						opVar(T_BOOL, "arg == 0: #2"),
-						opForeign({ f: "Int==", dst: [2], args: [0, 1] }),
-						opVar(T_INT, "1: #3"),
-						opConst(3, 1),
-						opBranch(2,
+						opVar(T_INT, "zero"),
+						opConst("zero", 0),
+						opVar(T_BOOL, "e"),
+						opForeign({ f: "Int==", dst: ["e"], args: ["k", "zero"] }),
+						opVar(T_INT, "one"),
+						opConst("one", 1),
+						opBranch("e",
 							opBlock(
-								opReturn(3),
+								opReturn("one"),
 							),
 							opBlock(
-								opForeign({ f: "Int==", dst: [2], args: [0, 3] }),
-								opBranch(2,
+								opForeign({ f: "Int==", dst: ["e"], args: ["k", "one"] }),
+								opBranch("e",
 									opBlock(
-										opReturn(3),
+										opReturn("one"),
 									),
 									opBlock(
-										opVar(T_INT, "arg - 1: #4"),
-										opVar(T_INT, "arg - 2: #5"),
-										opVar(T_INT, "2: #6"),
-										opConst(6, 2),
-										opForeign({ f: "Int-", dst: [4], args: [0, 3] }),
-										opForeign({ f: "Int-", dst: [5], args: [0, 6] }),
-										opStaticCall({ f: "fib", dst: [4], args: [4], ts: [] }),
-										opStaticCall({ f: "fib", dst: [5], args: [5], ts: [] }),
-										opForeign({ f: "Int+", dst: [4], args: [4, 5] }),
-										opReturn(4),
+										opVar(T_INT, "k1"),
+										opVar(T_INT, "k2"),
+										opForeign({ f: "Int-", dst: ["k1"], args: ["k", "one"] }),
+										opForeign({ f: "Int-", dst: ["k2"], args: ["k1", "one"] }),
+										opStaticCall({ f: "fib", dst: ["k1"], args: ["k1"], ts: [] }),
+										opStaticCall({ f: "fib", dst: ["k2"], args: ["k2"], ts: [] }),
+										opForeign({ f: "Int+", dst: ["k1"], args: ["k1", "k2"] }),
+										opReturn("k1"),
 									),
 								),
 							),
@@ -248,9 +256,9 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "fortytwo: #0"),
-						opConst(0, 42),
-						opReturn(0),
+						opVar(T_INT, "fortytwo"),
+						opConst("fortytwo", 42),
+						opReturn("fortytwo"),
 					),
 				},
 				"main": {
@@ -264,11 +272,11 @@ export const tests = {
 
 					},
 					body: opBlock(
-						opVar(T_INT, "favorite: #0"),
+						opVar(T_INT, "favorite"),
 						// Invoke op-dynamic-call.
 						// No constraints are passed in this invocation.
-						opDynamicCall({ i: "Favorite", its: [classType("FortyTwo")], f: "get", args: [], dst: [0], ts: [] }),
-						opReturn(0),
+						opDynamicCall({ i: "Favorite", its: [classType("FortyTwo")], f: "get", args: [], dst: ["favorite"], ts: [] }),
+						opReturn("favorite"),
 					),
 				},
 			},
@@ -328,9 +336,9 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "thirteen: #0"),
-						opConst(0, 13),
-						opReturn(0),
+						opVar(T_INT, "thirteen"),
+						opConst("thirteen", 13),
+						opReturn("thirteen"),
 					),
 				},
 				"favoriteOf": {
@@ -352,12 +360,12 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "favorite: #0"),
+						opVar(T_INT, "favorite"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: "get", args: [], dst: [0], ts: [],
+							f: "get", args: [], dst: ["favorite"], ts: [],
 						}),
-						opReturn(0),
+						opReturn("favorite"),
 					),
 				},
 				"main": {
@@ -371,10 +379,10 @@ export const tests = {
 
 					},
 					body: opBlock(
-						opVar(T_INT, "favorite: #0"),
+						opVar(T_INT, "favorite"),
 						// No constraints are passed in this invocation.
-						opStaticCall({ f: "favoriteOf", dst: [0], args: [], ts: [classType("Thirteen")] }),
-						opReturn(0),
+						opStaticCall({ f: "favoriteOf", dst: ["favorite"], args: [], ts: [classType("Thirteen")] }),
+						opReturn("favorite"),
 					),
 				},
 			},
@@ -455,13 +463,13 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "fav: #0"),
+						opVar(T_INT, "fav"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: "get", dst: [0], args: [], ts: [],
+							f: "get", dst: ["fav"], args: [], ts: [],
 						}),
-						opForeign({ f: "int*", dst: [0], args: [0, 0] }),
-						opReturn(0),
+						opForeign({ f: "int*", dst: ["fav"], args: ["fav", "fav"] }),
+						opReturn("fav"),
 					),
 				},
 				"seven": {
@@ -474,9 +482,9 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "seven: #0"),
-						opConst(0, 7),
-						opReturn(0),
+						opVar(T_INT, "seven"),
+						opConst("seven", 7),
+						opReturn("seven"),
 					),
 				},
 				"favoriteOf": {
@@ -498,12 +506,12 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "favorite: #0"),
+						opVar(T_INT, "favorite"),
 						opDynamicCall({
 							i: "Favorite", its: [variableType(0)],
-							f: "get", args: [], dst: [0], ts: [],
+							f: "get", args: [], dst: ["favorite"], ts: [],
 						}),
-						opReturn(0),
+						opReturn("favorite"),
 					),
 				},
 				"main": {
@@ -516,12 +524,12 @@ export const tests = {
 						postconditions: [],
 					},
 					body: opBlock(
-						opVar(T_INT, "favorite: #0"),
+						opVar(T_INT, "favorite"),
 						// No constraints are passed in this invocation.
 						opStaticCall({
-							f: "favoriteOf", dst: [0], args: [], ts: [classType("Squarer", classType("Seven"))],
+							f: "favoriteOf", dst: ["favorite"], args: [], ts: [classType("Squarer", classType("Seven"))],
 						}),
-						opReturn(0),
+						opReturn("favorite"),
 					),
 				},
 			},

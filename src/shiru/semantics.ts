@@ -835,7 +835,7 @@ class VariableStack {
 		this.variables[name] = {
 			bindingLocation: location,
 			t,
-			id: { variable_id: this.stack.length },
+			id: { variable_id: name },
 		};
 		this.stack.push(name);
 		return this.variables[name];
@@ -848,6 +848,8 @@ class VariableStack {
 			ops.push({
 				tag: "op-var",
 				type: t,
+				id: id.id,
+				sourceLocation: location,
 			});
 		}
 		return id;
@@ -1611,7 +1613,6 @@ function compileExpressionTree(
 				"Foreign signature `" + fn.function_id + "` cannot be used as"
 				+ "an operator since it doesn't take exactly 2 parameters");
 		}
-		const expectedRhsType = foreign.parameters[1];
 
 		if (right.values.length !== 1) {
 			throw new diagnostics.MultiExpressionGroupedErr({
@@ -1622,12 +1623,13 @@ function compileExpressionTree(
 			});
 		}
 
+		const expectedRhsType = foreign.parameters[1].type;
 		if (!ir.equalTypes(expectedRhsType, right.values[0].t)) {
 			throw new diagnostics.OperatorTypeMismatchErr({
 				lhsType: displayType(left.values[0].t, typeScope, context.sourceContext),
 				operator: opStr,
 				givenRhsType: displayType(right.values[0].t, typeScope, context.sourceContext),
-				expectedRhsType: displayType(foreign.parameters[1], typeScope, context.sourceContext),
+				expectedRhsType: displayType(expectedRhsType, typeScope, context.sourceContext),
 				rhsLocation: right.location,
 			});
 		}
@@ -1764,6 +1766,8 @@ function compileVarSt(
 		ops.push({
 			tag: "op-var",
 			type: t,
+			id: d.id,
+			sourceLocation: v.variable.location,
 		});
 		destinations.push(d);
 	}
@@ -1961,8 +1965,8 @@ function compileFunctionSignature(
 	const stack = new VariableStack();
 	for (const parameterAST of signatureAST.parameters) {
 		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
-		signature.parameters.push(t);
-		stack.defineVariable(parameterAST.name.name, t, parameterAST.name.location);
+		const v = stack.defineVariable(parameterAST.name.name, t, parameterAST.name.location);
+		signature.parameters.push({ id: v.id, type: t });
 	}
 
 	const context: FunctionContext = {
@@ -1984,7 +1988,7 @@ function compileFunctionSignature(
 		stack.closeBlock();
 		signature.preconditions.push({
 			block,
-			result: asserted.id,
+			precondition: asserted.id,
 			location: precondition.expression.location,
 		});
 	}
@@ -2013,7 +2017,8 @@ function compileFunctionSignature(
 			stack.closeBlock();
 			signature.postconditions.push({
 				block,
-				result: asserted.id,
+				returnedValues: ensuresReturnExpression.values.map(x => x.id),
+				postcondition: asserted.id,
 				location: postcondition.expression.location,
 			});
 		}
@@ -2117,7 +2122,10 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 	return {
 		"Int==": {
 			// Equality
-			parameters: [ir.T_INT, ir.T_INT],
+			parameters: [
+				{ id: { variable_id: "left" }, type: ir.T_INT },
+				{ id: { variable_id: "right" }, type: ir.T_INT },
+			],
 			return_types: [ir.T_BOOLEAN],
 			type_parameters: [],
 			constraint_parameters: [],
@@ -2129,7 +2137,10 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		},
 		"Int+": {
 			// Addition
-			parameters: [ir.T_INT, ir.T_INT],
+			parameters: [
+				{ id: { variable_id: "left" }, type: ir.T_INT },
+				{ id: { variable_id: "right" }, type: ir.T_INT },
+			],
 			return_types: [ir.T_INT],
 			type_parameters: [],
 			constraint_parameters: [],
@@ -2138,7 +2149,10 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		},
 		"Int-": {
 			// Subtract
-			parameters: [ir.T_INT, ir.T_INT],
+			parameters: [
+				{ id: { variable_id: "left" }, type: ir.T_INT },
+				{ id: { variable_id: "right" }, type: ir.T_INT },
+			],
 			return_types: [ir.T_INT],
 			type_parameters: [],
 			constraint_parameters: [],

@@ -182,9 +182,9 @@ interface Context {
 	availableConstraints: ir.ConstraintParameter[],
 }
 
-interface Slot {
-	value: Value,
-	t: ir.Type,
+interface Frame {
+	stack: string[],
+	variables: Record<string, { t: ir.Type, value: Value }>,
 }
 
 export function interpret(
@@ -230,8 +230,19 @@ export function* interpretCall(
 		availableVTables: vtables,
 	};
 
-	const stack = args.map((value, i) => ({ value, t: fn.signature.parameters[i] }));
-	const result = yield* interpretBlock(fn.body, stack, newContext);
+	const frame: Frame = {
+		stack: [],
+		variables: {},
+	};
+	for (let i = 0; i < args.length; i++) {
+		const parameter = fn.signature.parameters[i];
+		frame.stack.push(parameter.id.variable_id);
+		frame.variables[parameter.id.variable_id] = {
+			t: parameter.type,
+			value: args[i],
+		};
+	}
+	const result = yield* interpretBlock(fn.body, frame, newContext);
 	if (result === null) {
 		throw new Error("Function `" + fnName + "` failed to return a result");
 	}
@@ -240,33 +251,39 @@ export function* interpretCall(
 
 function* interpretBlock(
 	block: ir.OpBlock,
-	stack: Slot[],
+	frame: Frame,
 	context: Context,
 ): Generator<{}, Value[] | null, unknown> {
-	const initialStack = stack.length;
+	const initialStack = frame.stack.length;
 	for (let op of block.ops) {
-		const result = yield* interpretOp(op, stack, context);
+		const result = yield* interpretOp(op, frame, context);
 		if (result !== null) {
 			return result;
 		}
 	}
-	stack.splice(initialStack);
+	for (const variable of frame.stack.splice(initialStack)) {
+		delete frame.variables[variable];
+	}
 	return null;
 }
 
 function* interpretOp(
 	op: ir.Op,
-	stack: Slot[],
+	frame: Frame,
 	context: Context,
 ): Generator<{}, Value[] | null, unknown> {
 	yield {};
 	if (op.tag === "op-return") {
-		return op.sources.map(({ variable_id }) => stack[variable_id].value);
+		return op.sources.map(({ variable_id }) => frame.variables[variable_id].value);
 	} else if (op.tag === "op-var") {
-		stack.push({ t: op.type, value: null as any });
+		frame.stack.push(op.id.variable_id);
+		frame.variables[op.id.variable_id] = {
+			t: op.type,
+			value: null as any,
+		};
 		return null;
 	} else if (op.tag === "op-assign") {
-		stack[op.destination.variable_id].value = stack[op.source.variable_id].value;
+		frame.variables[op.destination.variable_id].value = frame.variables[op.source.variable_id].value;
 		return null;
 	} else if (op.tag === "op-const") {
 		let value: Value;
@@ -280,10 +297,10 @@ function* interpretOp(
 			const _: never = op.value;
 			throw new Error("interpretOp: unhandled op-const value");
 		}
-		stack[op.destination.variable_id].value = value;
+		frame.variables[op.destination.variable_id].value = value;
 		return null;
 	} else if (op.tag === "op-static-call") {
-		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
 
 		const constraintArgs: VTable[] = [];
 		const fn = context.program.functions[op.function.function_id];
@@ -302,28 +319,28 @@ function* interpretOp(
 
 		const result = yield* interpretCall(op.function.function_id, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {
-			stack[op.destinations[i].variable_id].value = result[i];
+			frame.variables[op.destinations[i].variable_id].value = result[i];
 		}
 		return null;
 	} else if (op.tag === "op-foreign") {
-		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
 		const f = context.foreign[op.operation];
 		if (f === undefined) {
 			throw new Error("interpretOp: no implementation for `" + op.operation + "`");
 		}
 		const result = f(args);
 		for (let i = 0; i < op.destinations.length; i++) {
-			stack[op.destinations[i].variable_id].value = result[i];
+			frame.variables[op.destinations[i].variable_id].value = result[i];
 		}
 		return null;
 	} else if (op.tag === "op-branch") {
-		const conditionValue = stack[op.condition.variable_id].value;
+		const conditionValue = frame.variables[op.condition.variable_id].value;
 		const condition = isTruthy(conditionValue);
 		const branch = condition ? op.trueBranch : op.falseBranch;
-		const result = yield* interpretBlock(branch, stack, context);
+		const result = yield* interpretBlock(branch, frame, context);
 		return result;
 	} else if (op.tag === "op-dynamic-call") {
-		const args = op.arguments.map(({ variable_id }) => stack[variable_id].value);
+		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
 		const vtable = satisfyConstraint(context.program.globalVTableFactories,
 			op.constraint, op.subjects,
 			context.availableConstraints, context.availableVTables);
@@ -340,7 +357,7 @@ function* interpretOp(
 
 		const result = yield* interpretCall(spec.implementation.function_id, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {
-			stack[op.destinations[i].variable_id].value = result[i];
+			frame.variables[op.destinations[i].variable_id].value = result[i];
 		}
 		return null;
 	} else if (op.tag === "op-proof") {
@@ -352,16 +369,16 @@ function* interpretOp(
 			fields: {},
 		};
 		for (let f in op.fields) {
-			record.fields[f] = stack[op.fields[f].variable_id].value;
+			record.fields[f] = frame.variables[op.fields[f].variable_id].value;
 		}
-		stack[op.destination.variable_id].value = record;
+		frame.variables[op.destination.variable_id].value = record;
 		return null;
 	} else if (op.tag === "op-field") {
-		const record = stack[op.object.variable_id].value;
+		const record = frame.variables[op.object.variable_id].value;
 		if (record.sort !== "record") {
 			throw new Error("bad value sort for field access");
 		}
-		stack[op.destination.variable_id].value = record.fields[op.field];
+		frame.variables[op.destination.variable_id].value = record.fields[op.field];
 		return null;
 	} else if (op.tag === "op-unreachable") {
 		throw new RunErr([
@@ -397,19 +414,18 @@ export function printProgram(program: ir.Program, lines: string[]) {
 
 export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 	const fn = program.functions[fnName];
-	const context = { stack: [] as string[], typeVariables: [] as string[] };
+	const context = { typeVariables: [] as string[] };
 	for (let i = 0; i < fn.signature.type_parameters.length; i++) {
 		context.typeVariables[i] = "T" + i;
 	}
 	const parameters = [];
 	for (let i = 0; i < fn.signature.parameters.length; i++) {
-		context.stack[i] = "p" + i;
-		parameters.push(context.stack[i] + ": " + showType(fn.signature.parameters[i], context));
+		parameters.push(fn.signature.parameters[i].id.variable_id + ": " + showType(fn.signature.parameters[i].type, context));
 	}
 	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
 	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ")");
 	for (let pre of fn.signature.preconditions) {
-		lines.push("precondition (#" + pre.result.variable_id + ") {");
+		lines.push("precondition (" + pre.precondition.variable_id + ") {");
 		printBlockContents(pre.block, "", context, lines);
 		lines.push("}");
 	}
@@ -422,32 +438,27 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 export function printBlockContents(
 	block: ir.OpBlock,
 	indent: string,
-	context: { stack: string[], typeVariables: string[] },
+	context: { typeVariables: string[] },
 	lines: string[],
 ) {
-	const before = context.stack.length;
 	for (let op of block.ops) {
 		printOp(op, indent + "\t", context, lines);
 	}
-	context.stack.splice(before);
 }
 
 export function printOp(
 	op: ir.Op,
 	indent: string,
-	context: { stack: string[], typeVariables: string[] },
+	context: { typeVariables: string[] },
 	lines: string[],
 ) {
 	if (op.tag === "op-assign") {
-		const src = context.stack[op.source.variable_id];
-		let dst = context.stack[op.destination.variable_id];
-		if (!dst) {
-			dst = "???(" + op.destination.variable_id + ")???";
-		}
+		const src = op.source.variable_id;
+		let dst = op.destination.variable_id;
 		lines.push(indent + dst + " = " + src + ";");
 		return;
 	} else if (op.tag === "op-branch") {
-		const cond = context.stack[op.condition.variable_id];
+		const cond = op.condition.variable_id;
 		lines.push(indent + "if " + cond + " {");
 		printBlockContents(op.trueBranch, indent, context, lines);
 		lines.push(indent + "} else {");
@@ -455,34 +466,29 @@ export function printOp(
 		lines.push(indent + "}");
 		return;
 	} else if (op.tag === "op-return") {
-		const srcs = op.sources.map(x => context.stack[x.variable_id]);
+		const srcs = op.sources.map(x => x.variable_id);
 		lines.push(indent + "return " + srcs.join(", ") + ";");
 		return;
 	} else if (op.tag === "op-var") {
 		const t = showType(op.type, context);
-		const id = context.stack.length;
-		const n = "v" + id;
-		context.stack.push(n);
-		lines.push(indent + "var " + n + ": " + t + "; // #" + id);
+		const n = op.id.variable_id;
+		lines.push(indent + "var " + n + ": " + t + ";");
 		return;
 	} else if (op.tag === "op-const") {
-		let dst = context.stack[op.destination.variable_id];
-		if (!dst) {
-			dst = "???(" + + op.destination.variable_id + ")???";
-		}
+		let dst = op.destination.variable_id;
 		lines.push(indent + dst + " = " + op.value + ";");
 		return;
 	} else if (op.tag === "op-foreign") {
-		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
-		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		const dsts = op.destinations.map(x => x.variable_id);
+		const args = op.arguments.map(x => x.variable_id);
 		lines.push(indent + dsts.join(", ") + " = " + op.operation + "(" + args.join(", ") + ");");
 		return;
 	} else if (op.tag === "op-unreachable") {
 		lines.push(indent + "unreachable; // " + op.diagnostic_kind);
 		return;
 	} else if (op.tag === "op-static-call") {
-		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
-		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		const dsts = op.destinations.map(x => x.variable_id);
+		const args = op.arguments.map(x => x.variable_id);
 		const targs = op.type_arguments.map(x => showType(x, context));
 		lines.push(indent + dsts.join(", ") + " = " + op.function.function_id
 			+ "[" + targs.join(", ") + "](" + args.join(", ") + ");");
@@ -495,21 +501,21 @@ export function printOp(
 	} else if (op.tag === "op-dynamic-call") {
 		const f = op.constraint.interface_id + "." + op.signature_id;
 		const targs = op.signature_type_arguments.map(x => showType(x, context));
-		const dsts = op.destinations.map(x => context.stack[x.variable_id]);
-		const args = op.arguments.map(x => context.stack[x.variable_id]);
+		const dsts = op.destinations.map(x => x.variable_id);
+		const args = op.arguments.map(x => x.variable_id);
 		lines.push(indent + dsts.join(", ") + " = "
 			+ f + "[" + targs.join(", ") + "](" + args.join(", ") + ")");
 		return;
 	} else if (op.tag === "op-field") {
-		lines.push(indent + context.stack[op.destination.variable_id] + " = "
-			+ context.stack[op.object.variable_id] + "." + op.field + ";");
+		lines.push(indent + op.destination.variable_id + " = "
+			+ op.object.variable_id + "." + op.field + ";");
 		return;
 	} else if (op.tag === "op-new-record") {
 		const args = [];
 		for (let k in op.fields) {
-			args.push(k + " = " + context.stack[op.fields[k].variable_id]);
+			args.push(k + " = " + op.fields[k].variable_id);
 		}
-		lines.push(indent + context.stack[op.destination.variable_id] + " = "
+		lines.push(indent + op.destination.variable_id + " = "
 			+ "new(" + args + ");");
 		return;
 	}

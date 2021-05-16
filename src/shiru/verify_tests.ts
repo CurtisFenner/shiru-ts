@@ -140,4 +140,25 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"basic-ensures-satisfied-by-postcondition"() {
+		const source = `
+		package example;
+		record A {
+			fn isGood(n: Int): Boolean
+			ensures n == 7 implies return {
+				return n == 7;
+			}
+
+			fn m(x: Int): Int
+			requires x == 7
+			ensures A.isGood(return) {
+				return x;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

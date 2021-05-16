@@ -93,16 +93,41 @@ export const tests = {
 			],
 		});
 	},
-	"access-field-in-int"() {
-		const source = `package example; record A { fn f(): Unit { var a: Int = 1; var b: A = a; } }`;
+	"assign-int-to-record"() {
+		const source = `
+		package example;
+		record A {
+			fn f(): Unit {
+				var a: Int = 1;
+				var b: A = a;
+			}
+		}`;
 		const ast = grammar.parseSource(source, "test-file");
 
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A value with type `Int` at",
-				{ fileID: "test-file", offset: 70, length: 1 },
+				{ fileID: "test-file", offset: 86, length: 1 },
 				"cannot be converted to the type `example.A` as expected at",
-				{ fileID: "test-file", offset: 63, length: 1 },
+				{ fileID: "test-file", offset: 82, length: 1 },
+			],
+		});
+	},
+	"access-field-in-int"() {
+		const source = `
+		package example;
+		record A {
+			fn f(): Unit {
+				var a: Int = 1;
+				var b: Int = a.x;
+			}
+		}`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The type `Int` is not a compound type so a field access is illegal at",
+				{ fileID: "test-file", offset: 90, length: 1 },
 			],
 		});
 	},

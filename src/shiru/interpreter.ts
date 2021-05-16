@@ -1,4 +1,3 @@
-import { Block } from "./grammar";
 import * as ir from "./ir";
 import { ErrorElement } from "./lexer";
 
@@ -32,12 +31,12 @@ interface VTableEntry {
 	closureConstraints: (VTable | { tag: "callsite", callsite: number })[],
 }
 
-function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Type, subject: ir.Type): boolean {
+function matchTypeSingle(variables: Map<ir.TypeVariableID, ir.Type | null>, pattern: ir.Type, subject: ir.Type): boolean {
 	if (pattern.tag === "type-variable") {
-		const existing = variables.get(pattern.id.type_variable_id);
+		const existing = variables.get(pattern.id);
 		if (existing !== undefined) {
 			if (existing === null || ir.equalTypes(existing, subject)) {
-				variables.set(pattern.id.type_variable_id, subject);
+				variables.set(pattern.id, subject);
 				return true;
 			}
 			return false;
@@ -46,15 +45,15 @@ function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Typ
 			if (subject.tag !== "type-variable") {
 				return false;
 			}
-			return pattern.id.type_variable_id === subject.id.type_variable_id;
+			return pattern.id === subject.id;
 		}
 	} else if (pattern.tag === "type-compound" && subject.tag === "type-compound") {
-		if (pattern.record.record_id !== subject.record.record_id) {
+		if (pattern.record !== subject.record) {
 			return false;
 		}
 
 		if (pattern.type_arguments.length !== subject.type_arguments.length) {
-			throw new Error(`Arity of type \`${pattern.record.record_id}\` is inconsistent.`);
+			throw new Error(`Arity of type \`${pattern.record}\` is inconsistent.`);
 		}
 
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -74,14 +73,14 @@ function matchTypeSingle(variables: Map<number, ir.Type | null>, pattern: ir.Typ
 /// possible instantiation of the variables named in `forAny` such that the
 /// subject is equal to the instantiated pattern, or `null` if there is no such
 /// instantiation.
-function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.Type[]): Map<number, ir.Type> | null {
+function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.Type[]): Map<ir.TypeVariableID, ir.Type> | null {
 	if (pattern.length !== subject.length) {
 		throw new Error("invalid");
 	}
 
-	let mapping: Map<number, ir.Type | null> = new Map();
+	let mapping: Map<ir.TypeVariableID, ir.Type | null> = new Map();
 	for (let t of forAny) {
-		mapping.set(t.id.type_variable_id, null);
+		mapping.set(t.id, null);
 	}
 
 	for (let i = 0; i < pattern.length; i++) {
@@ -99,7 +98,7 @@ function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.T
 		}
 	}
 
-	return mapping as Map<number, ir.Type>;
+	return mapping as Map<ir.TypeVariableID, ir.Type>;
 }
 
 function isTruthy(value: Value): boolean {
@@ -123,7 +122,7 @@ function satisfyConstraint(
 
 	for (let i = 0; i < availableSignatures.length; i++) {
 		const signature = availableSignatures[i];
-		if (signature.interface.interface_id !== constraint.interface_id) {
+		if (signature.interface !== constraint) {
 			continue;
 		}
 		const match = matchTypes([], signature.subjects, subjects);
@@ -165,8 +164,7 @@ function satisfyConstraint(
 	}
 
 	throw new Error("Could not find an implementation of `"
-		+ constraint.interface_id
-		+ "` for " + JSON.stringify(subjects));
+		+ constraint + "` for " + JSON.stringify(subjects));
 }
 
 export type ForeignImpl = (args: Value[]) => Value[];
@@ -182,13 +180,48 @@ interface Context {
 	availableConstraints: ir.ConstraintParameter[],
 }
 
-interface Frame {
-	stack: string[],
-	variables: Record<string, { t: ir.Type, value: Value }>,
+class Frame {
+	private stack: { name: ir.VariableID, t: ir.Type, value: Value, previous: undefined | number }[] = [];
+	private variables: Map<ir.VariableID, number> = new Map();
+
+	define(definition: ir.VariableDefinition, value: Value) {
+		const slot = this.stack.length;
+		this.stack.push({
+			name: definition.variable,
+			t: definition.type,
+			value,
+			previous: this.variables.get(definition.variable)
+		});
+		this.variables.set(definition.variable, slot);
+	}
+
+	load(name: ir.VariableID): Value {
+		const v = this.variables.get(name);
+		if (v === undefined) {
+			throw new Error("variable `" + name + "` is not defined");
+		}
+		return this.stack[v].value;
+	}
+
+	stackSize(): number {
+		return this.stack.length;
+	}
+
+	pop(slice: number) {
+		const removed = this.stack.splice(slice);
+		for (let i = removed.length - 1; i >= 0; i--) {
+			const e = removed[i];
+			if (e.previous === undefined) {
+				this.variables.delete(e.name);
+			} else {
+				this.variables.set(e.name, e.previous);
+			}
+		}
+	}
 }
 
 export function interpret(
-	fn: string,
+	fn: ir.FunctionID,
 	args: Value[],
 	program: ir.Program,
 	foreign: Record<string, ForeignImpl>): Value[] {
@@ -211,7 +244,7 @@ export function interpret(
 /// Execute a Shiru program until termination, returning the result from the
 /// given `entry` function.
 export function* interpretCall(
-	fnName: string,
+	fnName: ir.FunctionID,
 	args: Value[],
 	vtables: VTable[],
 	context: Context,
@@ -230,17 +263,9 @@ export function* interpretCall(
 		availableVTables: vtables,
 	};
 
-	const frame: Frame = {
-		stack: [],
-		variables: {},
-	};
+	const frame: Frame = new Frame();
 	for (let i = 0; i < args.length; i++) {
-		const parameter = fn.signature.parameters[i];
-		frame.stack.push(parameter.id.variable_id);
-		frame.variables[parameter.id.variable_id] = {
-			t: parameter.type,
-			value: args[i],
-		};
+		frame.define(fn.signature.parameters[i], args[i]);
 	}
 	const result = yield* interpretBlock(fn.body, frame, newContext);
 	if (result === null) {
@@ -253,17 +278,19 @@ function* interpretBlock(
 	block: ir.OpBlock,
 	frame: Frame,
 	context: Context,
+	callback?: () => void,
 ): Generator<{}, Value[] | null, unknown> {
-	const initialStack = frame.stack.length;
+	const initialStack = frame.stackSize();
 	for (let op of block.ops) {
 		const result = yield* interpretOp(op, frame, context);
 		if (result !== null) {
 			return result;
 		}
 	}
-	for (const variable of frame.stack.splice(initialStack)) {
-		delete frame.variables[variable];
+	if (callback !== undefined) {
+		callback();
 	}
+	frame.pop(initialStack);
 	return null;
 }
 
@@ -274,17 +301,7 @@ function* interpretOp(
 ): Generator<{}, Value[] | null, unknown> {
 	yield {};
 	if (op.tag === "op-return") {
-		return op.sources.map(({ variable_id }) => frame.variables[variable_id].value);
-	} else if (op.tag === "op-var") {
-		frame.stack.push(op.id.variable_id);
-		frame.variables[op.id.variable_id] = {
-			t: op.type,
-			value: null as any,
-		};
-		return null;
-	} else if (op.tag === "op-assign") {
-		frame.variables[op.destination.variable_id].value = frame.variables[op.source.variable_id].value;
-		return null;
+		return op.sources.map(variable => frame.load(variable));
 	} else if (op.tag === "op-const") {
 		let value: Value;
 		if (typeof op.value === "boolean") {
@@ -297,13 +314,13 @@ function* interpretOp(
 			const _: never = op.value;
 			throw new Error("interpretOp: unhandled op-const value");
 		}
-		frame.variables[op.destination.variable_id].value = value;
+		frame.define(op.destination, value);
 		return null;
 	} else if (op.tag === "op-static-call") {
-		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
+		const args = op.arguments.map(variable => frame.load(variable));
 
 		const constraintArgs: VTable[] = [];
-		const fn = context.program.functions[op.function.function_id];
+		const fn = context.program.functions[op.function];
 		const instantiation: Map<number, ir.Type> = new Map();
 		for (let i = 0; i < op.type_arguments.length; i++) {
 			instantiation.set(i, op.type_arguments[i]);
@@ -317,30 +334,30 @@ function* interpretOp(
 			constraintArgs.push(vtable);
 		}
 
-		const result = yield* interpretCall(op.function.function_id, args, constraintArgs, context);
+		const result = yield* interpretCall(op.function, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {
-			frame.variables[op.destinations[i].variable_id].value = result[i];
+			frame.define(op.destinations[i], result[i]);
 		}
 		return null;
 	} else if (op.tag === "op-foreign") {
-		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
+		const args = op.arguments.map(source => frame.load(source));
 		const f = context.foreign[op.operation];
 		if (f === undefined) {
 			throw new Error("interpretOp: no implementation for `" + op.operation + "`");
 		}
 		const result = f(args);
 		for (let i = 0; i < op.destinations.length; i++) {
-			frame.variables[op.destinations[i].variable_id].value = result[i];
+			frame.define(op.destinations[i], result[i]);
 		}
 		return null;
 	} else if (op.tag === "op-branch") {
-		const conditionValue = frame.variables[op.condition.variable_id].value;
+		const conditionValue = frame.load(op.condition);
 		const condition = isTruthy(conditionValue);
 		const branch = condition ? op.trueBranch : op.falseBranch;
 		const result = yield* interpretBlock(branch, frame, context);
 		return result;
 	} else if (op.tag === "op-dynamic-call") {
-		const args = op.arguments.map(({ variable_id }) => frame.variables[variable_id].value);
+		const args = op.arguments.map(arg => frame.load(arg));
 		const vtable = satisfyConstraint(context.program.globalVTableFactories,
 			op.constraint, op.subjects,
 			context.availableConstraints, context.availableVTables);
@@ -355,33 +372,33 @@ function* interpretOp(
 			}
 		}
 
-		const result = yield* interpretCall(spec.implementation.function_id, args, constraintArgs, context);
+		const result = yield* interpretCall(spec.implementation, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {
-			frame.variables[op.destinations[i].variable_id].value = result[i];
+			frame.define(op.destinations[i], result[i]);
 		}
 		return null;
 	} else if (op.tag === "op-proof") {
 		// Do nothing.
 		return null;
 	} else if (op.tag === "op-new-record") {
-		const record: RecordValue = {
+		const recordValue: RecordValue = {
 			sort: "record",
 			fields: {},
 		};
 		for (let f in op.fields) {
-			record.fields[f] = frame.variables[op.fields[f].variable_id].value;
+			recordValue.fields[f] = frame.load(op.fields[f]);
 		}
-		frame.variables[op.destination.variable_id].value = record;
+		frame.define(op.destination, recordValue);
 		return null;
 	} else if (op.tag === "op-field") {
-		const record = frame.variables[op.object.variable_id].value;
-		if (record.sort !== "record") {
+		const recordValue = frame.load(op.object);
+		if (recordValue.sort !== "record") {
 			throw new Error("bad value sort for field access");
 		}
-		frame.variables[op.destination.variable_id].value = record.fields[op.field];
+		frame.define(op.destination, recordValue.fields[op.field]);
 		return null;
 	} else if (op.tag === "op-unreachable") {
-		throw new RunErr([
+		throw new RuntimeErr([
 			"Hit unreachable op at",
 			op.diagnostic_location || " (unknown location)",
 		]);
@@ -391,18 +408,18 @@ function* interpretOp(
 	throw new Error("interpretOp: unhandled op tag `" + op["tag"] + "`");
 }
 
-class RunErr {
+export class RuntimeErr {
 	constructor(public message: ErrorElement[]) { }
 }
 
 function showType(t: ir.Type, context: { typeVariables: string[] }): string {
 	if (t.tag === "type-compound") {
 		const generics = "[" + t.type_arguments.map(x => showType(x, context)).join(", ") + "]";
-		return t.record.record_id + generics;
+		return t.record + generics;
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
 	} else {
-		return "#" + context.typeVariables[t.id.type_variable_id];
+		return "#" + context.typeVariables[t.id];
 	}
 }
 
@@ -419,14 +436,21 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 		context.typeVariables[i] = "T" + i;
 	}
 	const parameters = [];
-	for (let i = 0; i < fn.signature.parameters.length; i++) {
-		parameters.push(fn.signature.parameters[i].id.variable_id + ": " + showType(fn.signature.parameters[i].type, context));
+	for (const parameter of fn.signature.parameters) {
+		parameters.push(parameter.variable + ": " + showType(parameter.type, context));
 	}
 	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
 	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ")");
-	for (let pre of fn.signature.preconditions) {
-		lines.push("precondition (" + pre.precondition.variable_id + ") {");
+	for (const pre of fn.signature.preconditions) {
+		lines.push("precondition (" + pre.precondition + ") {");
 		printBlockContents(pre.block, "", context, lines);
+		lines.push("}");
+	}
+	for (const post of fn.signature.postconditions) {
+		lines.push("postcondition ("
+			+ post.returnedValues.join(", ")
+			+ " -> " + post.postcondition + ") {");
+		printBlockContents(post.block, "", context, lines);
 		lines.push("}");
 	}
 	lines.push("body {");
@@ -452,46 +476,35 @@ export function printOp(
 	context: { typeVariables: string[] },
 	lines: string[],
 ) {
-	if (op.tag === "op-assign") {
-		const src = op.source.variable_id;
-		let dst = op.destination.variable_id;
-		lines.push(indent + dst + " = " + src + ";");
-		return;
-	} else if (op.tag === "op-branch") {
-		const cond = op.condition.variable_id;
+	if (op.tag === "op-branch") {
+		const cond = op.condition;
 		lines.push(indent + "if " + cond + " {");
 		printBlockContents(op.trueBranch, indent, context, lines);
 		lines.push(indent + "} else {");
 		printBlockContents(op.falseBranch, indent, context, lines);
 		lines.push(indent + "}");
+		// TODO: Format destinations?
 		return;
 	} else if (op.tag === "op-return") {
-		const srcs = op.sources.map(x => x.variable_id);
-		lines.push(indent + "return " + srcs.join(", ") + ";");
-		return;
-	} else if (op.tag === "op-var") {
-		const t = showType(op.type, context);
-		const n = op.id.variable_id;
-		lines.push(indent + "var " + n + ": " + t + ";");
+		lines.push(indent + "return " + op.sources.join(", ") + ";");
 		return;
 	} else if (op.tag === "op-const") {
-		let dst = op.destination.variable_id;
-		lines.push(indent + dst + " = " + op.value + ";");
+		const lhs = "var " + op.destination.variable;
+		lines.push(indent + lhs + " = " + op.value + ";");
 		return;
 	} else if (op.tag === "op-foreign") {
-		const dsts = op.destinations.map(x => x.variable_id);
-		const args = op.arguments.map(x => x.variable_id);
-		lines.push(indent + dsts.join(", ") + " = " + op.operation + "(" + args.join(", ") + ");");
+		const lhs = op.destinations.map(x => "var " + x).join(", ");
+		const rhs = op.operation + "(" + op.arguments.join(", ") + ");";
+		lines.push(indent + lhs + " = " + rhs);
 		return;
 	} else if (op.tag === "op-unreachable") {
 		lines.push(indent + "unreachable; // " + op.diagnostic_kind);
 		return;
 	} else if (op.tag === "op-static-call") {
-		const dsts = op.destinations.map(x => x.variable_id);
-		const args = op.arguments.map(x => x.variable_id);
 		const targs = op.type_arguments.map(x => showType(x, context));
-		lines.push(indent + dsts.join(", ") + " = " + op.function.function_id
-			+ "[" + targs.join(", ") + "](" + args.join(", ") + ");");
+		const lhs = op.destinations.map(x => "var " + x.variable).join(", ");
+		const rhs = op.function + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ");";
+		lines.push(indent + lhs + " = " + rhs);
 		return;
 	} else if (op.tag === "op-proof") {
 		lines.push(indent + "proof {");
@@ -499,24 +512,26 @@ export function printOp(
 		lines.push("}");
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		const f = op.constraint.interface_id + "." + op.signature_id;
+		const f = op.constraint + "." + op.signature_id;
 		const targs = op.signature_type_arguments.map(x => showType(x, context));
-		const dsts = op.destinations.map(x => x.variable_id);
-		const args = op.arguments.map(x => x.variable_id);
-		lines.push(indent + dsts.join(", ") + " = "
-			+ f + "[" + targs.join(", ") + "](" + args.join(", ") + ")");
+		const lhs = op.destinations.map(x => "var " + x.variable).join(", ");
+		const rhs = f + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ")";
+		lines.push(indent + lhs + " = " + rhs + ";");
 		return;
 	} else if (op.tag === "op-field") {
-		lines.push(indent + op.destination.variable_id + " = "
-			+ op.object.variable_id + "." + op.field + ";");
+		const lhs = "var " + op.destination.variable;
+		const rhs = op.object + "." + op.field;
+		lines.push(indent + lhs + " = " + rhs + ";");
 		return;
 	} else if (op.tag === "op-new-record") {
+		const lhs = "var " + op.destination.variable;
 		const args = [];
 		for (let k in op.fields) {
-			args.push(k + " = " + op.fields[k].variable_id);
+			args.push(k + " = " + op.fields[k]);
 		}
-		lines.push(indent + op.destination.variable_id + " = "
-			+ "new(" + args + ");");
+		const recordType = showType(op.destination.type, context);
+		const recordLiteral = recordType + "{" + args.join(", ") + "}";
+		lines.push(indent + lhs + " = " + recordLiteral + ";");
 		return;
 	}
 

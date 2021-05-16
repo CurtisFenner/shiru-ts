@@ -80,7 +80,7 @@ function processInterpretCommand(args: string[]): number {
 		return 5;
 	}
 
-	const result = library.interpret(compiled, mainFunction, []);
+	const result = library.interpret(compiled, mainFunction as library.FunctionID, []);
 	console.log(JSON.stringify(result, null, "\t"));
 	return 0;
 }

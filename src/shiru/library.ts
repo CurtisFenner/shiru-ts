@@ -11,6 +11,8 @@ export interface SourceFile {
 	content: string,
 }
 
+export type FunctionID = ir.FunctionID;
+
 export function parseSource(sourceFile: SourceFile): grammar.Source | lexer.LexError | grammar.ParseError {
 	try {
 		return grammar.parseSource(sourceFile.content, sourceFile.path);
@@ -48,7 +50,7 @@ export function verifyProgram(
 
 export function interpret(
 	program: ir.Program,
-	fn: string,
+	fn: FunctionID,
 	args: interpreter.Value[],
 ): interpreter.Value[] {
 	return interpreter.interpret(fn, args, program, {

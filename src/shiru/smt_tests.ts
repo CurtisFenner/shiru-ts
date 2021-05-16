@@ -1,4 +1,4 @@
-import { SMTSolver, UFPredicate, UFTheory, UFValue } from "./smt";
+import { SMTSolver, UFConstraint, UFFunction, UFPredicate, UFTheory, UFValue, UFVariable } from "./smt";
 import { assert } from "./test";
 
 
@@ -94,8 +94,16 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 	}
 }
 
-function app(f: string, ...args: UFValue[]): UFValue {
-	return { tag: "app", f, args };
+function app(f: string, ...args: (UFValue | string)[]): UFValue {
+	return { tag: "app", f: f as UFFunction, args: args as UFValue[] };
+}
+
+function eq(left: UFValue | string, right: UFValue | string): UFConstraint {
+	return {
+		tag: "=",
+		left: left as UFValue,
+		right: right as UFValue,
+	};
 }
 
 export const tests = {
@@ -135,13 +143,16 @@ export const tests = {
 		smt.defineVariable("z1", 1);
 
 		smt.addConstraint([
-			{ tag: "=", left: "x1", right: "y1" },
+			{ tag: "=", left: "x1" as UFVariable, right: "y1" as UFVariable },
 		]);
 		smt.addConstraint([
-			{ tag: "=", left: "x1", right: "z1" },
+			{ tag: "=", left: "x1" as UFVariable, right: "z1" as UFVariable },
 		]);
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: "y1", right: "z1" } },
+			{
+				tag: "not",
+				constraint: { tag: "=", left: "y1" as UFVariable, right: "z1" as UFVariable }
+			},
 		]);
 
 		const result = smt.attemptRefutation();
@@ -154,7 +165,7 @@ export const tests = {
 		smt.defineFunction("f", 2);
 
 		smt.addConstraint([
-			{ tag: "=", left: "x1", right: "x2" },
+			{ tag: "=", left: "x1" as UFVariable, right: "x2" as UFVariable },
 			{
 				tag: "not",
 				constraint: {
@@ -173,7 +184,7 @@ export const tests = {
 		smt.defineFunction("f", 2);
 
 		smt.addConstraint([
-			{ tag: "=", left: "x1", right: "x2" },
+			{ tag: "=", left: "x1" as UFVariable, right: "x2" as UFVariable },
 		]);
 		smt.addConstraint([
 			{ tag: "not", constraint: { tag: "=", left: app("f", "x1"), right: app("f", "x2") } },
@@ -189,13 +200,13 @@ export const tests = {
 		smt.defineVariable("x3", "bool");
 
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: "x1", right: "x2" } },
+			{ tag: "not", constraint: eq("x1", "x2") },
 		]);
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: "x1", right: "x3" } },
+			{ tag: "not", constraint: eq("x1", "x3") },
 		]);
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: "x2", right: "x3" } },
+			{ tag: "not", constraint: eq("x2", "x3") },
 		]);
 
 		// Three booleans cannot all be unequal.
@@ -229,17 +240,13 @@ export const tests = {
 		smt.defineVariable("x", "bool");
 		smt.defineVariable("y", "bool");
 		smt.defineVariable("z", "bool");
+		smt.addConstraint([eq("x", "y")]);
+		smt.addConstraint([eq("y", "z")]);
 		smt.addConstraint([
-			{ tag: "=", left: "x", right: "y" },
+			{ tag: "not", constraint: { tag: "predicate", predicate: "x" as UFVariable } },
 		]);
 		smt.addConstraint([
-			{ tag: "=", left: "y", right: "z" },
-		]);
-		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "predicate", predicate: "x" } },
-		]);
-		smt.addConstraint([
-			{ tag: "predicate", predicate: "z" },
+			{ tag: "predicate", predicate: "z" as UFVariable },
 		]);
 
 		// Two booleans that are equal must have the same boolean assignment.
@@ -251,16 +258,14 @@ export const tests = {
 		smt.defineVariable("y", "bool");
 		smt.defineVariable("z", "bool");
 		smt.addConstraint([
-			{ tag: "not", constraint: { tag: "=", left: "x", right: "y" } },
+			{ tag: "not", constraint: eq("x", "y") },
+		]);
+		smt.addConstraint([eq("y", "z")]);
+		smt.addConstraint([
+			{ tag: "predicate", predicate: "x" as UFVariable },
 		]);
 		smt.addConstraint([
-			{ tag: "=", left: "y", right: "z" },
-		]);
-		smt.addConstraint([
-			{ tag: "predicate", predicate: "x" },
-		]);
-		smt.addConstraint([
-			{ tag: "predicate", predicate: "z" },
+			{ tag: "predicate", predicate: "z" as UFVariable },
 		]);
 
 		// Two booleans that are inequal must have opposite boolean assignments.
@@ -270,7 +275,7 @@ export const tests = {
 		const smt = new UFTheory();
 
 		// Create distinct symbols.
-		const alpha: UFValue = { tag: "const", value: "a", sort: 1 };
+		const alpha: UFValue = { tag: "literal", literal: "a", sort: 1 };
 		smt.addConstraint([
 			{ tag: "=", left: alpha, right: alpha },
 		]);
@@ -282,8 +287,8 @@ export const tests = {
 		const smt = new UFTheory();
 
 		// Create distinct symbols.
-		const alpha: UFValue = { tag: "const", value: "a", sort: 1 };
-		const beta: UFValue = { tag: "const", value: "b", sort: 1 };
+		const alpha: UFValue = { tag: "literal", literal: "a", sort: 1 };
+		const beta: UFValue = { tag: "literal", literal: "b", sort: 1 };
 		smt.addConstraint([
 			{ tag: "=", left: alpha, right: beta },
 		]);

@@ -95,14 +95,19 @@ export abstract class SMTSolver<E, Counterexample> {
 }
 
 export interface UFCounter { }
-export type UFVariable = string;
-export type UFFunction = string;
+export type UFVariable = string & { __brand: "smt-uf-variable" };
+
+export function isUFVariable(value: UFValue): value is UFVariable {
+	return typeof value === "string";
+}
+
+export type UFFunction = string & { __brand: "smt-uf-function" };
 export type UFValue = UFVariable
 	| { tag: "app", f: UFFunction, args: UFValue[] }
-	| UFConstValue;
+	| UFLiteralValue;
 
-// UFConstValue considers only the equality of the `value` field.
-export type UFConstValue = { tag: "const", value: unknown, sort: UFSort };
+// UFLiteralValue considers only the equality of the `literal` field.
+export type UFLiteralValue = { tag: "literal", literal: unknown, sort: UFSort };
 
 // A UFPredicate is a UFValue with sort `"bool"`.
 export type UFPredicate = UFValue;
@@ -215,7 +220,11 @@ class UFValueTracker {
 		}
 	}
 
-	addConst(value: unknown, sort: UFSort) {
+	addLiteral(value: unknown, sort: UFSort) {
+		if (sort === "bool") {
+			throw new Error("addConst: do not use this method for bool sort");
+		}
+
 		if (!this.constants.has(value)) {
 			const dsIndex = this.dsObjects.length;
 			this.dsObjects[dsIndex] = { tag: "const", value, sort };
@@ -228,7 +237,7 @@ class UFValueTracker {
 		}
 	}
 
-	addApplication(f: string, argsDS: number[]) {
+	addApplication(f: UFFunction, argsDS: number[]) {
 		const fInfo = this.functions[f];
 		if (fInfo === undefined) {
 			throw new Error(`function \`${f}\` has not been defined`);
@@ -478,7 +487,7 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 		} else if (constraint.tag === "predicate") {
 			const app = this.valueIndex(constraint.predicate);
 			if (app.satTerm === null) {
-				throw new Error(`value ${constraint} with non-bool sort cannot be used in a clause`);
+				throw new Error(`value ${JSON.stringify(constraint)} with non-bool sort cannot be used in a clause`);
 			}
 			return app.satTerm;
 		}
@@ -487,15 +496,17 @@ export class UFTheory extends SMTSolver<UFConstraint[], UFCounter> {
 
 	/// RETURNS an index into a DisjointSet object.
 	private valueIndex(v: UFValue): { dsIndex: number, satTerm: number | null } {
-		if (typeof v === "string") {
+		if (isUFVariable(v)) {
 			const vInfo = this.valueTracker.getVariable(v);
 			return { dsIndex: vInfo.dsIndex, satTerm: vInfo.satTerm };
-		}
-		if (v.tag === "app") {
+		} else if (v.tag === "app") {
 			const args = v.args.map(a => this.valueIndex(a).dsIndex);
 			return this.valueTracker.addApplication(v.f, args);
-		} else if (v.tag === "const") {
-			return this.valueTracker.addConst(v.value, v.sort);
+		} else if (v.tag === "literal") {
+			if (typeof v.literal === "boolean") {
+				return v.literal ? this.trueObject : this.falseObject;
+			}
+			return this.valueTracker.addLiteral(v.literal, v.sort);
 		}
 		throw new Error(`unhandled ${v}`);
 	}

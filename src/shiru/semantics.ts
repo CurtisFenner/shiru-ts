@@ -153,10 +153,10 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 			if (definition.tag === "record-definition") {
 				const thisType: ir.Type = {
 					tag: "type-compound",
-					record: { record_id: canonicalName },
+					record: canonicalName as ir.RecordID,
 					type_arguments: definition.typeParameters.parameters.map((_, i) => ({
 						tag: "type-variable",
-						id: { type_variable_id: i },
+						id: i as ir.TypeVariableID,
 					})),
 				};
 
@@ -191,7 +191,7 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 					typeScope: {
 						thisType: {
 							tag: "type-variable",
-							id: { type_variable_id: 0 },
+							id: 0 as ir.TypeVariableID,
 						},
 						constraints: [],
 						typeVariables: {},
@@ -342,7 +342,7 @@ function compileConstraint(
 	}
 
 	return {
-		interface: { interface_id: canonicalName },
+		interface: canonicalName as ir.InterfaceID,
 		subjects: subjects,
 	};
 }
@@ -376,12 +376,12 @@ function checkConstraintSatisfied(
 		throw new Error("ICE: Constraint requires at least one subject.");
 	} else if (methodSubject.tag === "type-compound") {
 		const programContext = sourceContext.programContext;
-		const recordEntity = programContext.entitiesByCanonical[methodSubject.record.record_id];
+		const recordEntity = programContext.entitiesByCanonical[methodSubject.record];
 		if (recordEntity.tag !== "record") {
 			throw new Error("ICE: non-record referenced by record type");
 		}
 		for (const implementation of recordEntity.implements) {
-			if (implementation.constraint.interface.interface_id !== requiredConstraint.interface.interface_id) {
+			if (implementation.constraint.interface !== requiredConstraint.interface) {
 				continue;
 			}
 			const map = new Map();
@@ -510,7 +510,7 @@ function compileType(
 
 		return {
 			tag: "type-compound",
-			record: { record_id: canonicalName },
+			record: canonicalName as ir.RecordID,
 			type_arguments: typeArguments,
 		};
 	} else if (t.tag === "type-var") {
@@ -634,9 +634,7 @@ function collectTypeScope(
 		typeScope.typeVariables[parameter.name] = {
 			variable: {
 				tag: "type-variable",
-				id: {
-					type_variable_id: typeScope.typeVariableDebugNames.length,
-				},
+				id: typeScope.typeVariableDebugNames.length as ir.TypeVariableID,
 			},
 			bindingLocation: parameter.location,
 		};
@@ -751,7 +749,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 				parameters: parameterTypes,
 				returns: returnTypes,
 				ast: fn,
-				id: { function_id: canonicalFunctionName(entityName, fnName) },
+				id: canonicalFunctionName(entityName, fnName),
 			};
 		}
 
@@ -794,8 +792,8 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 	throw new Error("collectMembers: unhandled tag `" + entity["tag"] + "`");
 }
 
-function canonicalFunctionName(entityName: string, memberName: string) {
-	return entityName + "." + memberName;
+function canonicalFunctionName(entityName: string, memberName: string): ir.FunctionID {
+	return entityName + "." + memberName as ir.FunctionID;
 }
 
 interface FunctionContext {
@@ -812,82 +810,131 @@ interface FunctionContext {
 }
 
 interface VariableBinding {
+	localName: string,
 	bindingLocation: ir.SourceLocation,
 	t: ir.Type,
-	id: ir.VariableID,
+	currentValue: ir.VariableID,
+}
+
+interface VariableStackInfo {
+	bindingLocation: ir.SourceLocation,
+	t: ir.Type,
+	currentValue: ir.VariableID,
+	block: number,
+}
+
+interface VariableStackBlock {
+	stackStart: number,
+	assignments: Record<string, { originalValue: ir.VariableID, latestValue: ir.VariableID }>,
 }
 
 class VariableStack {
-	private variables: Record<string, VariableBinding> = {};
-	private stack: string[] = [];
-	private blocks: number[] = [];
+	private variables: Record<string, VariableStackInfo> = {};
+	private variableStack: string[] = [];
+	private blocks: VariableStackBlock[] = [];
 
-	/// THROWS SemanticError when a variable of this name is already in scope.
-	defineVariable(name: string, t: ir.Type, location: ir.SourceLocation): VariableBinding {
-		const existing = this.variables[name]
+	private nextUnique = 1;
+	uniqueID(hint: string): ir.VariableID {
+		if (hint.indexOf("'") >= 0) {
+			throw new Error("hint must not contain `'`");
+		}
+		const id = hint + "'" + this.nextUnique;
+		this.nextUnique += 1;
+		return id as ir.VariableID;
+	}
+
+	defineLocal(
+		local: string,
+		t: ir.Type,
+		location: ir.SourceLocation,
+		initialValue: ir.VariableID,
+	) {
+		const existing = this.variables[local];
 		if (existing !== undefined) {
 			throw new diagnostics.VariableRedefinedErr({
-				name,
+				name: local,
 				firstLocation: existing.bindingLocation,
 				secondLocation: location,
 			});
 		}
-		this.variables[name] = {
+		this.variables[local] = {
 			bindingLocation: location,
 			t,
-			id: { variable_id: name },
+			currentValue: initialValue,
+			block: this.blocks.length,
 		};
-		this.stack.push(name);
-		return this.variables[name];
-	}
-
-	defineTemporary(t: ir.Type, location: ir.SourceLocation, ops: ir.Op[] | null) {
-		const name = "$" + this.stack.length;
-		const id = this.defineVariable(name, t, location);
-		if (ops !== null) {
-			ops.push({
-				tag: "op-var",
-				type: t,
-				id: id.id,
-				sourceLocation: location,
-			});
-		}
-		return id;
+		this.variableStack.push(local);
 	}
 
 	/// THROWS SemanticError when a variable of this name is not in scope.
-	resolve(variable: lexer.IdenToken): VariableBinding {
-		const def = this.variables[variable.name];
+	resolve(local: lexer.IdenToken): VariableBinding {
+		const def = this.variables[local.name];
 		if (def === undefined) {
 			throw new diagnostics.VariableNotDefinedErr({
-				name: variable.name,
-				referencedAt: variable.location,
+				name: local.name,
+				referencedAt: local.location,
 			});
 		}
-		return def;
+		return {
+			localName: local.name,
+			bindingLocation: def.bindingLocation,
+			t: def.t,
+			currentValue: def.currentValue,
+		};
 	}
 
 	openBlock() {
-		this.blocks.push(this.stack.length);
+		this.blocks.push({
+			stackStart: this.variableStack.length,
+			assignments: {},
+		});
 	}
 
-	closeBlock() {
-		const start = this.blocks.pop();
-		if (start === undefined) throw new Error("block is not open");
-		const removed = this.stack.splice(start);
+	updateLocal(local: string, newValue: ir.VariableID) {
+		const variable = this.variables[local];
+		if (variable.block < this.blocks.length) {
+			const currentBlock = this.blocks[this.blocks.length - 1];
+			if (currentBlock.assignments[local] === undefined) {
+				currentBlock.assignments[local] = {
+					originalValue: variable.currentValue,
+					latestValue: newValue,
+				};
+			} else {
+				currentBlock.assignments[local].latestValue = newValue;
+			}
+		}
+		variable.currentValue = newValue;
+	}
+
+	/// RETURNS the assignments made to Shiru local variables that live longer
+	/// than this block.
+	closeBlock(): Record<string, ir.VariableID> {
+		const block = this.blocks.pop();
+		if (block === undefined) throw new Error("block is not open");
+		const removed = this.variableStack.splice(block.stackStart);
 		for (const r of removed) {
 			delete this.variables[r];
 		}
+
+		const assignments: Record<string, ir.VariableID> = {};
+		for (const k in block.assignments) {
+			// Revert the variable to its assignment before the block, but return
+			// the current assignment (for branching).
+			const status = block.assignments[k];
+			this.variables[k].currentValue = status.originalValue;
+			assignments[k] = status.latestValue;
+		}
+		return assignments;
 	}
 }
 
 interface ValueInfo {
-	values: { t: ir.Type, id: ir.VariableID }[],
+	values: ir.VariableDefinition[],
 	location: ir.SourceLocation,
 }
 
 function getRecord(context: FunctionContext, record: ir.RecordID): RecordEntityDef {
-	const entity = context.sourceContext.programContext.entitiesByCanonical[record.record_id];
+	const entity = context.sourceContext.programContext.entitiesByCanonical[record];
 	if (entity.tag !== "record") {
 		throw new Error("ICE: Bad record ID");
 	}
@@ -945,7 +992,7 @@ function compileCallExpression(
 	const argumentSources = [];
 	for (let i = 0; i < argValues.length; i++) {
 		const value = argValues[i];
-		const valueType = value.tuple.values[value.i].t;
+		const valueType = value.tuple.values[value.i].type;
 		const templateType = fn.parameters[i].t;
 
 		const expectedType = ir.typeSubstitute(templateType, typeArgumentMapping);
@@ -959,21 +1006,16 @@ function compileCallExpression(
 				expectedLocation: fn.parameters[i].location,
 			});
 		}
-		argumentSources.push(value.tuple.values[value.i].id);
+		argumentSources.push(value.tuple.values[value.i].variable);
 	}
 
-	const destinations = [];
-	const info = [];
+	const destinations: ir.VariableDefinition[] = [];
 	for (let i = 0; i < fn.returns.length; i++) {
 		const templateType = fn.returns[i].t;
 		const returnType = ir.typeSubstitute(templateType, typeArgumentMapping);
 
-		const result = stack.defineTemporary(returnType, e.location, ops);
-		destinations.push(result.id);
-		info.push({
-			t: returnType,
-			id: result.id,
-		});
+		const destination = stack.uniqueID("fncall" + i);
+		destinations.push({ variable: destination, type: returnType });
 	}
 	ops.push({
 		tag: "op-static-call",
@@ -987,7 +1029,7 @@ function compileCallExpression(
 	});
 
 	return {
-		values: info,
+		values: destinations,
 		location: e.location,
 	};
 }
@@ -1007,7 +1049,7 @@ function compileRecordLiteral(
 		});
 	}
 	const programContext = context.sourceContext.programContext;
-	const record = programContext.entitiesByCanonical[t.record.record_id];
+	const record = programContext.entitiesByCanonical[t.record];
 	if (record === undefined || record.tag !== "record") {
 		throw new Error("ICE: invalid record from compileType");
 	}
@@ -1045,7 +1087,7 @@ function compileRecordLiteral(
 				grouping: "field-init",
 			});
 		}
-		const givenType = value.values[0].t;
+		const givenType = value.values[0].type;
 		const expectedType = ir.typeSubstitute(fieldDefinition.t, map);
 
 		if (!ir.equalTypes(expectedType, givenType)) {
@@ -1073,19 +1115,22 @@ function compileRecordLiteral(
 				initializerLocation: e.location,
 			});
 		}
-		fields[required] = initializations[required].values[0].id;
+		fields[required] = initializations[required].values[0].variable;
 	}
 
+	const destination = {
+		variable: stack.uniqueID("record" + t.record),
+		type: t,
+	};
 
-	const destination = stack.defineTemporary(t, e.location, ops);
 	ops.push({
 		tag: "op-new-record",
 		record: t.record,
-		destination: destination.id,
+		destination: destination,
 		fields,
 	});
 	return {
-		values: [{ t: destination.t, id: destination.id }],
+		values: [destination],
 		location: e.location,
 	};
 }
@@ -1099,7 +1144,7 @@ function compileExpressionAtom(
 	if (e.tag === "iden") {
 		const v = stack.resolve(e);
 		return {
-			values: [{ t: v.t, id: v.id }],
+			values: [{ type: v.t, variable: v.currentValue }],
 			location: e.location,
 		};
 	} else if (e.tag === "paren") {
@@ -1115,24 +1160,30 @@ function compileExpressionAtom(
 		}
 		return component;
 	} else if (e.tag === "number-literal") {
-		const v = stack.defineTemporary(ir.T_INT, e.location, ops);
+		const destination = {
+			variable: stack.uniqueID("number"),
+			type: ir.T_INT,
+		};
 		ops.push({
 			tag: "op-const",
-			destination: v.id,
+			destination,
 			value: e.value,
 		});
-		return { values: [{ t: v.t, id: v.id }], location: e.location };
+		return { values: [destination], location: e.location };
 	} else if (e.tag === "call") {
 		return compileCallExpression(e, ops, stack, typeScope, context);
 	} else if (e.tag === "keyword") {
 		if (e.keyword === "false" || e.keyword === "true") {
-			const v = stack.defineTemporary(ir.T_BOOLEAN, e.location, ops);
+			const destination = {
+				variable: stack.uniqueID("boolean"),
+				type: ir.T_BOOLEAN,
+			};
 			ops.push({
 				tag: "op-const",
-				destination: v.id,
+				destination,
 				value: e.keyword === "true",
 			});
-			return { values: [{ t: v.t, id: v.id }], location: e.location };
+			return { values: [destination], location: e.location };
 		} else if (e.keyword === "return") {
 			if (context.ensuresReturnExpression === null) {
 				throw new diagnostics.ReturnExpressionUsedOutsideEnsuresErr({
@@ -1150,13 +1201,16 @@ function compileExpressionAtom(
 	} else if (e.tag === "record-literal") {
 		return compileRecordLiteral(e, ops, stack, typeScope, context);
 	} else if (e.tag === "string-literal") {
-		const v = stack.defineTemporary(ir.T_BYTES, e.location, ops);
+		const destination = {
+			variable: stack.uniqueID("string"),
+			type: ir.T_BYTES,
+		};
 		ops.push({
 			tag: "op-const",
-			destination: v.id,
+			destination,
 			value: e.value,
 		});
-		return { values: [{ t: v.t, id: v.id }], location: e.location };
+		return { values: [destination], location: e.location };
 	}
 
 	const _: never = e;
@@ -1181,28 +1235,28 @@ function compileOperand(
 		const base = value.values[0];
 
 		if (access.tag === "field") {
-			if (base.t.tag !== "type-compound") {
+			if (base.type.tag !== "type-compound") {
 				throw new diagnostics.FieldAccessOnNonCompoundErr({
-					accessedType: displayType(base.t, typeScope, context.sourceContext),
+					accessedType: displayType(base.type, typeScope, context.sourceContext),
 					accessedLocation: access.fieldName.location,
 				});
 			}
 
 			const programContext = context.sourceContext.programContext;
-			const record = programContext.entitiesByCanonical[base.t.record.record_id];
+			const record = programContext.entitiesByCanonical[base.type.record];
 			if (record.tag !== "record") {
 				throw new Error("ICE: non-record referenced by compound type");
 			}
 
 			const map = new Map();
-			for (let i = 0; i < base.t.type_arguments.length; i++) {
-				map.set(i, base.t.type_arguments[i]);
+			for (let i = 0; i < base.type.type_arguments.length; i++) {
+				map.set(i, base.type.type_arguments[i]);
 			}
 
 			const field = record.fields[access.fieldName.name];
 			if (field === undefined) {
 				throw new diagnostics.NoSuchFieldErr({
-					recordType: displayType(base.t, typeScope, context.sourceContext),
+					recordType: displayType(base.type, typeScope, context.sourceContext),
 					fieldName: access.fieldName.name,
 					location: access.fieldName.location,
 					type: "access",
@@ -1211,15 +1265,18 @@ function compileOperand(
 
 			const fieldType = ir.typeSubstitute(field.t, map);
 			const location = ir.locationSpan(value.location, access.fieldName.location);
-			const temporary = stack.defineTemporary(fieldType, location, ops);
+			const destination = {
+				variable: stack.uniqueID("field"),
+				type: fieldType,
+			};
 			ops.push({
 				tag: "op-field",
-				object: base.id,
+				object: base.variable,
 				field: access.fieldName.name,
-				destination: temporary.id,
+				destination,
 			});
 			value = {
-				values: [{ id: temporary.id, t: temporary.t }],
+				values: [destination],
 				location: location,
 			};
 		} else if (access.tag === "method") {
@@ -1249,18 +1306,18 @@ function resolveOperator(
 		});
 	}
 	const value = lhs.values[0];
-	if (ir.equalTypes(ir.T_INT, value.t)) {
+	if (ir.equalTypes(ir.T_INT, value.type)) {
 		if (opStr === "+") {
-			return { function_id: "Int+" };
+			return "Int+" as ir.FunctionID;
 		} else if (opStr === "-") {
-			return { function_id: "Int-" };
+			return "Int-" as ir.FunctionID;
 		} else if (opStr === "==") {
-			return { function_id: "Int==" };
+			return "Int==" as ir.FunctionID;
 		}
 	}
 
 	throw new diagnostics.TypeDoesNotProvideOperatorErr({
-		lhsType: displayType(value.t, typeScope, context.sourceContext),
+		lhsType: displayType(value.type, typeScope, context.sourceContext),
 		operator: opStr,
 		operatorLocation: operator.location,
 	});
@@ -1448,7 +1505,7 @@ function expectOneBooleanForContract(
 	typeScope: TypeScope,
 	context: FunctionContext,
 	contract: "assert" | "requires" | "ensures"
-): { t: ir.Type, id: ir.VariableID } {
+): ir.VariableDefinition {
 	if (values.values.length !== 1) {
 		throw new diagnostics.MultiExpressionGroupedErr({
 			location: values.location,
@@ -1459,9 +1516,9 @@ function expectOneBooleanForContract(
 	}
 
 	const value = values.values[0];
-	if (!ir.equalTypes(ir.T_BOOLEAN, value.t)) {
+	if (!ir.equalTypes(ir.T_BOOLEAN, value.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(value.t, typeScope, context.sourceContext),
+			givenType: displayType(value.type, typeScope, context.sourceContext),
 			location: values.location,
 			reason: "contract",
 			contract: contract,
@@ -1475,7 +1532,7 @@ function expectOneBooleanForLogical(
 	typeScope: TypeScope,
 	context: FunctionContext,
 	op: { opStr: string, location: ir.SourceLocation },
-): { t: ir.Type, id: ir.VariableID } {
+): ir.VariableDefinition {
 	if (values.values.length !== 1) {
 		throw new diagnostics.MultiExpressionGroupedErr({
 			location: values.location,
@@ -1486,9 +1543,9 @@ function expectOneBooleanForLogical(
 	}
 
 	const value = values.values[0];
-	if (!ir.equalTypes(ir.T_BOOLEAN, value.t)) {
+	if (!ir.equalTypes(ir.T_BOOLEAN, value.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(value.t, typeScope, context.sourceContext),
+			givenType: displayType(value.type, typeScope, context.sourceContext),
 			location: values.location,
 			reason: "logical-op",
 			op: op.opStr,
@@ -1519,98 +1576,107 @@ function compileExpressionTree(
 			location: tree.join.opToken.location,
 		});
 
-		const result = stack.defineTemporary(ir.T_BOOLEAN, tree.location, ops);
-
-		const branch: ir.OpBranch = {
-			tag: "op-branch",
-			condition: leftValue.id,
-			trueBranch: { ops: [] },
-			falseBranch: { ops: [] },
+		const destination = {
+			variable: stack.uniqueID("logical"),
+			type: ir.T_BOOLEAN,
 		};
-		ops.push(branch);
+
+		const trueOps: ir.Op[] = [];
+		const falseOps: ir.Op[] = [];
+
+		let trueSource: ir.VariableID;
+		let falseSource: ir.VariableID;
 
 		if (opStr === "or") {
-			branch.trueBranch.ops.push({
-				tag: "op-assign",
-				destination: result.id,
-				source: leftValue.id,
-			});
+			trueSource = leftValue.variable;
 
 			stack.openBlock();
-			const right = compileExpressionTree(tree.rightBranch, branch.falseBranch.ops, stack, typeScope, context);
+
+			const right = compileExpressionTree(tree.rightBranch, falseOps, stack, typeScope, context);
 			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
 				opStr: "or",
 				location: tree.join.opToken.location,
 			});
+			falseSource = rightValue.variable;
 
-			branch.falseBranch.ops.push({
-				tag: "op-assign",
-				destination: result.id,
-				source: rightValue.id,
-			});
-			stack.closeBlock();
+			for (const _ in stack.closeBlock()) {
+				throw new Error("ICE: unexpected local assignment in logical");
+			}
 		} else if (opStr === "and") {
-			branch.falseBranch.ops.push({
-				tag: "op-assign",
-				destination: result.id,
-				source: leftValue.id,
-			});
+			falseSource = leftValue.variable;
 
 			stack.openBlock();
-			const right = compileExpressionTree(tree.rightBranch, branch.trueBranch.ops, stack, typeScope, context);
+
+			const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
 			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
 				opStr: "and",
 				location: tree.join.opToken.location,
 			});
+			trueSource = rightValue.variable;
 
-			branch.trueBranch.ops.push({
-				tag: "op-assign",
-				destination: result.id,
-				source: rightValue.id,
-			});
-			stack.closeBlock();
+			for (const _ in stack.closeBlock()) {
+				throw new Error("ICE: unexpected local assignment in logical");
+			}
 		} else if (opStr === "implies") {
-			branch.falseBranch.ops.push({
+			const trueConst = {
+				variable: stack.uniqueID("falseimplies"),
+				type: ir.T_BOOLEAN,
+			};
+			falseOps.push({
 				tag: "op-const",
 				value: true,
-				destination: result.id,
+				destination: trueConst,
 			});
+			falseSource = trueConst.variable;
 
 			stack.openBlock();
-			const right = compileExpressionTree(tree.rightBranch, branch.trueBranch.ops, stack, typeScope, context);
+
+			const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
 			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
 				opStr: "implies",
 				location: tree.join.opToken.location,
 			});
+			trueSource = rightValue.variable;
 
-			branch.trueBranch.ops.push({
-				tag: "op-assign",
-				destination: result.id,
-				source: rightValue.id,
-			});
-
-			stack.closeBlock();
+			for (const _ in stack.closeBlock()) {
+				throw new Error("ICE: unexpected local assignment in logical");
+			}
 		} else {
 			const _: never = opStr;
 			throw new Error("Unhandled logical operator `" + opStr + "`");
 		}
 
-		return { values: [{ t: result.t, id: result.id }], location: tree.location };
+		const branch: ir.OpBranch = {
+			tag: "op-branch",
+			condition: leftValue.variable,
+			trueBranch: { ops: trueOps },
+			falseBranch: { ops: falseOps },
+			destinations: [
+				{
+					destination,
+					trueSource,
+					falseSource,
+				},
+			],
+		};
+		ops.push(branch);
+
+		return { values: [destination], location: tree.location };
 	} else {
 		// Compile an arithmetic operation.
 		const right = compileExpressionTree(tree.rightBranch, ops, stack, typeScope, context);
 
 		const opStr = tree.join.opToken.operator;
 		const fn = resolveOperator(left, tree.join.opToken, typeScope, context);
-		const foreign = context.sourceContext.programContext.foreignSignatures[fn.function_id];
+		const foreign = context.sourceContext.programContext.foreignSignatures[fn];
 		if (foreign === undefined) {
 			throw new Error(
-				"resolveOperator produced a bad foreign signature (`" + fn.function_id
-				+ "`) for `" + displayType(left.values[0].t, typeScope, context.sourceContext)
+				"resolveOperator produced a bad foreign signature (`" + fn
+				+ "`) for `" + displayType(left.values[0].type, typeScope, context.sourceContext)
 				+ "` `" + opStr + "`");
 		} else if (foreign.parameters.length !== 2) {
 			throw new Error(
-				"Foreign signature `" + fn.function_id + "` cannot be used as"
+				"Foreign signature `" + fn + "` cannot be used as"
 				+ "an operator since it doesn't take exactly 2 parameters");
 		}
 
@@ -1624,11 +1690,11 @@ function compileExpressionTree(
 		}
 
 		const expectedRhsType = foreign.parameters[1].type;
-		if (!ir.equalTypes(expectedRhsType, right.values[0].t)) {
+		if (!ir.equalTypes(expectedRhsType, right.values[0].type)) {
 			throw new diagnostics.OperatorTypeMismatchErr({
-				lhsType: displayType(left.values[0].t, typeScope, context.sourceContext),
+				lhsType: displayType(left.values[0].type, typeScope, context.sourceContext),
 				operator: opStr,
-				givenRhsType: displayType(right.values[0].t, typeScope, context.sourceContext),
+				givenRhsType: displayType(right.values[0].type, typeScope, context.sourceContext),
 				expectedRhsType: displayType(expectedRhsType, typeScope, context.sourceContext),
 				rhsLocation: right.location,
 			});
@@ -1636,23 +1702,26 @@ function compileExpressionTree(
 
 		if (foreign.return_types.length !== 1) {
 			throw new Error(
-				"Foreign signature `" + fn.function_id
+				"Foreign signature `" + fn
 				+ "` cannot be used as an operator since it produces "
 				+ foreign.return_types.length + " values");
 		}
-		const result = stack.defineTemporary(foreign.return_types[0],
-			ir.locationSpan(left.location, right.location), ops);
+
+		const destination = {
+			variable: stack.uniqueID("arithmetic"),
+			type: foreign.return_types[0],
+		};
 
 		ops.push({
 			tag: "op-foreign",
-			operation: fn.function_id,
-			arguments: [left.values[0].id, right.values[0].id],
-			destinations: [result.id],
+			operation: fn,
+			arguments: [left.values[0].variable, right.values[0].variable],
+			destinations: [destination],
 		});
 
 		return {
-			values: [result],
-			location: result.bindingLocation,
+			values: [destination],
+			location: ir.locationSpan(left.location, right.location),
 		};
 	}
 }
@@ -1676,7 +1745,7 @@ function compileExpression(
 /// for the given `SourceContext` (considering import aliases and such).
 function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: Readonly<SourceContext>): string {
 	if (t.tag === "type-compound") {
-		const base = t.record.record_id;
+		const base = t.record;
 		const args = t.type_arguments.map(x => displayType(x, typeScope, sourceContext));
 		if (args.length === 0) {
 			return base;
@@ -1687,7 +1756,7 @@ function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: 
 		// TODO: Text vs String vs Bytes?
 		return t.primitive;
 	} else if (t.tag == "type-variable") {
-		return "#" + typeScope.typeVariableDebugNames[t.id.type_variable_id];
+		return "#" + typeScope.typeVariableDebugNames[t.id];
 	} else {
 		const _: never = t;
 		throw new Error("displayType: unhandled tag `" + t["tag"] + "`");
@@ -1702,7 +1771,7 @@ function displayConstraint(
 	typeScope: Readonly<TypeScope>,
 	sourceContext: Readonly<SourceContext>,
 ): string {
-	const base = c.interface.interface_id;
+	const base = c.interface;
 	if (c.subjects.length === 0) {
 		throw new Error("ICE: Invalid constraint `" + base + "`");
 	}
@@ -1715,34 +1784,6 @@ function displayConstraint(
 	} else {
 		return `${lhs} is ${base}[${rhs.join(", ")}]`;
 	}
-}
-
-/// `compileAssignment` adds operations to `ops` to move the value from the
-/// source variable to the destination variable.
-/// THROWS a `SemanticError` if doing such is a type error.
-function compileAssignment(
-	value: { tuple: ValueInfo, i: number },
-	destination: VariableBinding,
-	ops: ir.Op[],
-	typeScope: Readonly<TypeScope>,
-	context: FunctionContext,
-) {
-	const sourceType = value.tuple.values[value.i].t;
-
-	if (!ir.equalTypes(sourceType, destination.t)) {
-		throw new diagnostics.TypeMismatchErr({
-			givenType: displayType(sourceType, typeScope, context.sourceContext),
-			givenLocation: value.tuple.location,
-			expectedType: displayType(destination.t, typeScope, context.sourceContext),
-			expectedLocation: destination.bindingLocation,
-		});
-	}
-
-	ops.push({
-		tag: "op-assign",
-		destination: destination.id,
-		source: value.tuple.values[value.i].id,
-	});
 }
 
 function compileVarSt(
@@ -1759,30 +1800,33 @@ function compileVarSt(
 		}
 	}
 
-	const destinations = [];
-	for (const v of statement.variables) {
-		const t = compileType(v.t, typeScope, context.sourceContext, "check");
-		const d = stack.defineVariable(v.variable.name, t, v.variable.location);
-		ops.push({
-			tag: "op-var",
-			type: t,
-			id: d.id,
-			sourceLocation: v.variable.location,
-		});
-		destinations.push(d);
-	}
-
-	if (values.length !== destinations.length) {
+	if (values.length !== statement.variables.length) {
 		throw new diagnostics.ValueCountMismatchErr({
 			actualCount: values.length,
 			actualLocation: ir.locationsSpan(statement.initialization),
-			expectedCount: destinations.length,
+			expectedCount: statement.variables.length,
 			expectedLocation: ir.locationsSpan(statement.variables),
 		});
 	}
 
-	for (let i = 0; i < values.length; i++) {
-		compileAssignment(values[i], destinations[i], ops, typeScope, context);
+	for (let i = 0; i < statement.variables.length; i++) {
+		const v = statement.variables[i];
+		const t = compileType(v.t, typeScope, context.sourceContext, "check");
+
+		const pair = values[i];
+		const value = pair.tuple.values[pair.i];
+
+		if (!ir.equalTypes(value.type, t)) {
+			throw new diagnostics.TypeMismatchErr({
+				givenType: displayType(value.type, typeScope, context.sourceContext),
+				givenLocation: pair.tuple.location,
+				givenIndex: { index0: pair.i, count: pair.tuple.values.length },
+				expectedType: displayType(t, typeScope, context.sourceContext),
+				expectedLocation: v.t.location,
+			});
+		}
+
+		stack.defineLocal(v.variable.name, t, v.variable.location, value.variable);
 	}
 }
 
@@ -1821,12 +1865,12 @@ function compileReturnSt(
 	for (let i = 0; i < values.length; i++) {
 		const v = values[i];
 		const source = v.tuple.values[v.i];
-		op.sources.push(source.id);
+		op.sources.push(source.variable);
 
 		const destination = context.returnsTo[i];
-		if (!ir.equalTypes(source.t, destination.t)) {
+		if (!ir.equalTypes(source.type, destination.t)) {
 			throw new diagnostics.TypeMismatchErr({
-				givenType: displayType(source.t, typeScope, context.sourceContext),
+				givenType: displayType(source.type, typeScope, context.sourceContext),
 				givenLocation: v.tuple.location,
 				givenIndex: { index0: v.i, count: v.tuple.values.length },
 				expectedType: displayType(destination.t, typeScope, context.sourceContext),
@@ -1855,15 +1899,18 @@ function compileIfClause(
 		});
 	}
 	const conditionValue = condition.values[0];
-	if (!ir.equalTypes(ir.T_BOOLEAN, conditionValue.t)) {
+	if (!ir.equalTypes(ir.T_BOOLEAN, conditionValue.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(conditionValue.t, typeScope, context.sourceContext),
+			givenType: displayType(conditionValue.type, typeScope, context.sourceContext),
 			location: clause.condition.location,
 			reason: "if",
 		});
 	}
 
-	const trueBranch: ir.OpBlock = compileBlock(clause.body, stack, typeScope, context);
+	let trueAssignments: Record<string, ir.VariableID> = {};
+	const trueBranch: ir.OpBlock = compileBlock(clause.body, stack, typeScope, context, (assignments) => {
+		trueAssignments = assignments;
+	});
 
 	stack.openBlock();
 	let falseBranch: ir.OpBlock = { ops: [] };
@@ -1876,13 +1923,23 @@ function compileIfClause(
 		compileIfClause(rest[restIndex], rest, restIndex + 1, elseClause,
 			falseBranch.ops, stack, typeScope, context);
 	}
-	stack.closeBlock();
+	const falseAssignments = stack.closeBlock();
+
+	const destinations: ir.BranchPhi[] = [];
+	for (const key in trueAssignments) {
+		throw new Error("TODO");
+	}
+	for (const key in falseAssignments) {
+		throw new Error("TODO");
+	}
+
 
 	ops.push({
 		tag: "op-branch",
-		condition: conditionValue.id,
+		condition: conditionValue.variable,
 		trueBranch,
 		falseBranch,
+		destinations,
 	});
 }
 
@@ -1928,7 +1985,9 @@ function compileBlock(
 	block: grammar.Block,
 	stack: VariableStack,
 	typeScope: TypeScope,
-	context: FunctionContext): ir.OpBlock {
+	context: FunctionContext,
+	callback?: (assignments: Record<string, ir.VariableID>) => void,
+): ir.OpBlock {
 	const ops: ir.Op[] = [];
 	stack.openBlock();
 
@@ -1936,7 +1995,11 @@ function compileBlock(
 		compileStatement(s, ops, stack, typeScope, context);
 	}
 
-	stack.closeBlock();
+
+	const assignments = stack.closeBlock();
+	if (callback !== undefined) {
+		callback(assignments);
+	}
 	return {
 		ops: ops,
 	};
@@ -1965,8 +2028,9 @@ function compileFunctionSignature(
 	const stack = new VariableStack();
 	for (const parameterAST of signatureAST.parameters) {
 		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
-		const v = stack.defineVariable(parameterAST.name.name, t, parameterAST.name.location);
-		signature.parameters.push({ id: v.id, type: t });
+		const parameterVariableID = parameterAST.name.name as ir.VariableID;
+		stack.defineLocal(parameterAST.name.name, t, parameterAST.name.location, parameterVariableID);
+		signature.parameters.push({ variable: parameterVariableID, type: t });
 	}
 
 	const context: FunctionContext = {
@@ -1988,7 +2052,7 @@ function compileFunctionSignature(
 		stack.closeBlock();
 		signature.preconditions.push({
 			block,
-			precondition: asserted.id,
+			precondition: asserted.variable,
 			location: precondition.expression.location,
 		});
 	}
@@ -2002,8 +2066,10 @@ function compileFunctionSignature(
 			values: [],
 		};
 		for (let i = 0; i < signature.return_types.length; i++) {
-			const v = stack.defineTemporary(signature.return_types[i], signatureAST.returns[i].location, null);
-			ensuresReturnExpression.values.push(v);
+			ensuresReturnExpression.values.push({
+				variable: stack.uniqueID("return" + i),
+				type: signature.return_types[i],
+			});
 		}
 
 		for (let postcondition of signatureAST.ensures) {
@@ -2017,8 +2083,8 @@ function compileFunctionSignature(
 			stack.closeBlock();
 			signature.postconditions.push({
 				block,
-				returnedValues: ensuresReturnExpression.values.map(x => x.id),
-				postcondition: asserted.id,
+				returnedValues: ensuresReturnExpression.values,
+				postcondition: asserted.variable,
 				location: postcondition.expression.location,
 			});
 		}
@@ -2091,7 +2157,7 @@ function compileRecordEntity(
 	// Implement functions.
 	for (const f in entity.fns) {
 		const def = entity.fns[f];
-		const fName = def.id.function_id;
+		const fName = def.id;
 		compileFunction(program, def, fName,
 			programContext.sourceContexts[entity.sourceID], entity.typeScope);
 	}
@@ -2123,8 +2189,8 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int==": {
 			// Equality
 			parameters: [
-				{ id: { variable_id: "left" }, type: ir.T_INT },
-				{ id: { variable_id: "right" }, type: ir.T_INT },
+				{ variable: "left" as ir.VariableID, type: ir.T_INT },
+				{ variable: "right" as ir.VariableID, type: ir.T_INT },
 			],
 			return_types: [ir.T_BOOLEAN],
 			type_parameters: [],
@@ -2138,8 +2204,8 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int+": {
 			// Addition
 			parameters: [
-				{ id: { variable_id: "left" }, type: ir.T_INT },
-				{ id: { variable_id: "right" }, type: ir.T_INT },
+				{ variable: "left" as ir.VariableID, type: ir.T_INT },
+				{ variable: "right" as ir.VariableID, type: ir.T_INT },
 			],
 			return_types: [ir.T_INT],
 			type_parameters: [],
@@ -2150,8 +2216,8 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int-": {
 			// Subtract
 			parameters: [
-				{ id: { variable_id: "left" }, type: ir.T_INT },
-				{ id: { variable_id: "right" }, type: ir.T_INT },
+				{ variable: "left" as ir.VariableID, type: ir.T_INT },
+				{ variable: "right" as ir.VariableID, type: ir.T_INT },
 			],
 			return_types: [ir.T_INT],
 			type_parameters: [],

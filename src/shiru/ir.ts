@@ -64,40 +64,27 @@ export interface TypeVariable {
 
 export type Type = TypePrimitive | TypeCompound | TypeVariable;
 
-export type FunctionID = { function_id: string };
-export type VariableID = { variable_id: string };
-export type RecordID = { record_id: string };
-export type InterfaceID = { interface_id: string };
-export type TypeVariableID = { type_variable_id: number };
+export type FunctionID = string & { __brand: "function-id" };
+export type VariableID = string & { __brand: "variable-id" };
+export type RecordID = string & { __brand: "record-id" };
+export type InterfaceID = string & { __brand: "interface-id" };
+export type TypeVariableID = number & { __brand: "type-variable-id" };
 
-/// `OpVar` makes a new slot available at the top of the currently active stack
-/// frame.
-export interface OpVar {
-	tag: "op-var",
-	id: VariableID,
+export interface VariableDefinition {
+	variable: VariableID,
 	type: Type,
-	sourceLocation: SourceLocation,
-};
+}
 
-/// `OpConst` overwrites a primitive-typed destination variable with a constant.
+/// `OpConst` defines a primitive-typed destination variable with a constant.
 export interface OpConst {
 	tag: "op-const",
-	destination: VariableID,
+	destination: VariableDefinition,
 	value: number | boolean | string,
-};
-
-/// `OpAssign` overwrites a destination variable with the current value of a
-/// `source` variable.
-export interface OpAssign {
-	tag: "op-assign",
-
-	/// The source & destination variables must have the same type.
-	source: VariableID,
-	destination: VariableID,
 };
 
 /// `OpBranch` chooses which branch to execute depending on the current value of
 /// a `condition` variable.
+/// It defines a set of variables, with values selected by the branches.
 export interface OpBranch {
 	tag: "op-branch",
 
@@ -106,10 +93,24 @@ export interface OpBranch {
 
 	trueBranch: OpBlock,
 	falseBranch: OpBlock,
+
+	destinations: BranchPhi[],
 };
 
-/// `OpNewRecord` overwrites a `destination` variable with a newly created
-/// instance of a specified record.
+export interface BranchPhi {
+	destination: VariableDefinition,
+
+	/// `trueSource` is the local variable within the `trueBranch` block which
+	/// contains this value of this variable if the `true` branch was taken.
+	trueSource: VariableID | "undef",
+
+	/// `falseSource` is the local variable within the `falseBranch` block which
+	/// contains the vlaue of this variable if the `false` branch was taken.
+	falseSource: VariableID | "undef",
+}
+
+/// `OpNewRecord` defines a new variable with a newly created instance of a
+/// specified record.
 export interface OpNewRecord {
 	tag: "op-new-record",
 	record: RecordID,
@@ -120,9 +121,11 @@ export interface OpNewRecord {
 	fields: { [fieldName: string]: VariableID },
 
 	/// The destination must have a type of the specified record.
-	destination: VariableID,
+	destination: VariableDefinition,
 };
 
+/// `OpField` defines a new `destination` variable with the field extracted from
+/// an indicated record variable.
 export interface OpField {
 	tag: "op-field",
 
@@ -136,7 +139,7 @@ export interface OpField {
 	/// The type of the `destination` variable must be the same as the type of
 	/// the `field` within the `object` variable (with appropriate instantiation
 	/// of any `parameter`s in the record type).
-	destination: VariableID,
+	destination: VariableDefinition,
 };
 
 export interface OpStaticCall {
@@ -152,7 +155,7 @@ export interface OpStaticCall {
 	/// The types of destinations must be equal to the types of the
 	/// `return_types` of the `FunctionSignature` for this function call (with
 	/// appropriate instantiation of any `type_arguments`).
-	destinations: VariableID[],
+	destinations: VariableDefinition[],
 
 	diagnostic_callsite: SourceLocation,
 };
@@ -172,7 +175,7 @@ export interface OpDynamicCall {
 	signature_type_arguments: Type[],
 
 	arguments: VariableID[],
-	destinations: VariableID[],
+	destinations: VariableDefinition[],
 
 	diagnostic_callsite: SourceLocation;
 };
@@ -214,12 +217,10 @@ export interface OpForeign {
 	tag: "op-foreign",
 	operation: string,
 	arguments: VariableID[],
-	destinations: VariableID[],
+	destinations: VariableDefinition[],
 };
 
-export type LeafOp = OpVar
-	| OpConst
-	| OpAssign
+export type LeafOp = OpConst
 	| OpNewRecord | OpField
 	| OpStaticCall | OpDynamicCall
 	| OpForeign
@@ -257,7 +258,7 @@ export interface Postcondition {
 
 	// Bindings for the returned values. (The parameters of the containing
 	// `FunctionSignature` are also in scope for a `Postcondition`)
-	returnedValues: VariableID[],
+	returnedValues: VariableDefinition[],
 
 	// Executing `block` results in an assignment to the boolean `postcondition`
 	// variable, which is defined by an op-var and visible within this block.
@@ -278,7 +279,7 @@ export interface FunctionSignature {
 	constraint_parameters: ConstraintParameter[],
 
 	/// `parameters` is the sequence of types for each function parameter.
-	parameters: { id: VariableID, type: Type }[],
+	parameters: VariableDefinition[],
 
 	/// `returns` is the sequence of types for each function return.
 	return_types: Type[],
@@ -408,10 +409,9 @@ function typecheckInterface(program: Program, iid: string): Problem[] {
 export function equalTypes(pattern: Type, passed: Type): boolean {
 	if (pattern.tag === "type-variable") {
 		// TODO: Switch to unification?
-		return passed.tag === "type-variable"
-			&& passed.id.type_variable_id === pattern.id.type_variable_id;
+		return passed.tag === "type-variable" && passed.id === pattern.id;
 	} else if (pattern.tag === "type-compound" && passed.tag === "type-compound") {
-		if (pattern.record.record_id !== passed.record.record_id) {
+		if (pattern.record !== passed.record) {
 			return false;
 		}
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -437,7 +437,7 @@ export function typeSubstitute(t: Type, map: Map<number, Type>): Type {
 	} else if (t.tag === "type-primitive") {
 		return t;
 	} else if (t.tag === "type-variable") {
-		const existing = map.get(t.id.type_variable_id);
+		const existing = map.get(t.id);
 		if (existing !== undefined) {
 			return existing;
 		}

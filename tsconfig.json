@@ -14,6 +14,7 @@
     "rootDir": "src/"
   },
   "include": [
+    "src/*.d.ts",
     "src/shiru/**/*.ts"
   ]
 }

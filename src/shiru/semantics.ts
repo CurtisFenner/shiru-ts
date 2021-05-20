@@ -154,9 +154,9 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 				const thisType: ir.Type = {
 					tag: "type-compound",
 					record: canonicalName as ir.RecordID,
-					type_arguments: definition.typeParameters.parameters.map((_, i) => ({
+					type_arguments: definition.typeParameters.parameters.map(t => ({
 						tag: "type-variable",
-						id: i as ir.TypeVariableID,
+						id: t.name as ir.TypeVariableID,
 					})),
 				};
 
@@ -170,8 +170,8 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 						thisType,
 
 						constraints: [],
-						typeVariables: {},
-						typeVariableDebugNames: [],
+						typeVariables: new Map(),
+						typeVariableList: [],
 					},
 
 					// These are filled in by `collectMembers`.
@@ -180,6 +180,7 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 					implements: [],
 				};
 			} else {
+				const thisType = "This" as ir.TypeVariableID;
 				entity = {
 					tag: "interface",
 					ast: definition,
@@ -191,11 +192,11 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 					typeScope: {
 						thisType: {
 							tag: "type-variable",
-							id: 0 as ir.TypeVariableID,
+							id: thisType,
 						},
 						constraints: [],
-						typeVariables: {},
-						typeVariableDebugNames: ["This"],
+						typeVariables: new Map(),
+						typeVariableList: [],
 					},
 
 					// These are filled in by `collectMembers`.
@@ -225,12 +226,10 @@ interface TypeScope {
 	thisType: ir.Type,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
-	typeVariables: Record<string, TypeVariableBinding>,
+	typeVariables: Map<ir.TypeVariableID, TypeVariableBinding>,
+	typeVariableList: ir.TypeVariableID[],
 
 	constraints: ConstraintBinding[],
-
-	// These names do NOT include "#".
-	typeVariableDebugNames: string[],
 }
 
 function resolveEntity(
@@ -308,9 +307,9 @@ function compileConstraint(
 
 	if (checkConstraints === "check") {
 		const expectedLocations = [];
-		for (let v in interfaceEntity.typeScope.typeVariables) {
+		for (let [_, binding] of interfaceEntity.typeScope.typeVariables) {
 			expectedLocations.push({
-				location: interfaceEntity.typeScope.typeVariables[v].bindingLocation,
+				location: binding.bindingLocation,
 			});
 		}
 
@@ -325,14 +324,16 @@ function compileConstraint(
 			});
 		}
 
-		const map = new Map();
+		const map: Map<ir.TypeVariableID, ir.Type> = new Map();
 		for (let i = 0; i < subjects.length; i++) {
-			map.set(i, subjects[i]);
+			map.set(interfaceEntity.typeScope.typeVariableList[i], subjects[i]);
 		}
 		for (const requiredConstraint of interfaceEntity.typeScope.constraints) {
 			const instantiated: ir.ConstraintParameter = {
 				interface: requiredConstraint.constraint.interface,
-				subjects: requiredConstraint.constraint.subjects.map(s => ir.typeSubstitute(s, map)),
+				subjects: requiredConstraint.constraint.subjects.map(s => {
+					return ir.typeSubstitute(s, map);
+				}),
 			};
 			checkConstraintSatisfied(instantiated, scope, sourceContext, {
 				constraintDeclaredAt: requiredConstraint.location,
@@ -384,9 +385,9 @@ function checkConstraintSatisfied(
 			if (implementation.constraint.interface !== requiredConstraint.interface) {
 				continue;
 			}
-			const map = new Map();
+			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
 			for (let i = 0; i < methodSubject.type_arguments.length; i++) {
-				map.set(i, methodSubject.type_arguments[i]);
+				map.set(recordEntity.typeScope.typeVariableList[i], methodSubject.type_arguments[i]);
 			}
 			const provided = implementation.constraint.subjects.map(s => ir.typeSubstitute(s, map));
 			if (allEqualTypes(provided, requiredConstraint.subjects)) {
@@ -474,12 +475,12 @@ function compileType(
 			compileType(a, scope, sourceContext, checkConstraints));
 
 		if (checkConstraints === "check") {
-			const expectedTypeParameterCount = entity.typeScope.typeVariableDebugNames.length;
+			const expectedTypeParameterCount = entity.typeScope.typeVariableList.length;
 			if (typeArguments.length !== expectedTypeParameterCount) {
 				const typeVariableLocations = [];
-				for (let v in entity.typeScope.typeVariables) {
+				for (let [_, binding] of entity.typeScope.typeVariables) {
 					typeVariableLocations.push({
-						location: entity.typeScope.typeVariables[v].bindingLocation,
+						location: binding.bindingLocation,
 					});
 				}
 				throw new diagnostics.TypeParameterCountMismatchErr({
@@ -492,14 +493,16 @@ function compileType(
 				});
 			}
 
-			const map = new Map();
+			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
 			for (let i = 0; i < typeArguments.length; i++) {
-				map.set(i, typeArguments[i]);
+				map.set(entity.typeScope.typeVariableList[i], typeArguments[i]);
 			}
 			for (let requiredConstraint of entity.typeScope.constraints) {
 				const instantiated: ir.ConstraintParameter = {
 					interface: requiredConstraint.constraint.interface,
-					subjects: requiredConstraint.constraint.subjects.map(s => ir.typeSubstitute(s, map)),
+					subjects: requiredConstraint.constraint.subjects.map(s => {
+						return ir.typeSubstitute(s, map);
+					}),
 				};
 				checkConstraintSatisfied(instantiated, scope, sourceContext, {
 					constraintDeclaredAt: requiredConstraint.location,
@@ -514,7 +517,7 @@ function compileType(
 			type_arguments: typeArguments,
 		};
 	} else if (t.tag === "type-var") {
-		const id = scope.typeVariables[t.name];
+		const id = scope.typeVariables.get(t.name as ir.TypeVariableID);
 		if (id === undefined) {
 			throw new diagnostics.NoSuchTypeVariableErr({
 				typeVariableName: t.name,
@@ -623,7 +626,8 @@ function collectTypeScope(
 	typeParameters: grammar.TypeParameters,
 ) {
 	for (const parameter of typeParameters.parameters) {
-		const existingBinding = typeScope.typeVariables[parameter.name];
+		const id = parameter.name as ir.TypeVariableID;
+		const existingBinding = typeScope.typeVariables.get(id);
 		if (existingBinding !== undefined) {
 			throw new diagnostics.TypeVariableRedefinedErr({
 				typeVariableName: parameter.name,
@@ -631,14 +635,11 @@ function collectTypeScope(
 				secondBinding: parameter.location,
 			});
 		}
-		typeScope.typeVariables[parameter.name] = {
-			variable: {
-				tag: "type-variable",
-				id: typeScope.typeVariableDebugNames.length as ir.TypeVariableID,
-			},
+		typeScope.typeVariables.set(id, {
+			variable: { tag: "type-variable", id },
 			bindingLocation: parameter.location,
-		};
-		typeScope.typeVariableDebugNames.push(parameter.name);
+		});
+		typeScope.typeVariableList.push(parameter.name as ir.TypeVariableID);
 	}
 	for (let c of typeParameters.constraints) {
 		const sourceContext = programContext.sourceContexts[sourceID];
@@ -984,9 +985,10 @@ function compileCallExpression(
 		});
 	}
 
-	const typeArgumentMapping: Map<number, ir.Type> = new Map();
+	const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
 	for (let i = 0; i < baseType.type_arguments.length; i++) {
-		typeArgumentMapping.set(i, baseType.type_arguments[i]);
+		const id = record.typeScope.typeVariableList[i];
+		typeArgumentMapping.set(id, baseType.type_arguments[i]);
 	}
 
 	const argumentSources = [];
@@ -1049,14 +1051,14 @@ function compileRecordLiteral(
 		});
 	}
 	const programContext = context.sourceContext.programContext;
-	const record = programContext.entitiesByCanonical[t.record];
-	if (record === undefined || record.tag !== "record") {
+	const recordEntity = programContext.entitiesByCanonical[t.record];
+	if (recordEntity === undefined || recordEntity.tag !== "record") {
 		throw new Error("ICE: invalid record from compileType");
 	}
 
-	const map = new Map();
+	const map: Map<ir.TypeVariableID, ir.Type> = new Map();
 	for (let i = 0; i < t.type_arguments.length; i++) {
-		map.set(i, t.type_arguments[i]);
+		map.set(recordEntity.typeScope.typeVariableList[i], t.type_arguments[i]);
 	}
 
 	const initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }> = {};
@@ -1069,7 +1071,7 @@ function compileRecordLiteral(
 				secondLocation: initAST.fieldName.location,
 			});
 		}
-		const fieldDefinition = record.fields[fieldName];
+		const fieldDefinition = recordEntity.fields[fieldName];
 		if (fieldDefinition === undefined) {
 			throw new diagnostics.NoSuchFieldErr({
 				recordType: displayType(t, typeScope, context.sourceContext),
@@ -1106,12 +1108,12 @@ function compileRecordLiteral(
 	}
 
 	const fields: Record<string, ir.VariableID> = {};
-	for (let required in record.fields) {
+	for (let required in recordEntity.fields) {
 		if (initializations[required] === undefined) {
 			throw new diagnostics.UninitializedFieldErr({
 				recordType: displayType(t, typeScope, context.sourceContext),
 				missingFieldName: required,
-				definedLocation: record.fields[required].nameLocation,
+				definedLocation: recordEntity.fields[required].nameLocation,
 				initializerLocation: e.location,
 			});
 		}
@@ -1248,9 +1250,9 @@ function compileOperand(
 				throw new Error("ICE: non-record referenced by compound type");
 			}
 
-			const map = new Map();
+			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
 			for (let i = 0; i < base.type.type_arguments.length; i++) {
-				map.set(i, base.type.type_arguments[i]);
+				map.set(record.typeScope.typeVariableList[i], base.type.type_arguments[i]);
 			}
 
 			const field = record.fields[access.fieldName.name];
@@ -1756,7 +1758,7 @@ function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: 
 		// TODO: Text vs String vs Bytes?
 		return t.primitive;
 	} else if (t.tag == "type-variable") {
-		return "#" + typeScope.typeVariableDebugNames[t.id];
+		return "#" + t.id;
 	} else {
 		const _: never = t;
 		throw new Error("displayType: unhandled tag `" + t["tag"] + "`");
@@ -2015,7 +2017,7 @@ function compileFunctionSignature(
 	context: FunctionContext,
 } {
 	const signature: ir.FunctionSignature = {
-		type_parameters: typeScope.typeVariableDebugNames,
+		type_parameters: typeScope.typeVariableList,
 		constraint_parameters: typeScope.constraints.map(c => c.constraint),
 
 		parameters: [],
@@ -2125,7 +2127,7 @@ function compileInterfaceEntity(
 	programContext: ProgramContext,
 ) {
 	const compiled: ir.IRInterface = {
-		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
+		type_parameters: entity.typeScope.typeVariableList,
 		signatures: {},
 	};
 	const sourceContext = programContext.sourceContexts[entity.sourceID];
@@ -2147,7 +2149,7 @@ function compileRecordEntity(
 ) {
 	// Layout storage for this record.
 	program.records[entityName] = {
-		type_parameters: entity.ast.typeParameters.parameters.map(x => x.name),
+		type_parameters: entity.typeScope.typeVariableList,
 		fields: {},
 	};
 	for (const fieldName in entity.fields) {

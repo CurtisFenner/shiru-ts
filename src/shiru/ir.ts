@@ -68,7 +68,7 @@ export type FunctionID = string & { __brand: "function-id" };
 export type VariableID = string & { __brand: "variable-id" };
 export type RecordID = string & { __brand: "record-id" };
 export type InterfaceID = string & { __brand: "interface-id" };
-export type TypeVariableID = number & { __brand: "type-variable-id" };
+export type TypeVariableID = string & { __brand: "type-variable-id" };
 
 export interface VariableDefinition {
 	variable: VariableID,
@@ -162,8 +162,7 @@ export interface OpStaticCall {
 
 export interface OpDynamicCall {
 	tag: "op-dynamic-call",
-	constraint: InterfaceID,
-	subjects: Type[],
+	constraint: ConstraintParameter,
 
 	// The index of the function to call within the interface's signature list.
 	signature_id: string,
@@ -230,9 +229,9 @@ export type LeafOp = OpConst
 export type Op = OpBranch | OpProof | LeafOp;
 
 export interface IRInterface {
-	// type_parameters.length is the number of type arguments.
-	// The names in this array are currently unused.
-	type_parameters: string[],
+	/// The type-parameters of this interface.
+	/// All interfaces have at least one type-parameter (the "this" parameter).
+	type_parameters: TypeVariableID[],
 
 	/// N.B.: The type_parameters of each method is the same as the inteface's.
 	signatures: Record<string, FunctionSignature>,
@@ -270,9 +269,8 @@ export interface Postcondition {
 }
 
 export interface FunctionSignature {
-	/// The length of `type_parameters` indicates the number of type parameters.
-	/// The names in this array are currently unused.
-	type_parameters: string[],
+	/// The type-parameters bound by this signature.
+	type_parameters: TypeVariableID[],
 
 	/// A v-table is passed at runtime for each constraint in
 	/// `constraint_parameters`.
@@ -306,8 +304,7 @@ export interface RecordDefinition {
 	/// N.B.: Records are NOT existential types; while they have type
 	/// parameters, they do NOT hold constraint implementations. Instead, those
 	/// are passed by callers of methods.
-	// The names in this array are currently unused.
-	type_parameters: string[],
+	type_parameters: TypeVariableID[],
 
 	/// The fields defined by this record.
 	fields: {
@@ -316,32 +313,29 @@ export interface RecordDefinition {
 };
 
 export interface VTableFactory {
-	// The interface that this v-table factory is for.
-	interface: InterfaceID,
+	/// `provides` is the `ConstraintParameter` that this `VTableFactory`
+	/// provides.
+	provides: ConstraintParameter,
 
 	// The number of type arguments that the v-table factory takes.
 	// These are instantiated in `interface_arguments`.
-	for_any: TypeVariable[],
-
-	// The arguments to this interface. At least one must be provided.
-	// This array may reference variables in the `for_any` field.
-	subjects: Type[],
+	for_any: TypeVariableID[],
 
 	// The functions to call for the corresponding signatures in the interface.
-	entries: Record<string, VTableEntry>,
+	entries: Record<string, VTableFactoryEntry>,
 };
 
-export interface VTableEntry {
+export interface VTableFactoryEntry {
 	implementation: FunctionID,
 
-	/// `constraint_parameters` has one entry for each of the
+	/// `constraint_parameters` has one element for each of the
 	/// `constraint_parameters` in the `FunctionSignature` of the
 	/// implementating function.
 	/// A `number` element indicates the index within the _interface_'s
 	/// signature to use; a `ConstraintParameter` indicates a v-table to be
 	/// captured as a closure when this v-table entry is constructed. These
 	/// specifications may reference variables from the `for_any`
-	/// parameterization.
+	/// parameterization of the containing `VTableFactory`.
 	constraint_parameters: (number | ConstraintParameter)[],
 };
 
@@ -427,7 +421,7 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 	return false;
 }
 
-export function typeSubstitute(t: Type, map: Map<number, Type>): Type {
+export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 	if (t.tag === "type-compound") {
 		return {
 			tag: t.tag,

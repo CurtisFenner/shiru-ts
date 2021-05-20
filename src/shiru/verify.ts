@@ -276,10 +276,10 @@ function createFunctionIDs(
 }
 
 function createDynamicFunctionID(state: VerificationState, op: ir.OpDynamicCall): string[] {
-	const args = op.subjects.concat(op.signature_type_arguments).map(showType);
+	const args = op.constraint.subjects.concat(op.signature_type_arguments).map(showType);
 	// TODO: This is a bad way to do this, particularly because it makes
 	// encoding parametricity relationships harder.
-	const prefix = `dyn_${op.constraint}:${op.signature_id}[${args.join(",")}]`;
+	const prefix = `dyn_${op.constraint.interface}:${op.signature_id}[${args.join(",")}]`;
 	const fs = [];
 	for (let i = 0; i < op.destinations.length; i++) {
 		const f = `${prefix}:${i}`;
@@ -545,7 +545,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		return;
 	} else if (op.tag === "op-dynamic-call") {
 		const fs = createDynamicFunctionID(state, op);
-		const constraint = program.interfaces[op.constraint];
+		const constraint = program.interfaces[op.constraint.interface];
 		const signature = constraint.signatures[op.signature_id];
 
 		for (let precondition of signature.preconditions) {

@@ -28,10 +28,108 @@ interface VTable {
 
 interface VTableEntry {
 	implementation: ir.FunctionID,
-	closureConstraints: (VTable | { tag: "callsite", callsite: number })[],
+	closureConstraints: VTable[],
 }
 
-function matchTypeSingle(variables: Map<ir.TypeVariableID, ir.Type | null>, pattern: ir.Type, subject: ir.Type): boolean {
+interface ConstraintsContext {
+	// search:
+	global: Map<ir.InterfaceID, Record<string, ir.VTableFactory>>,
+
+	local: Map<ir.InterfaceID, {
+		// runtime:
+		vtable: VTable,
+		// search:
+		provides: ir.ConstraintParameter,
+	}[]>,
+}
+
+// N.B.: Only uses "runtime" fields.
+type VTableProducer = (c: ConstraintsContext, callsite: VTable[]) => VTable;
+
+/// `makeVTableProducer` scans the "search" fields of the context, and produces
+/// a `VTableProducer` that only consumes the "runtime" fields of the context.j
+/// The returned producer can thus be cached, avoiding the expensive search
+/// process, for subsequent calls which have different runtime contexts but the
+/// same search context.
+function makeVTableProducer(
+	// N.B.: Only uses "search" fields.
+	context: ConstraintsContext,
+	constraint: ir.ConstraintParameter,
+): VTableProducer {
+	const locals = context.local.get(constraint.interface);
+	if (locals !== undefined) {
+		for (let i = 0; i < locals.length; i++) {
+			const ti = i;
+			const local = locals[ti];
+			const matched = matchTypes([], local.provides.subjects, constraint.subjects);
+			if (matched !== null) {
+				return (runtimeCtx, callsite) => {
+					return runtimeCtx.local.get(constraint.interface)![ti].vtable;
+				};
+			}
+		}
+	}
+
+	const globals = context.global.get(constraint.interface);
+	if (globals !== undefined) {
+		for (const k in globals) {
+			const global = globals[k];
+			const matched = matchTypes(global.for_any, global.provides.subjects, constraint.subjects);
+			if (matched !== null) {
+				const entrySchema: Record<string, {
+					implementation: ir.FunctionID,
+					closureConstraints: (number | VTableProducer)[],
+				}> = {};
+				for (const s in global.entries) {
+					const entry = global.entries[s];
+					entrySchema[s] = {
+						implementation: entry.implementation,
+						closureConstraints: entry.constraint_parameters.map(x => {
+							if (typeof x === "number") {
+								return x;
+							}
+							return makeVTableProducer(context, {
+								interface: x.interface,
+								subjects: x.subjects.map(t => ir.typeSubstitute(t, matched)),
+							});
+						}),
+					};
+				}
+
+				return (runtimeCtx, callsite) => {
+					const entries: Record<string, VTableEntry> = {};
+					for (const s in entrySchema) {
+						const schema = entrySchema[s];
+						entries[s] = {
+							implementation: schema.implementation,
+							closureConstraints: schema.closureConstraints.map(x => {
+								if (typeof x === "number") {
+									return callsite[x];
+								} else {
+									return x(runtimeCtx, callsite);
+								}
+							}),
+						};
+					}
+
+					return {
+						tag: "dictionary",
+						entries,
+					};
+				};
+			}
+		}
+	}
+
+	throw new Error("Could not find an implementation of `"
+		+ JSON.stringify(constraint) + "`");
+}
+
+function matchTypeSingle(
+	variables: Map<ir.TypeVariableID, ir.Type | null>,
+	pattern: ir.Type,
+	subject: ir.Type,
+): boolean {
 	if (pattern.tag === "type-variable") {
 		const existing = variables.get(pattern.id);
 		if (existing !== undefined) {
@@ -73,14 +171,18 @@ function matchTypeSingle(variables: Map<ir.TypeVariableID, ir.Type | null>, patt
 /// possible instantiation of the variables named in `forAny` such that the
 /// subject is equal to the instantiated pattern, or `null` if there is no such
 /// instantiation.
-function matchTypes(forAny: ir.TypeVariable[], pattern: ir.Type[], subject: ir.Type[]): Map<ir.TypeVariableID, ir.Type> | null {
+function matchTypes(
+	forAny: ir.TypeVariableID[],
+	pattern: ir.Type[],
+	subject: ir.Type[],
+): Map<ir.TypeVariableID, ir.Type> | null {
 	if (pattern.length !== subject.length) {
 		throw new Error("invalid");
 	}
 
 	let mapping: Map<ir.TypeVariableID, ir.Type | null> = new Map();
 	for (let t of forAny) {
-		mapping.set(t.id, null);
+		mapping.set(t, null);
 	}
 
 	for (let i = 0; i < pattern.length; i++) {
@@ -108,76 +210,12 @@ function isTruthy(value: Value): boolean {
 	return value.boolean;
 }
 
-function satisfyConstraint(
-	globalVTableFactories: Record<string, ir.VTableFactory>,
-	constraint: ir.InterfaceID,
-	subjects: ir.Type[],
-	availableSignatures: ir.ConstraintParameter[],
-	// TODO: Separate this parameter so that this function's search can be
-	// memoized.
-	availableVTables: VTable[],
-): VTable {
-	// TODO: This is a very inefficient scan that is repeated at each call.
-	// It should instead be precomputed for each distinct callsite.
-
-	for (let i = 0; i < availableSignatures.length; i++) {
-		const signature = availableSignatures[i];
-		if (signature.interface !== constraint) {
-			continue;
-		}
-		const match = matchTypes([], signature.subjects, subjects);
-		if (match !== null) {
-			return availableVTables[i];
-		}
-	}
-
-	for (let global in globalVTableFactories) {
-		const factory = globalVTableFactories[global];
-		const match = matchTypes(factory.for_any, factory.subjects, subjects);
-		if (match !== null) {
-			// Collect the entries to use in the v-table.
-			const vtable: VTable = { tag: "dictionary", entries: {} };
-			for (let key in factory.entries) {
-				const entryPattern = factory.entries[key];
-				const entry: VTableEntry = {
-					implementation: entryPattern.implementation,
-					closureConstraints: [],
-				};
-				for (let c of entryPattern.constraint_parameters) {
-					if (typeof c === "number") {
-						entry.closureConstraints.push({
-							tag: "callsite",
-							callsite: c,
-						});
-					} else {
-						const subSubjects = c.subjects.map(a => ir.typeSubstitute(a, match));
-						const subVTableReference = satisfyConstraint(
-							globalVTableFactories, c.interface, subSubjects,
-							availableSignatures, availableVTables);
-						entry.closureConstraints.push(subVTableReference);
-					}
-				}
-				vtable.entries[key] = entry;
-			}
-			return vtable;
-		}
-	}
-
-	throw new Error("Could not find an implementation of `"
-		+ constraint + "` for " + JSON.stringify(subjects));
-}
-
 export type ForeignImpl = (args: Value[]) => Value[];
 
 interface Context {
 	program: ir.Program,
 	foreign: Record<string, ForeignImpl>,
-
-	/// `availableConstraints` describes the elements of `availableVTables`.
-	/// These are separated because `availableConstraints` remains constant as
-	/// execution evolves, but `availableVTables` may change constantly.
-	availableVTables: VTable[],
-	availableConstraints: ir.ConstraintParameter[],
+	constraintContext: ConstraintsContext,
 }
 
 class Frame {
@@ -224,12 +262,27 @@ export function interpret(
 	fn: ir.FunctionID,
 	args: Value[],
 	program: ir.Program,
-	foreign: Record<string, ForeignImpl>): Value[] {
+	foreign: Record<string, ForeignImpl>,
+): Value[] {
+	const constraintContext: ConstraintsContext = {
+		global: new Map(),
+		local: new Map(),
+	};
+	for (const k in program.globalVTableFactories) {
+		const factory = program.globalVTableFactories[k];
+
+		let group = constraintContext.global.get(factory.provides.interface);
+		if (group === undefined) {
+			group = {};
+			constraintContext.global.set(factory.provides.interface, group);
+		}
+		group[k] = factory;
+	}
+
 	const context: Context = {
 		program,
 		foreign,
-		availableVTables: [],
-		availableConstraints: [],
+		constraintContext,
 	};
 
 	const iter = interpretCall(fn, args, [], context);
@@ -243,7 +296,7 @@ export function interpret(
 
 /// Execute a Shiru program until termination, returning the result from the
 /// given `entry` function.
-export function* interpretCall(
+function* interpretCall(
 	fnName: ir.FunctionID,
 	args: Value[],
 	vtables: VTable[],
@@ -259,9 +312,24 @@ export function* interpretCall(
 	}
 	const newContext: Context = {
 		...context,
-		availableConstraints: fn.signature.constraint_parameters,
-		availableVTables: vtables,
+		constraintContext: {
+			global: context.constraintContext.global,
+			local: new Map(),
+		},
 	};
+	for (let i = 0; i < vtables.length; i++) {
+		const vtable = vtables[i];
+		const constraint = fn.signature.constraint_parameters[i];
+		let group = newContext.constraintContext.local.get(constraint.interface);
+		if (group === undefined) {
+			group = [];
+			newContext.constraintContext.local.set(constraint.interface, group);
+		}
+		group.push({
+			vtable,
+			provides: constraint,
+		});
+	}
 
 	const frame: Frame = new Frame();
 	for (let i = 0; i < args.length; i++) {
@@ -320,17 +388,20 @@ function* interpretOp(
 		const args = op.arguments.map(variable => frame.load(variable));
 
 		const constraintArgs: VTable[] = [];
-		const fn = context.program.functions[op.function];
-		const instantiation: Map<number, ir.Type> = new Map();
+		const signature = context.program.functions[op.function].signature;
+		const instantiation: Map<ir.TypeVariableID, ir.Type> = new Map();
 		for (let i = 0; i < op.type_arguments.length; i++) {
-			instantiation.set(i, op.type_arguments[i]);
+			instantiation.set(signature.type_parameters[i], op.type_arguments[i]);
 		}
-		for (let constraintTemplate of fn.signature.constraint_parameters) {
+		for (let constraintTemplate of signature.constraint_parameters) {
 			const subjects = constraintTemplate.subjects.map(t => ir.typeSubstitute(t, instantiation));
-			const vtable = satisfyConstraint(
-				context.program.globalVTableFactories,
-				constraintTemplate.interface, subjects,
-				context.availableConstraints, context.availableVTables);
+			const constraint: ir.ConstraintParameter = {
+				interface: constraintTemplate.interface,
+				subjects,
+			}
+
+			const vtableProducer = makeVTableProducer(context.constraintContext, constraint);
+			const vtable = vtableProducer(context.constraintContext, []);
 			constraintArgs.push(vtable);
 		}
 
@@ -358,19 +429,16 @@ function* interpretOp(
 		return result;
 	} else if (op.tag === "op-dynamic-call") {
 		const args = op.arguments.map(arg => frame.load(arg));
-		const vtable = satisfyConstraint(context.program.globalVTableFactories,
-			op.constraint, op.subjects,
-			context.availableConstraints, context.availableVTables);
+		const vtableProducer = makeVTableProducer(context.constraintContext, op.constraint);
+		const signature = context.program.interfaces[op.constraint.interface].signatures[op.signature_id];
+		const callsite: VTable[] = [];
+		for (const constraint of signature.constraint_parameters) {
+			throw new Error("TODO: Allow additional constraint parameters");
+		}
+		const vtable = vtableProducer(context.constraintContext, callsite);
 
 		const spec = vtable.entries[op.signature_id];
-		const constraintArgs = [];
-		for (let constraint of spec.closureConstraints) {
-			if (constraint.tag === "callsite") {
-				throw new Error("TODO: Retrieve callsite constraint like static call");
-			} else {
-				constraintArgs.push(constraint);
-			}
-		}
+		const constraintArgs = spec.closureConstraints;
 
 		const result = yield* interpretCall(spec.implementation, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {
@@ -419,7 +487,7 @@ function showType(t: ir.Type, context: { typeVariables: string[] }): string {
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
 	} else {
-		return "#" + context.typeVariables[t.id];
+		return "#" + t.id;
 	}
 }
 

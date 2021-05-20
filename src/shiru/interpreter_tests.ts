@@ -7,7 +7,7 @@ import * as semantics from "./semantics";
 
 export const UNKNOWN_LOCATION: ir.SourceLocation = { fileID: "unknown", offset: 0, length: 0 };
 
-export function classType(name: string, ...args: ir.Type[]): ir.Type {
+export function typeCompound(name: string, ...args: ir.Type[]): ir.Type {
 	return {
 		tag: "type-compound",
 		record: name as ir.RecordID,
@@ -15,7 +15,7 @@ export function classType(name: string, ...args: ir.Type[]): ir.Type {
 	};
 }
 
-export function variableType(n: number): ir.TypeVariable {
+export function typeVariable(n: string): ir.TypeVariable {
 	return {
 		tag: "type-variable",
 		id: n as ir.TypeVariableID,
@@ -82,8 +82,10 @@ export function opDynamicCall(
 ): ir.OpDynamicCall {
 	return {
 		tag: "op-dynamic-call",
-		constraint: i as ir.InterfaceID,
-		subjects: its,
+		constraint: {
+			interface: i as ir.InterfaceID,
+			subjects: its,
+		},
 		signature_id: f,
 		signature_type_arguments: ts,
 		destinations: dst.map(x => ({ variable: x[0] as ir.VariableID, type: x[1] })),
@@ -228,8 +230,10 @@ export const tests = {
 		const program: ir.Program = {
 			globalVTableFactories: {
 				"FortyTwoIsFavorite": {
-					interface: "Favorite" as ir.InterfaceID,
-					subjects: [classType("FortyTwo")],
+					provides: {
+						interface: "Favorite" as ir.InterfaceID,
+						subjects: [typeCompound("FortyTwo")],
+					},
 					for_any: [],
 					entries: {
 						"get": {
@@ -269,7 +273,7 @@ export const tests = {
 						// No constraints are passed in this invocation.
 						opDynamicCall({
 							i: "Favorite",
-							its: [classType("FortyTwo")],
+							its: [typeCompound("FortyTwo")],
 							f: "get",
 							ts: [],
 							args: [],
@@ -281,7 +285,7 @@ export const tests = {
 			},
 			interfaces: {
 				"Favorite": {
-					type_parameters: ["#This"],
+					type_parameters: ["#This" as ir.TypeVariableID],
 					signatures: {
 						"get": {
 							type_parameters: [],
@@ -313,8 +317,10 @@ export const tests = {
 		const program: ir.Program = {
 			globalVTableFactories: {
 				"ThirteenIsFavorite": {
-					interface: "Favorite" as ir.InterfaceID,
-					subjects: [classType("Thirteen")],
+					provides: {
+						interface: "Favorite" as ir.InterfaceID,
+						subjects: [typeCompound("Thirteen")],
+					},
 					for_any: [],
 					entries: {
 						"get": {
@@ -345,11 +351,11 @@ export const tests = {
 						// extracted.
 						// The Favorite v-table will be a runtime argument to
 						// this function.
-						type_parameters: ["#T"],
+						type_parameters: ["T" as ir.TypeVariableID],
 						constraint_parameters: [
 							{
 								interface: "Favorite" as ir.InterfaceID,
-								subjects: [variableType(0)],
+								subjects: [typeVariable("T")],
 							}
 						],
 						parameters: [],
@@ -360,7 +366,7 @@ export const tests = {
 					body: opBlock(
 						opDynamicCall({
 							i: "Favorite",
-							its: [variableType(0)],
+							its: [typeVariable("T")],
 							f: "get",
 							ts: [],
 							args: [],
@@ -385,7 +391,7 @@ export const tests = {
 							f: "favoriteOf",
 							dst: [["favorite", ir.T_INT]],
 							args: [],
-							ts: [classType("Thirteen")],
+							ts: [typeCompound("Thirteen")],
 						}),
 						opReturn("favorite"),
 					),
@@ -393,7 +399,7 @@ export const tests = {
 			},
 			interfaces: {
 				"Favorite": {
-					type_parameters: ["#This"],
+					type_parameters: ["#This" as ir.TypeVariableID],
 					signatures: {
 						"get": {
 							type_parameters: [],
@@ -425,8 +431,10 @@ export const tests = {
 		const program: ir.Program = {
 			globalVTableFactories: {
 				"SevenIsFavorite": {
-					interface: "Favorite" as ir.InterfaceID,
-					subjects: [classType("Seven")],
+					provides: {
+						interface: "Favorite" as ir.InterfaceID,
+						subjects: [typeCompound("Seven")],
+					},
 					for_any: [],
 					entries: {
 						"get": {
@@ -436,16 +444,18 @@ export const tests = {
 					},
 				},
 				"SquarerIsFavorite": {
-					interface: "Favorite" as ir.InterfaceID,
-					subjects: [classType("Squarer", variableType(0))],
-					for_any: [variableType(0)],
+					for_any: ["T" as ir.TypeVariableID],
+					provides: {
+						interface: "Favorite" as ir.InterfaceID,
+						subjects: [typeCompound("Squarer", typeVariable("T"))],
+					},
 					entries: {
 						"get": {
 							implementation: "squareFavorite" as ir.FunctionID,
 							constraint_parameters: [
 								{
 									interface: "Favorite" as ir.InterfaceID,
-									subjects: [variableType(0)]
+									subjects: [typeVariable("T")]
 								},
 							],
 						},
@@ -455,11 +465,11 @@ export const tests = {
 			functions: {
 				"squareFavorite": {
 					signature: {
-						type_parameters: ["#F"],
+						type_parameters: ["#F" as ir.TypeVariableID],
 						constraint_parameters: [
 							{
 								interface: "Favorite" as ir.InterfaceID,
-								subjects: [variableType(0)],
+								subjects: [typeVariable("#F")],
 							}
 						],
 						parameters: [],
@@ -469,7 +479,7 @@ export const tests = {
 					},
 					body: opBlock(
 						opDynamicCall({
-							i: "Favorite", its: [variableType(0)],
+							i: "Favorite", its: [typeVariable("#F")],
 							f: "get", dst: [["fav", ir.T_INT]], args: [], ts: [],
 						}),
 						opForeign({ f: "int*", dst: [["fav", ir.T_INT]], args: ["fav", "fav"] }),
@@ -496,11 +506,11 @@ export const tests = {
 						// extracted.
 						// The Favorite v-table will be a runtime argument to
 						// this function.
-						type_parameters: ["#T"],
+						type_parameters: ["#T" as ir.TypeVariableID],
 						constraint_parameters: [
 							{
 								interface: "Favorite" as ir.InterfaceID,
-								subjects: [variableType(0)],
+								subjects: [typeVariable("#T")],
 							},
 						],
 						parameters: [],
@@ -511,7 +521,7 @@ export const tests = {
 					body: opBlock(
 						opDynamicCall({
 							i: "Favorite",
-							its: [variableType(0)],
+							its: [typeVariable("#T")],
 							f: "get",
 							ts: [],
 							args: [],
@@ -533,7 +543,7 @@ export const tests = {
 						// No constraints are passed in this invocation.
 						opStaticCall({
 							f: "favoriteOf",
-							ts: [classType("Squarer", classType("Seven"))],
+							ts: [typeCompound("Squarer", typeCompound("Seven"))],
 							args: [],
 							dst: [["favorite", ir.T_INT]],
 						}),
@@ -543,7 +553,7 @@ export const tests = {
 			},
 			interfaces: {
 				"Favorite": {
-					type_parameters: ["#This"],
+					type_parameters: ["#This" as ir.TypeVariableID],
 					signatures: {
 						"get": {
 							type_parameters: [],
@@ -562,7 +572,7 @@ export const tests = {
 					fields: {},
 				},
 				"FavoriteSquarer": {
-					type_parameters: ["#X"],
+					type_parameters: ["#X" as ir.TypeVariableID],
 					fields: {},
 				},
 			},
@@ -691,5 +701,151 @@ export const tests = {
 			{ sort: "int", int: 13 },
 			{ sort: "int", int: 17 },
 		]);
+	},
+	"callsite-dyn-call"() {
+		const program: ir.Program = {
+			interfaces: {
+				"AbstractProducer": {
+					type_parameters: ["This" as ir.TypeVariableID],
+					signatures: {
+						"abstractProduce": {
+							type_parameters: ["X" as ir.TypeVariableID, "T" as ir.TypeVariableID],
+							constraint_parameters: [
+								{
+									interface: "Producer" as ir.InterfaceID,
+									subjects: [typeVariable("X"), typeVariable("T")],
+								},
+							],
+							parameters: [],
+							return_types: [typeVariable("T")],
+							preconditions: [],
+							postconditions: [],
+						},
+					},
+				},
+				"Producer": {
+					type_parameters: ["X" as ir.TypeVariableID, "T" as ir.TypeVariableID],
+					signatures: {
+						"produce": {
+							type_parameters: [],
+							constraint_parameters: [],
+							return_types: [typeVariable("T")],
+							parameters: [],
+							preconditions: [],
+							postconditions: [],
+						},
+					},
+				},
+			},
+			globalVTableFactories: {
+				"AbstractProducerImpl_is_AbstractProducer": {
+					for_any: [],
+					provides: {
+						interface: "AbstractProducer" as ir.InterfaceID,
+						subjects: [typeCompound("AbstractProducerImpl")],
+					},
+					entries: {
+						"abstractProduce": {
+							implementation: "abstractProducer" as ir.FunctionID,
+							constraint_parameters: [0],
+						},
+					},
+				},
+				"IntProducer_is_Producer": {
+					for_any: [],
+					provides: {
+						interface: "Producer" as ir.InterfaceID,
+						subjects: [typeCompound("IntProducer"), ir.T_INT],
+					},
+					entries: {
+						"produce": {
+							implementation: "produceInt" as ir.FunctionID,
+							constraint_parameters: [],
+						},
+					},
+				},
+			},
+			records: {
+				"AbstractProducerImpl": {
+					type_parameters: [],
+					fields: {},
+				},
+				"IntProducer": {
+					type_parameters: [],
+					fields: {},
+				},
+			},
+			functions: {
+				"produceInt": {
+					signature: {
+						type_parameters: [],
+						parameters: [],
+						constraint_parameters: [],
+						return_types: [ir.T_INT],
+						preconditions: [],
+						postconditions: [],
+					},
+					body: {
+						ops: [
+							opConst("r", 17),
+							opReturn("r"),
+						],
+					},
+				},
+				"abstractProducer": {
+					signature: {
+						type_parameters: ["X" as ir.TypeVariableID, "T" as ir.TypeVariableID],
+						parameters: [],
+						constraint_parameters: [
+							{
+								interface: "Producer" as ir.InterfaceID,
+								subjects: [typeVariable("X"), typeVariable("T")],
+							},
+						],
+						return_types: [typeVariable("T")],
+						preconditions: [],
+						postconditions: [],
+					},
+					body: {
+						ops: [
+							opDynamicCall({
+								i: "Producer",
+								its: [typeVariable("X"), typeVariable("T")],
+								f: "produce",
+								ts: [typeVariable("X"), typeVariable("T")],
+								dst: [["r", typeVariable("T")]],
+								args: [],
+							}),
+							opReturn("r"),
+						],
+					},
+				},
+				"main": {
+					signature: {
+						type_parameters: [],
+						parameters: [],
+						constraint_parameters: [],
+						return_types: [ir.T_INT],
+						preconditions: [],
+						postconditions: [],
+					},
+					body: {
+						ops: [
+							opStaticCall({
+								f: "abstractProducer",
+								ts: [typeCompound("IntProducer"), ir.T_INT],
+								args: [],
+								dst: [["r", ir.T_INT]],
+							}),
+							opReturn("r"),
+						],
+					},
+				},
+			},
+			foreign: {},
+		};
+
+		const result = interpret("main" as ir.FunctionID, [], program, {});
+		assert(result, "is equal to", [{ sort: "int", int: 17 }]);
 	},
 };

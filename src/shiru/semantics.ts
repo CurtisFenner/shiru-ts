@@ -2126,8 +2126,9 @@ function compileInterfaceEntity(
 	entityName: string,
 	programContext: ProgramContext,
 ) {
+	const thisType = entity.typeScope.thisType as ir.TypeVariable;
 	const compiled: ir.IRInterface = {
-		type_parameters: entity.typeScope.typeVariableList,
+		type_parameters: [thisType.id].concat(entity.typeScope.typeVariableList),
 		signatures: {},
 	};
 	const sourceContext = programContext.sourceContexts[entity.sourceID];

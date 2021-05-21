@@ -38,7 +38,7 @@ interface RecordEntityDef {
 
 	/// `typeScope` indicates the type-parameters (and their available
 	/// constraints) within each member of `fields`, `implements`, and `fns`.
-	typeScope: TypeScope,
+	typeScope: TypeScopeI<ir.TypeCompound>,
 	fields: Record<string, FieldBinding>,
 
 	/// The set of constraints that this entity is the method-subject of.
@@ -53,7 +53,7 @@ interface InterfaceEntityDef {
 	sourceID: string,
 	bindingLocation: ir.SourceLocation,
 
-	typeScope: TypeScope,
+	typeScope: TypeScopeI<ir.TypeVariable>,
 	fns: Record<string, InterfaceFnBinding>,
 }
 
@@ -222,8 +222,8 @@ interface ConstraintBinding {
 	location: ir.SourceLocation,
 }
 
-interface TypeScope {
-	thisType: ir.Type,
+interface TypeScopeI<This> {
+	thisType: This,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
 	typeVariables: Map<ir.TypeVariableID, TypeVariableBinding>,
@@ -231,6 +231,8 @@ interface TypeScope {
 
 	constraints: ConstraintBinding[],
 }
+
+type TypeScope = TypeScopeI<ir.Type>;
 
 function resolveEntity(
 	t: grammar.TypeNamed,
@@ -301,9 +303,8 @@ function compileConstraint(
 		});
 	}
 
-	const subjects = [methodSubject];
-	subjects.push(...c.arguments.map(a =>
-		compileType(a, scope, sourceContext, checkConstraints)));
+	const argumentSubjects = c.arguments.map(a =>
+		compileType(a, scope, sourceContext, checkConstraints));
 
 	if (checkConstraints === "check") {
 		const expectedLocations = [];
@@ -324,19 +325,13 @@ function compileConstraint(
 			});
 		}
 
-		const map: Map<ir.TypeVariableID, ir.Type> = new Map();
-		for (let i = 0; i < subjects.length; i++) {
-			map.set(interfaceEntity.typeScope.typeVariableList[i], subjects[i]);
-		}
-		for (const requiredConstraint of interfaceEntity.typeScope.constraints) {
-			const instantiated: ir.ConstraintParameter = {
-				interface: requiredConstraint.constraint.interface,
-				subjects: requiredConstraint.constraint.subjects.map(s => {
-					return ir.typeSubstitute(s, map);
-				}),
-			};
+		const instantiation = ir.typeArgumentsMap(interfaceEntity.typeScope.typeVariableList, argumentSubjects);
+		instantiation.set(interfaceEntity.typeScope.thisType.id, methodSubject);
+		for (const requirementBinding of interfaceEntity.typeScope.constraints) {
+			const genericConstraint = requirementBinding.constraint;
+			const instantiated: ir.ConstraintParameter = ir.constraintSubstitute(genericConstraint, instantiation);
 			checkConstraintSatisfied(instantiated, scope, sourceContext, {
-				constraintDeclaredAt: requiredConstraint.location,
+				constraintDeclaredAt: requirementBinding.location,
 				neededAt: c.location,
 			});
 		}
@@ -344,7 +339,7 @@ function compileConstraint(
 
 	return {
 		interface: canonicalName as ir.InterfaceID,
-		subjects: subjects,
+		subjects: [methodSubject, ...argumentSubjects],
 	};
 }
 
@@ -385,12 +380,9 @@ function checkConstraintSatisfied(
 			if (implementation.constraint.interface !== requiredConstraint.interface) {
 				continue;
 			}
-			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
-			for (let i = 0; i < methodSubject.type_arguments.length; i++) {
-				map.set(recordEntity.typeScope.typeVariableList[i], methodSubject.type_arguments[i]);
-			}
-			const provided = implementation.constraint.subjects.map(s => ir.typeSubstitute(s, map));
-			if (allEqualTypes(provided, requiredConstraint.subjects)) {
+			const instantiation = ir.typeArgumentsMap(recordEntity.typeScope.typeVariableList, methodSubject.type_arguments);
+			const provided = ir.constraintSubstitute(implementation.constraint, instantiation);
+			if (allEqualTypes(provided.subjects, requiredConstraint.subjects)) {
 				return;
 			}
 		}
@@ -493,19 +485,11 @@ function compileType(
 				});
 			}
 
-			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
-			for (let i = 0; i < typeArguments.length; i++) {
-				map.set(entity.typeScope.typeVariableList[i], typeArguments[i]);
-			}
-			for (let requiredConstraint of entity.typeScope.constraints) {
-				const instantiated: ir.ConstraintParameter = {
-					interface: requiredConstraint.constraint.interface,
-					subjects: requiredConstraint.constraint.subjects.map(s => {
-						return ir.typeSubstitute(s, map);
-					}),
-				};
+			const instantiation = ir.typeArgumentsMap(entity.typeScope.typeVariableList, typeArguments);
+			for (let requirementBinding of entity.typeScope.constraints) {
+				const instantiated = ir.constraintSubstitute(requirementBinding.constraint, instantiation);
 				checkConstraintSatisfied(instantiated, scope, sourceContext, {
-					constraintDeclaredAt: requiredConstraint.location,
+					constraintDeclaredAt: requirementBinding.location,
 					neededAt: t.location,
 				});
 			}
@@ -985,12 +969,7 @@ function compileCallExpression(
 		});
 	}
 
-	const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
-	for (let i = 0; i < baseType.type_arguments.length; i++) {
-		const id = record.typeScope.typeVariableList[i];
-		typeArgumentMapping.set(id, baseType.type_arguments[i]);
-	}
-
+	const typeArgumentMapping = ir.typeArgumentsMap(record.typeScope.typeVariableList, baseType.type_arguments);
 	const argumentSources = [];
 	for (let i = 0; i < argValues.length; i++) {
 		const value = argValues[i];
@@ -1056,11 +1035,7 @@ function compileRecordLiteral(
 		throw new Error("ICE: invalid record from compileType");
 	}
 
-	const map: Map<ir.TypeVariableID, ir.Type> = new Map();
-	for (let i = 0; i < t.type_arguments.length; i++) {
-		map.set(recordEntity.typeScope.typeVariableList[i], t.type_arguments[i]);
-	}
-
+	const instantiation = ir.typeArgumentsMap(recordEntity.typeScope.typeVariableList, t.type_arguments);
 	const initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }> = {};
 	for (let initAST of e.initializations) {
 		const fieldName = initAST.fieldName.name;
@@ -1090,7 +1065,7 @@ function compileRecordLiteral(
 			});
 		}
 		const givenType = value.values[0].type;
-		const expectedType = ir.typeSubstitute(fieldDefinition.t, map);
+		const expectedType = ir.typeSubstitute(fieldDefinition.t, instantiation);
 
 		if (!ir.equalTypes(expectedType, givenType)) {
 			throw new diagnostics.TypeMismatchErr({
@@ -1250,11 +1225,7 @@ function compileOperand(
 				throw new Error("ICE: non-record referenced by compound type");
 			}
 
-			const map: Map<ir.TypeVariableID, ir.Type> = new Map();
-			for (let i = 0; i < base.type.type_arguments.length; i++) {
-				map.set(record.typeScope.typeVariableList[i], base.type.type_arguments[i]);
-			}
-
+			const instantiation = ir.typeArgumentsMap(record.typeScope.typeVariableList, base.type.type_arguments);
 			const field = record.fields[access.fieldName.name];
 			if (field === undefined) {
 				throw new diagnostics.NoSuchFieldErr({
@@ -1265,7 +1236,7 @@ function compileOperand(
 				});
 			}
 
-			const fieldType = ir.typeSubstitute(field.t, map);
+			const fieldType = ir.typeSubstitute(field.t, instantiation);
 			const location = ir.locationSpan(value.location, access.fieldName.location);
 			const destination = {
 				variable: stack.uniqueID("field"),

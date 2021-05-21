@@ -389,10 +389,7 @@ function* interpretOp(
 
 		const constraintArgs: VTable[] = [];
 		const signature = context.program.functions[op.function].signature;
-		const instantiation: Map<ir.TypeVariableID, ir.Type> = new Map();
-		for (let i = 0; i < op.type_arguments.length; i++) {
-			instantiation.set(signature.type_parameters[i], op.type_arguments[i]);
-		}
+		const instantiation = ir.typeArgumentsMap(signature.type_parameters, op.type_arguments);
 		for (let constraintTemplate of signature.constraint_parameters) {
 			const subjects = constraintTemplate.subjects.map(t => ir.typeSubstitute(t, instantiation));
 			const constraint: ir.ConstraintParameter = {
@@ -432,8 +429,12 @@ function* interpretOp(
 		const vtableProducer = makeVTableProducer(context.constraintContext, op.constraint);
 		const signature = context.program.interfaces[op.constraint.interface].signatures[op.signature_id];
 		const callsite: VTable[] = [];
-		for (const constraint of signature.constraint_parameters) {
-			throw new Error("TODO: Allow additional constraint parameters");
+		const substitutionMap = ir.typeArgumentsMap(signature.type_parameters, op.signature_type_arguments);
+		for (const genericConstraint of signature.constraint_parameters) {
+			const neededConstraint = ir.constraintSubstitute(genericConstraint, substitutionMap);
+			const argumentProducer = makeVTableProducer(context.constraintContext, neededConstraint);
+			const callsiteVTable = argumentProducer(context.constraintContext, []);
+			callsite.push(callsiteVTable);
 		}
 		const vtable = vtableProducer(context.constraintContext, callsite);
 

@@ -812,7 +812,7 @@ export const tests = {
 								i: "Producer",
 								its: [typeVariable("X"), typeVariable("T")],
 								f: "produce",
-								ts: [typeVariable("X"), typeVariable("T")],
+								ts: [],
 								dst: [["r", typeVariable("T")]],
 								args: [],
 							}),
@@ -831,8 +831,10 @@ export const tests = {
 					},
 					body: {
 						ops: [
-							opStaticCall({
-								f: "abstractProducer",
+							opDynamicCall({
+								i: "AbstractProducer",
+								its: [typeCompound("AbstractProducerImpl")],
+								f: "abstractProduce",
 								ts: [typeCompound("IntProducer"), ir.T_INT],
 								args: [],
 								dst: [["r", ir.T_INT]],

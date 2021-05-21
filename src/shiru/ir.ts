@@ -313,13 +313,13 @@ export interface RecordDefinition {
 };
 
 export interface VTableFactory {
-	/// `provides` is the `ConstraintParameter` that this `VTableFactory`
-	/// provides.
-	provides: ConstraintParameter,
-
 	// The number of type arguments that the v-table factory takes.
 	// These are instantiated in `interface_arguments`.
 	for_any: TypeVariableID[],
+
+	/// `provides` is the `ConstraintParameter` that this `VTableFactory`
+	/// provides.
+	provides: ConstraintParameter,
 
 	// The functions to call for the corresponding signatures in the interface.
 	entries: Record<string, VTableFactoryEntry>,
@@ -353,51 +353,8 @@ export interface Program {
 	globalVTableFactories: Record<string, VTableFactory>,
 };
 
-type Problem = {
-	tag: string,
-	message: string,
-};
-
-export function typecheckProgram(program: Program): Problem[] {
-	const problems: Problem[] = [];
-
-	// 1) Type check all functions
-	for (let k in program.functions) {
-		problems.push(...typecheckFunction(program, k));
-	}
-
-	// 2) Type check all interfaces
-	for (let k in program.interfaces) {
-		problems.push(...typecheckInterface(program, k));
-	}
-
-	return problems;
-}
-
 export function opTerminates(op: Op) {
 	return op.tag === "op-return" || op.tag === "op-unreachable";
-}
-
-function typecheckFunction(program: Program, fid: string): Problem[] {
-	const fDef = program.functions[fid];
-	const body = fDef.body;
-
-	const problems = [];
-
-	if (body.ops.length === 0 || !opTerminates(body.ops[body.ops.length - 1])) {
-		problems.push({
-			tag: "missing-return",
-			message: "Function `" + fid + "` does not end with op-return/op-unreachable",
-		});
-	}
-
-	throw new Error("TODO");
-	return problems;
-}
-
-function typecheckInterface(program: Program, iid: string): Problem[] {
-	const iDef = program.interfaces[iid];
-	throw new Error("TODO");
 }
 
 export function equalTypes(pattern: Type, passed: Type): boolean {
@@ -421,6 +378,20 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 	return false;
 }
 
+export function typeArgumentsMap(
+	parameters: TypeVariableID[],
+	args: Type[],
+): Map<TypeVariableID, Type> {
+	if (parameters.length !== args.length) {
+		throw new Error("typeArgumentsMap: length mismatch");
+	}
+	const map: Map<TypeVariableID, Type> = new Map();
+	for (let i = 0; i < parameters.length; i++) {
+		map.set(parameters[i], args[i]);
+	}
+	return map;
+}
+
 export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 	if (t.tag === "type-compound") {
 		return {
@@ -437,5 +408,17 @@ export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 		}
 		return t;
 	}
+
+	const _: never = t;
 	throw new Error(`unhandled type tag \`${t}\`.`);
+}
+
+export function constraintSubstitute(
+	c: ConstraintParameter,
+	map: Map<TypeVariableID, Type>,
+): ConstraintParameter {
+	return {
+		interface: c.interface,
+		subjects: c.subjects.map(x => typeSubstitute(x, map)),
+	};
 }

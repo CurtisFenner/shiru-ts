@@ -20,6 +20,10 @@ interface FnBinding {
 	returns: TypeBinding[],
 	ast: grammar.Fn,
 
+	// The list of ALL type parameters of the function, in the order to appear
+	// in a op-static-call of the function.
+	typeParameterList: ir.TypeVariableID[],
+
 	id: ir.FunctionID,
 }
 
@@ -71,18 +75,18 @@ interface PackageBinding {
 
 /// `ProgramContext` is built up over time to include the "signature"
 /// information needed to check references of one entity by another.
-interface ProgramContext {
+class ProgramContext {
 	/// `canonicalByQualifiedName` is map from package name to entity name to
 	/// canonical name.
-	canonicalByQualifiedName: Record<string, Record<string, string>>,
+	canonicalByQualifiedName: Record<string, Record<string, string>> = {};
 
 	/// `entitiesByCanonical` identifies information of the entity with the
 	/// given "canonical" name.of the entity.
-	entitiesByCanonical: Record<string, EntityDef>,
+	entitiesByCanonical: Record<string, EntityDef> = {};
 
-	foreignSignatures: Record<string, ir.FunctionSignature>,
+	foreignSignatures: Record<string, ir.FunctionSignature> = {};
 
-	sourceContexts: Record<string, SourceContext>,
+	sourceContexts: Record<string, SourceContext> = {};
 
 	/// `uncheckedTypes` and `uncheckedConstraints` are initially `[]`, and
 	/// become `null` once  enough members have been collected to check that
@@ -91,13 +95,21 @@ interface ProgramContext {
 		t: grammar.Type,
 		scope: TypeScope,
 		sourceContext: SourceContext,
-	}[],
+	}[] = [];
 	uncheckedConstraints: null | {
 		c: grammar.TypeNamed,
 		methodSubject: ir.Type,
 		sourceContext: Readonly<SourceContext>,
 		scope: TypeScope,
-	}[],
+	}[] = [];
+
+	getRecord(recordID: ir.RecordID): RecordEntityDef {
+		const entity = this.entitiesByCanonical[recordID];
+		if (entity === undefined || entity.tag !== "record") {
+			throw new Error("ICE: unexpected non-record ID `" + recordID + "`");
+		}
+		return entity;
+	}
 }
 
 /// `SourceContext` represents the "view" of the program from the perspective of
@@ -120,15 +132,8 @@ interface SourceContext {
 
 // Collects the set of entities defined across all given sources.
 function collectAllEntities(sources: Record<string, grammar.Source>) {
-	const programContext: ProgramContext = {
-		canonicalByQualifiedName: {},
-		entitiesByCanonical: {},
-		foreignSignatures: getBasicForeign(),
-		sourceContexts: {},
-
-		uncheckedTypes: [],
-		uncheckedConstraints: [],
-	};
+	const programContext = new ProgramContext();
+	programContext.foreignSignatures = getBasicForeign();
 
 	for (const sourceID in sources) {
 		const source = sources[sourceID];
@@ -372,10 +377,7 @@ function checkConstraintSatisfied(
 		throw new Error("ICE: Constraint requires at least one subject.");
 	} else if (methodSubject.tag === "type-compound") {
 		const programContext = sourceContext.programContext;
-		const recordEntity = programContext.entitiesByCanonical[methodSubject.record];
-		if (recordEntity.tag !== "record") {
-			throw new Error("ICE: non-record referenced by record type");
-		}
+		const recordEntity = programContext.getRecord(methodSubject.record);
 		for (const implementation of recordEntity.implements) {
 			if (implementation.constraint.interface !== requiredConstraint.interface) {
 				continue;
@@ -404,7 +406,7 @@ function checkConstraintSatisfied(
 	}
 
 	throw new diagnostics.TypesDontSatisfyConstraintErr({
-		neededConstraint: displayConstraint(requiredConstraint, typeScope, sourceContext),
+		neededConstraint: displayConstraint(requiredConstraint),
 		neededLocation: neededAt,
 		constraintLocation: constraintDeclaredAt,
 	});
@@ -735,6 +737,7 @@ function collectMembers(programContext: ProgramContext, entityName: string) {
 				returns: returnTypes,
 				ast: fn,
 				id: canonicalFunctionName(entityName, fnName),
+				typeParameterList: entity.typeScope.typeVariableList,
 			};
 		}
 
@@ -918,43 +921,17 @@ interface ValueInfo {
 	location: ir.SourceLocation,
 }
 
-function getRecord(context: FunctionContext, record: ir.RecordID): RecordEntityDef {
-	const entity = context.sourceContext.programContext.entitiesByCanonical[record];
-	if (entity.tag !== "record") {
-		throw new Error("ICE: Bad record ID");
-	}
-	return entity;
-}
-
-function compileCallExpression(
-	e: grammar.ExpressionCall,
+function compileCall(
 	ops: ir.Op[],
 	stack: VariableStack,
-	typeScope: TypeScope,
-	context: FunctionContext,
+	args: ValueInfo[],
+	fn: FnBinding,
+	typeArgumentMapping: Map<ir.TypeVariableID, ir.Type>,
+	location: ir.SourceLocation,
 ): ValueInfo {
-	const baseType = compileType(e.t, typeScope, context.sourceContext, "check");
-	if (baseType.tag !== "type-compound") {
-		// TODO: Handle dynamic dispatch on type parameters.
-		throw new diagnostics.CallOnNonCompoundErr({
-			baseType: displayType(baseType, typeScope, context.sourceContext),
-			location: e.t.location,
-		});
-	}
-
-	const record = getRecord(context, baseType.record);
-	const fn = record.fns[e.methodName.name];
-	if (fn === undefined) {
-		throw new diagnostics.NoSuchFnErr({
-			baseType: displayType(baseType, typeScope, context.sourceContext),
-			methodName: e.methodName.name,
-			methodNameLocation: e.methodName.location,
-		});
-	}
 
 	const argValues = [];
-	for (let arg of e.arguments) {
-		const tuple = compileExpression(arg, ops, stack, typeScope, context);
+	for (const tuple of args) {
 		for (let i = 0; i < tuple.values.length; i++) {
 			argValues.push({ tuple, i });
 		}
@@ -963,13 +940,12 @@ function compileCallExpression(
 	if (argValues.length !== fn.parameters.length) {
 		throw new diagnostics.ValueCountMismatchErr({
 			actualCount: argValues.length,
-			actualLocation: ir.locationsSpan(e.arguments),
+			actualLocation: ir.locationsSpan(args),
 			expectedCount: fn.parameters.length,
 			expectedLocation: ir.locationsSpan(fn.parameters),
 		});
 	}
 
-	const typeArgumentMapping = ir.typeArgumentsMap(record.typeScope.typeVariableList, baseType.type_arguments);
 	const argumentSources = [];
 	for (let i = 0; i < argValues.length; i++) {
 		const value = argValues[i];
@@ -980,10 +956,10 @@ function compileCallExpression(
 
 		if (!ir.equalTypes(expectedType, valueType)) {
 			throw new diagnostics.TypeMismatchErr({
-				givenType: displayType(valueType, typeScope, context.sourceContext),
+				givenType: displayType(valueType),
 				givenLocation: value.tuple.location,
 				givenIndex: { index0: value.i, count: value.tuple.values.length },
-				expectedType: displayType(expectedType, typeScope, context.sourceContext),
+				expectedType: displayType(expectedType),
 				expectedLocation: fn.parameters[i].location,
 			});
 		}
@@ -998,21 +974,67 @@ function compileCallExpression(
 		const destination = stack.uniqueID("fncall" + i);
 		destinations.push({ variable: destination, type: returnType });
 	}
+
+	const typeArgumentList = [];
+	for (const arg of fn.typeParameterList) {
+		typeArgumentList.push(typeArgumentMapping.get(arg)!);
+	}
 	ops.push({
 		tag: "op-static-call",
 		function: fn.id,
 
 		arguments: argumentSources,
-		type_arguments: baseType.type_arguments,
+		type_arguments: typeArgumentList,
 		destinations: destinations,
 
-		diagnostic_callsite: e.location,
+		diagnostic_callsite: location,
 	});
 
 	return {
 		values: destinations,
-		location: e.location,
+		location: location,
 	};
+}
+
+function compileCallExpression(
+	e: grammar.ExpressionCall,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	const baseType = compileType(e.t, typeScope, context.sourceContext, "check");
+	if (baseType.tag !== "type-compound") {
+		// TODO: Handle dynamic dispatch on type parameters.
+		throw new diagnostics.CallOnNonCompoundErr({
+			baseType: displayType(baseType),
+			location: e.t.location,
+		});
+	}
+
+	const record = context.sourceContext.programContext.getRecord(baseType.record);
+	const fn = record.fns[e.methodName.name];
+	if (fn === undefined) {
+		throw new diagnostics.NoSuchFnErr({
+			baseType: displayType(baseType),
+			methodName: e.methodName.name,
+			methodNameLocation: e.methodName.location,
+		});
+	}
+
+	const args = [];
+	for (const arg of e.arguments) {
+		args.push(compileExpression(arg, ops, stack, typeScope, context));
+	}
+
+	const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
+	if (fn.typeParameterList.length !== baseType.type_arguments.length) {
+		throw new Error("TODO: Handle member-scoped type arguments.");
+	}
+	for (let i = 0; i < fn.typeParameterList.length; i++) {
+		typeArgumentMapping.set(fn.typeParameterList[i], baseType.type_arguments[i]);
+	}
+	return compileCall(ops, stack, args, fn, typeArgumentMapping, e.location);
 }
 
 function compileRecordLiteral(
@@ -1025,15 +1047,12 @@ function compileRecordLiteral(
 	const t = compileType(e.t, typeScope, context.sourceContext, "check");
 	if (t.tag !== "type-compound") {
 		throw new diagnostics.NonCompoundInRecordLiteralErr({
-			t: displayType(t, typeScope, context.sourceContext),
+			t: displayType(t),
 			location: e.t.location,
 		});
 	}
 	const programContext = context.sourceContext.programContext;
-	const recordEntity = programContext.entitiesByCanonical[t.record];
-	if (recordEntity === undefined || recordEntity.tag !== "record") {
-		throw new Error("ICE: invalid record from compileType");
-	}
+	const recordEntity = programContext.getRecord(t.record);
 
 	const instantiation = ir.typeArgumentsMap(recordEntity.typeScope.typeVariableList, t.type_arguments);
 	const initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }> = {};
@@ -1049,7 +1068,7 @@ function compileRecordLiteral(
 		const fieldDefinition = recordEntity.fields[fieldName];
 		if (fieldDefinition === undefined) {
 			throw new diagnostics.NoSuchFieldErr({
-				recordType: displayType(t, typeScope, context.sourceContext),
+				recordType: displayType(t),
 				fieldName,
 				location: initAST.fieldName.location,
 				type: "initialization",
@@ -1069,9 +1088,9 @@ function compileRecordLiteral(
 
 		if (!ir.equalTypes(expectedType, givenType)) {
 			throw new diagnostics.TypeMismatchErr({
-				givenType: displayType(givenType, typeScope, context.sourceContext),
+				givenType: displayType(givenType),
 				givenLocation: value.location,
-				expectedType: displayType(expectedType, typeScope, context.sourceContext),
+				expectedType: displayType(expectedType),
 				expectedLocation: fieldDefinition.typeLocation,
 			});
 		}
@@ -1086,7 +1105,7 @@ function compileRecordLiteral(
 	for (let required in recordEntity.fields) {
 		if (initializations[required] === undefined) {
 			throw new diagnostics.UninitializedFieldErr({
-				recordType: displayType(t, typeScope, context.sourceContext),
+				recordType: displayType(t),
 				missingFieldName: required,
 				definedLocation: recordEntity.fields[required].nameLocation,
 				initializerLocation: e.location,
@@ -1127,8 +1146,6 @@ function compileExpressionAtom(
 	} else if (e.tag === "paren") {
 		const component = compileExpression(e.expression, ops, stack, typeScope, context);
 		if (component.values.length !== 1) {
-			// TODO: Include information from the value info to explain why this
-			// has multiple values.
 			throw new diagnostics.MultiExpressionGroupedErr({
 				valueCount: component.values.length,
 				location: e.location,
@@ -1191,7 +1208,7 @@ function compileExpressionAtom(
 	}
 
 	const _: never = e;
-	throw new Error("TODO: Unhandled tag `" + e["tag"] + "` in compileExpressionAtom");
+	throw new Error("compileExpressionAtom: Unhandled tag `" + e["tag"] + "`");
 }
 
 function compileOperand(
@@ -1214,22 +1231,19 @@ function compileOperand(
 		if (access.tag === "field") {
 			if (base.type.tag !== "type-compound") {
 				throw new diagnostics.FieldAccessOnNonCompoundErr({
-					accessedType: displayType(base.type, typeScope, context.sourceContext),
+					accessedType: displayType(base.type),
 					accessedLocation: access.fieldName.location,
 				});
 			}
 
 			const programContext = context.sourceContext.programContext;
-			const record = programContext.entitiesByCanonical[base.type.record];
-			if (record.tag !== "record") {
-				throw new Error("ICE: non-record referenced by compound type");
-			}
+			const record = programContext.getRecord(base.type.record);
 
 			const instantiation = ir.typeArgumentsMap(record.typeScope.typeVariableList, base.type.type_arguments);
 			const field = record.fields[access.fieldName.name];
 			if (field === undefined) {
 				throw new diagnostics.NoSuchFieldErr({
-					recordType: displayType(base.type, typeScope, context.sourceContext),
+					recordType: displayType(base.type),
 					fieldName: access.fieldName.name,
 					location: access.fieldName.location,
 					type: "access",
@@ -1253,7 +1267,41 @@ function compileOperand(
 				location: location,
 			};
 		} else if (access.tag === "method") {
-			throw new Error("TODO: compileOperand method access");
+			if (base.type.tag !== "type-compound") {
+				// TODO: Support method calls on type parameters.
+				throw new diagnostics.MethodAccessOnNonCompoundErr({
+					accessedType: displayType(base.type),
+					accessedLocation: access.methodName.location,
+				});
+			}
+
+			const programContext = context.sourceContext.programContext;
+			const record = programContext.getRecord(base.type.record);
+			const fn = record.fns[access.methodName.name];
+			if (fn === undefined) {
+				throw new diagnostics.NoSuchFnErr({
+					baseType: displayType(base.type),
+					methodName: access.methodName.name,
+					methodNameLocation: access.methodName.location,
+				});
+			}
+
+			const location = ir.locationSpan(value.location, access.location);
+
+			const args = [value];
+			for (const arg of access.args) {
+				args.push(compileExpression(arg, ops, stack, typeScope, context));
+			}
+
+			const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
+			if (fn.typeParameterList.length !== base.type.type_arguments.length) {
+				throw new Error("TODO: Handle member-scoped type arguments.");
+			}
+			for (let i = 0; i < fn.typeParameterList.length; i++) {
+				typeArgumentMapping.set(fn.typeParameterList[i], base.type.type_arguments[i]);
+			}
+
+			value = compileCall(ops, stack, args, fn, typeArgumentMapping, location);
 		} else {
 			const _: never = access;
 			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
@@ -1267,8 +1315,7 @@ function compileOperand(
 function resolveOperator(
 	lhs: ValueInfo,
 	operator: lexer.OperatorToken,
-	typeScope: TypeScope,
-	context: FunctionContext): ir.FunctionID {
+): ir.FunctionID {
 	const opStr = operator.operator;
 	if (lhs.values.length !== 1) {
 		throw new diagnostics.MultiExpressionGroupedErr({
@@ -1290,7 +1337,7 @@ function resolveOperator(
 	}
 
 	throw new diagnostics.TypeDoesNotProvideOperatorErr({
-		lhsType: displayType(value.type, typeScope, context.sourceContext),
+		lhsType: displayType(value.type),
 		operator: opStr,
 		operatorLocation: operator.location,
 	});
@@ -1491,7 +1538,7 @@ function expectOneBooleanForContract(
 	const value = values.values[0];
 	if (!ir.equalTypes(ir.T_BOOLEAN, value.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(value.type, typeScope, context.sourceContext),
+			givenType: displayType(value.type),
 			location: values.location,
 			reason: "contract",
 			contract: contract,
@@ -1518,7 +1565,7 @@ function expectOneBooleanForLogical(
 	const value = values.values[0];
 	if (!ir.equalTypes(ir.T_BOOLEAN, value.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(value.type, typeScope, context.sourceContext),
+			givenType: displayType(value.type),
 			location: values.location,
 			reason: "logical-op",
 			op: op.opStr,
@@ -1640,12 +1687,12 @@ function compileExpressionTree(
 		const right = compileExpressionTree(tree.rightBranch, ops, stack, typeScope, context);
 
 		const opStr = tree.join.opToken.operator;
-		const fn = resolveOperator(left, tree.join.opToken, typeScope, context);
+		const fn = resolveOperator(left, tree.join.opToken);
 		const foreign = context.sourceContext.programContext.foreignSignatures[fn];
 		if (foreign === undefined) {
 			throw new Error(
 				"resolveOperator produced a bad foreign signature (`" + fn
-				+ "`) for `" + displayType(left.values[0].type, typeScope, context.sourceContext)
+				+ "`) for `" + displayType(left.values[0].type)
 				+ "` `" + opStr + "`");
 		} else if (foreign.parameters.length !== 2) {
 			throw new Error(
@@ -1665,10 +1712,10 @@ function compileExpressionTree(
 		const expectedRhsType = foreign.parameters[1].type;
 		if (!ir.equalTypes(expectedRhsType, right.values[0].type)) {
 			throw new diagnostics.OperatorTypeMismatchErr({
-				lhsType: displayType(left.values[0].type, typeScope, context.sourceContext),
+				lhsType: displayType(left.values[0].type),
 				operator: opStr,
-				givenRhsType: displayType(right.values[0].type, typeScope, context.sourceContext),
-				expectedRhsType: displayType(expectedRhsType, typeScope, context.sourceContext),
+				givenRhsType: displayType(right.values[0].type),
+				expectedRhsType: displayType(expectedRhsType),
 				rhsLocation: right.location,
 			});
 		}
@@ -1714,12 +1761,12 @@ function compileExpression(
 
 }
 
-/// `displayType` formats the given IR `Type` as a string, potentially formatted
-/// for the given `SourceContext` (considering import aliases and such).
-function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: Readonly<SourceContext>): string {
+/// `displayType` formats the given IR `Type` as a string of (fully qualified)
+/// Shiru code.
+function displayType(t: ir.Type): string {
 	if (t.tag === "type-compound") {
 		const base = t.record;
-		const args = t.type_arguments.map(x => displayType(x, typeScope, sourceContext));
+		const args = t.type_arguments.map(displayType);
 		if (args.length === 0) {
 			return base;
 		} else {
@@ -1739,19 +1786,14 @@ function displayType(t: ir.Type, typeScope: Readonly<TypeScope>, sourceContext: 
 /// `displayConstraint` formats the given IR constraint as a string, potentially
 /// formatted for the given `SourceContext` (considering import aliases and
 /// such).
-function displayConstraint(
-	c: ir.ConstraintParameter,
-	typeScope: Readonly<TypeScope>,
-	sourceContext: Readonly<SourceContext>,
-): string {
+function displayConstraint(c: ir.ConstraintParameter): string {
 	const base = c.interface;
 	if (c.subjects.length === 0) {
 		throw new Error("ICE: Invalid constraint `" + base + "`");
 	}
 
-	const lhs = displayType(c.subjects[0], typeScope, sourceContext);
-	const rhs = c.subjects.slice(1).map(t =>
-		displayType(t, typeScope, sourceContext));
+	const lhs = displayType(c.subjects[0]);
+	const rhs = c.subjects.slice(1).map(t => displayType(t));
 	if (rhs.length === 0) {
 		return `${lhs} is ${base}`;
 	} else {
@@ -1791,10 +1833,10 @@ function compileVarSt(
 
 		if (!ir.equalTypes(value.type, t)) {
 			throw new diagnostics.TypeMismatchErr({
-				givenType: displayType(value.type, typeScope, context.sourceContext),
+				givenType: displayType(value.type),
 				givenLocation: pair.tuple.location,
 				givenIndex: { index0: pair.i, count: pair.tuple.values.length },
-				expectedType: displayType(t, typeScope, context.sourceContext),
+				expectedType: displayType(t),
 				expectedLocation: v.t.location,
 			});
 		}
@@ -1843,10 +1885,10 @@ function compileReturnSt(
 		const destination = context.returnsTo[i];
 		if (!ir.equalTypes(source.type, destination.t)) {
 			throw new diagnostics.TypeMismatchErr({
-				givenType: displayType(source.type, typeScope, context.sourceContext),
+				givenType: displayType(source.type),
 				givenLocation: v.tuple.location,
 				givenIndex: { index0: v.i, count: v.tuple.values.length },
-				expectedType: displayType(destination.t, typeScope, context.sourceContext),
+				expectedType: displayType(destination.t),
 				expectedLocation: destination.location,
 			});
 		}
@@ -1874,7 +1916,7 @@ function compileIfClause(
 	const conditionValue = condition.values[0];
 	if (!ir.equalTypes(ir.T_BOOLEAN, conditionValue.type)) {
 		throw new diagnostics.BooleanTypeExpectedErr({
-			givenType: displayType(conditionValue.type, typeScope, context.sourceContext),
+			givenType: displayType(conditionValue.type),
 			location: clause.condition.location,
 			reason: "if",
 		});

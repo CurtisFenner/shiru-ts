@@ -466,6 +466,8 @@ export interface ExpressionAccessMethod {
 	tag: "method",
 	methodName: IdenToken,
 	args: Expression[],
+
+	location: SourceLocation,
 }
 
 export interface ExpressionAccessField {

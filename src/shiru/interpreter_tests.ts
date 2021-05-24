@@ -850,4 +850,56 @@ export const tests = {
 		const result = interpret("main" as ir.FunctionID, [], program, {});
 		assert(result, "is equal to", [{ sort: "int", int: 17 }]);
 	},
+	"basic-static-method"() {
+		const source = `
+		package example;
+
+		record V2 {
+			var x: Int;
+			var y: Int;
+
+			fn add(self: V2, other: V2): V2 {
+				return V2{
+					x = self.x + other.x,
+					y = self.y + other.y,
+				};
+			}
+
+			fn main(a: V2, b: V2): Int, Int {
+				var sum: V2 = a.add(b);
+				return sum.x, sum.y;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const inputs: Value[] = [
+			{
+				sort: "record",
+				fields: {
+					x: { sort: "int", int: 1 },
+					y: { sort: "int", int: 2 },
+				},
+			},
+			{
+				sort: "record",
+				fields: {
+					x: { sort: "int", int: 30 },
+					y: { sort: "int", int: 40 },
+				},
+			},
+		];
+		const result = interpret("example.V2.main" as ir.FunctionID, inputs, program, {
+			"Int+": ([a, b]: Value[]) => {
+				if (a.sort !== "int") throw new Error("bad argument");
+				if (b.sort !== "int") throw new Error("bad argument");
+				return [{ sort: "int", int: a.int + b.int }];
+			},
+		});
+		assert(result, "is equal to", [
+			{ sort: "int", int: 31 },
+			{ sort: "int", int: 42 },
+		]);
+	},
 };

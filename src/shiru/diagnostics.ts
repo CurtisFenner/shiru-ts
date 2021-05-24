@@ -222,6 +222,18 @@ export class FieldAccessOnNonCompoundErr extends SemanticError {
 	}
 }
 
+export class MethodAccessOnNonCompoundErr extends SemanticError {
+	constructor(args: {
+		accessedType: string,
+		accessedLocation: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.accessedType + "` is not a compound type, so a method access is illegal at",
+			args.accessedLocation,
+		]);
+	}
+}
+
 export class BooleanTypeExpectedErr extends SemanticError {
 	constructor(args: { givenType: string, location: SourceLocation } & (
 		{ reason: "if" }

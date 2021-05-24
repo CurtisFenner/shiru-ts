@@ -161,4 +161,21 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"constant-arithmetic"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn main(x: Int): Int 
+			requires x == 1 
+			ensures 1 + 1 == 2 implies return == 2 {
+				return x + 1;
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

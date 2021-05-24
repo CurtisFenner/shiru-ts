@@ -232,7 +232,7 @@ class VerificationState {
 				return value;
 			}
 		}
-		throw new Error("variable is not defined");
+		throw new Error("variable `" + variable + "` is not defined");
 	}
 }
 
@@ -523,21 +523,32 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			throw new Error("TODO: Assume postcondition of op-foreign");
 		}
 
+		const args = [];
+		for (let i = 0; i < op.arguments.length; i++) {
+			args.push(state.getValue(op.arguments[i]).value);
+		}
+
 		if (signature.semantics?.eq === true) {
 			if (op.arguments.length !== 2) {
 				throw new Error("Foreign signature with `eq` semantics"
 					+ " must take exactly 2 arguments (" + op.operation + ")");
-			}
-			const left = state.getValue(op.arguments[0]).value;
-			const right = state.getValue(op.arguments[1]).value;
-			if (op.destinations.length !== 1) {
+			} else if (op.destinations.length !== 1) {
 				throw new Error("Foreign signature with `eq` semantics"
 					+ " must return exactly 1 value");
 			}
 			const destination = op.destinations[0];
 			const eqConstant = state.vendConstant(sortOf(destination.type), "eq");
-			learnEquality(state, left, right, eqConstant);
+			learnEquality(state, args[0], args[1], eqConstant);
 			state.defineVariable(destination, eqConstant);
+		} else {
+			const fIDs = createFunctionIDs(state, op.destinations, op.operation, signature, []);
+			for (let i = 0; i < op.destinations.length; i++) {
+				state.defineVariable(op.destinations[i], {
+					tag: "app",
+					f: fIDs[i],
+					args,
+				});
+			}
 		}
 		return;
 	} else if (op.tag === "op-static-call") {

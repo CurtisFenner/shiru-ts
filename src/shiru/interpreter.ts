@@ -481,9 +481,9 @@ export class RuntimeErr {
 	constructor(public message: ErrorElement[]) { }
 }
 
-function showType(t: ir.Type, context: { typeVariables: string[] }): string {
+function showType(t: ir.Type): string {
 	if (t.tag === "type-compound") {
-		const generics = "[" + t.type_arguments.map(x => showType(x, context)).join(", ") + "]";
+		const generics = "[" + t.type_arguments.map(x => showType(x)).join(", ") + "]";
 		return t.record + generics;
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
@@ -506,7 +506,7 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 	}
 	const parameters = [];
 	for (const parameter of fn.signature.parameters) {
-		parameters.push(parameter.variable + ": " + showType(parameter.type, context));
+		parameters.push(parameter.variable + ": " + showType(parameter.type));
 	}
 	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
 	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ")");
@@ -517,7 +517,7 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 	}
 	for (const post of fn.signature.postconditions) {
 		lines.push("postcondition ("
-			+ post.returnedValues.join(", ")
+			+ post.returnedValues.map(printVariable).join(", ")
 			+ " -> " + post.postcondition + ") {");
 		printBlockContents(post.block, "", context, lines);
 		lines.push("}");
@@ -539,6 +539,10 @@ export function printBlockContents(
 	}
 }
 
+function printVariable(variable: ir.VariableDefinition) {
+	return "var " + variable.variable + ": " + showType(variable.type);
+}
+
 export function printOp(
 	op: ir.Op,
 	indent: string,
@@ -558,11 +562,11 @@ export function printOp(
 		lines.push(indent + "return " + op.sources.join(", ") + ";");
 		return;
 	} else if (op.tag === "op-const") {
-		const lhs = "var " + op.destination.variable;
+		const lhs = printVariable(op.destination);
 		lines.push(indent + lhs + " = " + op.value + ";");
 		return;
 	} else if (op.tag === "op-foreign") {
-		const lhs = op.destinations.map(x => "var " + x).join(", ");
+		const lhs = op.destinations.map(printVariable).join(", ");
 		const rhs = op.operation + "(" + op.arguments.join(", ") + ");";
 		lines.push(indent + lhs + " = " + rhs);
 		return;
@@ -570,8 +574,8 @@ export function printOp(
 		lines.push(indent + "unreachable; // " + op.diagnostic_kind);
 		return;
 	} else if (op.tag === "op-static-call") {
-		const targs = op.type_arguments.map(x => showType(x, context));
-		const lhs = op.destinations.map(x => "var " + x.variable).join(", ");
+		const targs = op.type_arguments.map(x => showType(x));
+		const lhs = op.destinations.map(x => printVariable).join(", ");
 		const rhs = op.function + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ");";
 		lines.push(indent + lhs + " = " + rhs);
 		return;
@@ -582,23 +586,23 @@ export function printOp(
 		return;
 	} else if (op.tag === "op-dynamic-call") {
 		const f = op.constraint + "." + op.signature_id;
-		const targs = op.signature_type_arguments.map(x => showType(x, context));
-		const lhs = op.destinations.map(x => "var " + x.variable).join(", ");
+		const targs = op.signature_type_arguments.map(x => showType(x));
+		const lhs = op.destinations.map(x => printVariable(x)).join(", ");
 		const rhs = f + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ")";
 		lines.push(indent + lhs + " = " + rhs + ";");
 		return;
 	} else if (op.tag === "op-field") {
-		const lhs = "var " + op.destination.variable;
+		const lhs = printVariable(op.destination);
 		const rhs = op.object + "." + op.field;
 		lines.push(indent + lhs + " = " + rhs + ";");
 		return;
 	} else if (op.tag === "op-new-record") {
-		const lhs = "var " + op.destination.variable;
+		const lhs = printVariable(op.destination);
 		const args = [];
 		for (let k in op.fields) {
 			args.push(k + " = " + op.fields[k]);
 		}
-		const recordType = showType(op.destination.type, context);
+		const recordType = showType(op.destination.type);
 		const recordLiteral = recordType + "{" + args.join(", ") + "}";
 		lines.push(indent + lhs + " = " + recordLiteral + ";");
 		return;

@@ -5,7 +5,7 @@ import * as verify from "./verify";
 import { assert } from "./test";
 
 export const tests = {
-	"basic-verification"() {
+	"empty-verification"() {
 		const program: ir.Program = {
 			records: {},
 			functions: {},

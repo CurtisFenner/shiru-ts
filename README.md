@@ -3,7 +3,7 @@
 **Shiru** is an experimental programming language equipped with an SMT solver to
 verify assertions and pre-conditions at compile time.
 
-This repository contains the compiler & interpreter for Shiru, written in 
+This repository contains the compiler & interpreter for Shiru, written in
 TypeScript.
 
 ## Building and Running Tests
@@ -23,9 +23,8 @@ yarn run build # builds the compiler
 yarn run test # tests the newly built compiler
 ```
 
-When developing, you can use `tsc --watch` to automatically recompile files as
-they are modified.
-
+When developing, you can use `yarn build --watch` to automatically recompile
+files as they are modified.
 
 ## Contributions
 

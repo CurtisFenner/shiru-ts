@@ -1,25 +1,16 @@
+import { DefaultMap } from "./data";
 import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
-import * as smt from "./smt";
-
-/// Represents a constraint solver. The `meta` is used to associated the query
-/// with a "reason" the query is being asked.
-export type ConstraintSolver = (
-	meta: FailedVerification,
-	constantSorts: Record<string, smt.UFSort>,
-	functionSorts: Record<string, smt.UFSort>,
-	clauses: smt.UFConstraint[][],
-) => "refuted" | {};
+import * as uf from "./uf";
 
 export function verifyProgram(
 	program: ir.Program,
-	constraintSolver: ConstraintSolver = checkUnreachableSMT,
 ): FailedVerification[] {
 	const problems = [];
 
 	// 1) Verify each function body,
 	for (let f in program.functions) {
-		problems.push(...verifyFunction(program, f, constraintSolver));
+		problems.push(...verifyFunction(program, f));
 	}
 
 	// 2) Verify that each interface implementation
@@ -32,22 +23,11 @@ export function verifyProgram(
 	return problems;
 }
 
-function sortOf(t: ir.Type): smt.UFSort {
-	if (t.tag === "type-primitive" && t.primitive === "Boolean") {
-		return "bool";
-	} else {
-		// This is obviously wrong, but will work OK at the beginning.
-		// TODO: This really needs to be stateful.
-		return 17;
-	}
-}
-
 function verifyFunction(
 	program: ir.Program,
 	fName: string,
-	constraintSolver: ConstraintSolver,
 ): FailedVerification[] {
-	const state = new VerificationState();
+	const state = new VerificationState(program);
 
 	const f = program.functions[fName];
 
@@ -57,12 +37,11 @@ function verifyFunction(
 		const parameter = f.signature.parameters[i];
 
 		// Create a symbolic constant for the initial value of the parameter.
-		const sort = sortOf(parameter.type);
-		const constant = state.vendConstant(sort)
-		state.defineVariable(parameter, constant);
+		const symbolic = state.smt.createVariable(parameter.type);
+		state.defineVariable(parameter, symbolic);
 		contextParameters.push({
 			definition: parameter,
-			constant,
+			symbolic,
 		});
 	}
 
@@ -73,19 +52,17 @@ function verifyFunction(
 			// Return statements do not return a value.
 			returnsPostConditions: [],
 			parameters: contextParameters,
-			constraintSolver,
 		}, () => {
 			const bool = state.getValue(precondition.precondition).value;
-			state.pushConstraint(negate({ tag: "predicate", predicate: bool }));
+			state.pushPathConstraint(state.negate(bool));
 			state.markPathUnreachable();
-			state.popConstraint();
+			state.popPathConstraint();
 		});
 	}
 
 	traverseBlock(program, f.body, state, {
 		returnsPostConditions: f.signature.postconditions,
 		parameters: contextParameters,
-		constraintSolver,
 	});
 
 	// The IR type-checker verifies that functions must end with a op-return or
@@ -98,10 +75,7 @@ interface VerificationContext {
 	returnsPostConditions: ir.Postcondition[],
 
 	/// The number of function parameters.
-	parameters: { definition: ir.VariableDefinition, constant: smt.UFValue }[],
-
-	/// The constraint solver.
-	constraintSolver: ConstraintSolver,
+	parameters: { definition: ir.VariableDefinition, symbolic: uf.ValueID }[],
 }
 
 export type FailedVerification = FailedPreconditionVerification
@@ -137,12 +111,120 @@ interface SignatureSet {
 }
 
 interface VerificationScope {
-	variables: Map<ir.VariableID, { type: ir.Type, value: smt.UFValue }>,
+	variables: Map<ir.VariableID, { type: ir.Type, value: uf.ValueID }>,
+}
+
+// TODO: Optimize this to not do linear scans.
+class TypeArgumentsDefaultMap<V> {
+	private entries: { key: ir.Type[], value: V }[] = [];
+
+	constructor(private f: (key: ir.Type[]) => V) { }
+
+	get(key: ir.Type[]) {
+		for (const entry of this.entries) {
+			let all = true;
+			for (let i = 0; i < key.length; i++) {
+				if (!ir.equalTypes(key[i], entry.key[i])) {
+					all = false;
+					break;
+				}
+			}
+			if (all) {
+				return entry.value;
+			}
+		}
+		const value = this.f(key);
+		this.entries.push({ key: key.slice(0), value });
+		return value;
+	}
+}
+
+class DynamicFunctionMap {
+	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, TypeArgumentsDefaultMap<uf.FnID[]>>>(
+		i => new DefaultMap(s => new TypeArgumentsDefaultMap(ts => {
+			const interfaceIR = this.program.interfaces[i];
+			const signature = interfaceIR.signatures[s];
+			const map = ir.typeArgumentsMap(interfaceIR.type_parameters.concat(signature.type_parameters), ts);
+			const rs = signature.return_types.map(r => ir.typeSubstitute(r, map));
+			return rs.map(r => this.smt.createFunction(r, { eq: signature.semantics?.eq }));
+		})));
+
+	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+
+	get(interfaceID: ir.InterfaceID, signatureID: ir.FunctionID, typeArguments: ir.Type[]) {
+		return this.map.get(interfaceID).get(signatureID).get(typeArguments);
+	}
+}
+
+class FieldMap {
+	private map = new DefaultMap<ir.RecordID, TypeArgumentsDefaultMap<Record<string, uf.FnID>>>(
+		r => new TypeArgumentsDefaultMap(ts => {
+			const recordIR = this.program.records[r];
+			const map = ir.typeArgumentsMap(recordIR.type_parameters, ts);
+			const fields: Record<string, uf.FnID> = {}
+			for (const k in recordIR.fields) {
+				fields[k] = this.smt.createFunction(ir.typeSubstitute(recordIR.fields[k], map), {});
+			}
+			return fields;
+		}));
+
+	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+
+	get(record: ir.RecordID, ts: ir.Type[], field: string): uf.FnID {
+		return this.map.get(record).get(ts)[field];
+	}
+}
+
+class ConstructorMap {
+	private map = new DefaultMap<ir.RecordID, TypeArgumentsDefaultMap<uf.FnID>>(
+		r => new TypeArgumentsDefaultMap(ts => {
+			const t: ir.Type = { tag: "type-compound", record: r, type_arguments: ts };
+			return this.smt.createFunction(t, {});
+		}),
+	);
+
+	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+
+	get(record: ir.RecordID, ts: ir.Type[]): uf.FnID {
+		return this.map.get(record).get(ts);
+	}
 }
 
 class VerificationState {
-	private constantSorts: Record<string, smt.UFSort> = {};
-	functionSorts: Record<string, smt.UFSort> = {};
+	private program: ir.Program;
+
+	smt: uf.UFTheory = new uf.UFTheory();
+	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
+	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true });
+
+	functions = new DefaultMap<ir.FunctionID, TypeArgumentsDefaultMap<uf.FnID[]>>(fID => new TypeArgumentsDefaultMap(ts => {
+		const fn = this.program.functions[fID];
+		if (fn === undefined) {
+			throw new Error("VerificationState.functions.get: undefined `" + fID + "`");
+		}
+		const map = ir.typeArgumentsMap(fn.signature.type_parameters, ts);
+		const out = [];
+		for (const r of fn.signature.return_types) {
+			out.push(this.smt.createFunction(ir.typeSubstitute(r, map), { eq: fn.signature.semantics?.eq }));
+		}
+		return out;
+	}));
+
+	foreign = new DefaultMap<string, uf.FnID[]>(op => {
+		const fn = this.program.foreign[op];
+		if (fn === undefined) {
+			throw new Error("VerificationState.foreign.get: undefined `" + op + "`");
+		}
+		const out = [];
+		for (const r of fn.return_types) {
+			out.push(this.smt.createFunction(r, { eq: fn.semantics?.eq }));
+		}
+		return out;
+	});
+
+	dynamicFunctions: DynamicFunctionMap;
+	constructorMap: ConstructorMap;
+	fieldMap: FieldMap;
 
 	recursivePreconditions: SignatureSet = {
 		blockedFunctions: {},
@@ -162,21 +244,27 @@ class VerificationState {
 		}
 	];
 
-	// An append-only set of constraints that grow, regardless of path.
-	private clauses: smt.UFConstraint[][] = [];
-
 	/// `pathConstraints` is the stack of conditional constraints that must be
 	/// true to reach a position in the program.
-	private pathConstraints: smt.UFConstraint[] = [];
+	private pathConstraints: uf.ValueID[] = [];
 
 	// Verification adds failure messages to this stack as they are encountered.
 	// Multiple failures can be returned.
 	failedVerifications: FailedVerification[] = [];
 
-	private nextConstant: number = 1000;
+	constructor(program: ir.Program) {
+		this.program = program;
+		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
+		this.constructorMap = new ConstructorMap(this.program, this.smt);
+		this.fieldMap = new FieldMap(this.program, this.smt);
+	}
 
-	addTautology(clause: smt.UFConstraint[]) {
-		this.clauses.push(clause);
+	negate(bool: uf.ValueID): uf.ValueID {
+		return this.smt.createApplication(this.notF, [bool]);
+	}
+
+	eq(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
+		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
 	pushScope() {
@@ -189,34 +277,35 @@ class VerificationState {
 		this.scopes.pop();
 	}
 
-	markPathUnreachable() {
-		this.clauses.push(this.pathConstraints.map(negate));
+	pushPathConstraint(c: uf.ValueID) {
+		this.pathConstraints.push(c);
 	}
 
-	checkReachable(reason: FailedVerification, solver: ConstraintSolver) {
-		const clauses = this.clauses.slice();
-		for (const element of this.pathConstraints) {
-			clauses.push([element]);
-		}
-		return solver(reason, this.constantSorts, this.functionSorts, clauses);
-	}
-
-	pushConstraint(constraint: smt.UFConstraint) {
-		this.pathConstraints.push(constraint);
-	}
-
-	popConstraint() {
+	popPathConstraint() {
 		this.pathConstraints.pop();
 	}
 
-	vendConstant(sort: smt.UFSort, hint: string = "v"): smt.UFVariable {
-		const n = `c'${this.nextConstant}'${hint}`;
-		this.nextConstant += 1;
-		this.constantSorts[n] = sort;
-		return n as smt.UFVariable;
+	/// `checkReachable` checks whether or not the conjunction of current path
+	/// constraints, combined with all other constraints added to the `smt`
+	/// solver, is reachable or not.
+	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
+		this.smt.pushScope();
+		for (const constraint of this.pathConstraints) {
+			this.smt.addConstraint([constraint]);
+		}
+		const model = this.smt.attemptRefutation();
+		this.smt.popScope();
+		return model;
 	}
 
-	defineVariable(variable: ir.VariableDefinition, value: smt.UFValue) {
+	/// `markPathUnreachable` ensures that the conjunction of the current path
+	/// constraints is not considered satisfiable in subsequent invocations of
+	/// the `smt` solver.
+	markPathUnreachable() {
+		this.smt.addConstraint(this.pathConstraints.map(e => this.negate(e)));
+	}
+
+	defineVariable(variable: ir.VariableDefinition, value: uf.ValueID) {
 		const scope = this.scopes[this.scopes.length - 1];
 		scope.variables.set(variable.variable, {
 			type: variable.type,
@@ -234,104 +323,6 @@ class VerificationState {
 		}
 		throw new Error("variable `" + variable + "` is not defined");
 	}
-}
-
-function negate(constraint: smt.UFConstraint): smt.UFConstraint {
-	return { tag: "not", constraint };
-}
-
-function showType(t: ir.Type): string {
-	if (t.tag === "type-compound") {
-		return t.record + "[" + t.type_arguments.map(showType).join(",") + "]";
-	} else if (t.tag === "type-primitive") {
-		return t.primitive;
-	} else if (t.tag === "type-variable") {
-		return "#" + t.id;
-	}
-	throw new Error(`unhandled ${t}`);
-}
-
-/// RETURNS an array of strings, being the SMT function names for each of the
-/// given function's return values.
-/// TODO: A better way to encode generic functions is to treat type constraint
-/// parameters as arguments.
-function createFunctionIDs(
-	state: VerificationState,
-	destinations: ir.VariableDefinition[],
-	f: string,
-	signature: ir.FunctionSignature,
-	typeArguments: ir.Type[],
-): smt.UFFunction[] {
-	const args = typeArguments.map(showType);
-	const prefix = `sh_f_${f}[${args.join(",")}]`;
-	const fs = [];
-	for (let i = 0; i < signature.return_types.length; i++) {
-		const f = `${prefix}:${i}`;
-		fs.push(f as smt.UFFunction);
-		if (state.functionSorts[f] === undefined) {
-			state.functionSorts[f] = sortOf(destinations[i].type);
-		}
-	}
-	return fs;
-}
-
-function createDynamicFunctionID(state: VerificationState, op: ir.OpDynamicCall): string[] {
-	const args = op.constraint.subjects.concat(op.signature_type_arguments).map(showType);
-	// TODO: This is a bad way to do this, particularly because it makes
-	// encoding parametricity relationships harder.
-	const prefix = `dyn_${op.constraint.interface}:${op.signature_id}[${args.join(",")}]`;
-	const fs = [];
-	for (let i = 0; i < op.destinations.length; i++) {
-		const f = `${prefix}:${i}`;
-		fs.push(f);
-		if (state.functionSorts[f] == undefined) {
-			state.functionSorts[f] = sortOf(op.destinations[i].type);
-		}
-	}
-	return fs;
-}
-
-function createFieldFunctionID(
-	state: VerificationState,
-	base: ir.Type,
-	field: string,
-	fieldType: ir.Type,
-): smt.UFFunction {
-	const t = showType(base);
-	const name = `field_${t}:${field}`;
-	if (state.functionSorts[name] === undefined) {
-		state.functionSorts[name] = sortOf(fieldType);
-	}
-	return name as smt.UFFunction;
-}
-
-function createConstructorFunctionID(state: VerificationState, base: ir.Type): smt.UFFunction {
-	const t = showType(base);
-	const name = `new_${t}`;
-	if (state.functionSorts[name] === undefined) {
-		state.functionSorts[name] = sortOf(base);
-	}
-	return name as smt.UFFunction;
-}
-
-function learnEquality(
-	state: VerificationState,
-	left: smt.UFValue,
-	right: smt.UFValue,
-	equalityVariable: smt.UFVariable,
-) {
-	const resultCon: smt.UFConstraint = {
-		tag: "predicate",
-		predicate: equalityVariable,
-	};
-
-	// Create a two-way implication between the destination variable and the
-	// abstract result of comparison.
-	// This is necessary because comparison is only a UFConstraint, not a
-	// UFValue.
-	const eqCon: smt.UFConstraint = { tag: "=", left, right };
-	state.addTautology([negate(resultCon), eqCon]);
-	state.addTautology([resultCon, negate(eqCon)]);
 }
 
 function traverseBlock(
@@ -361,81 +352,61 @@ function traverseBlock(
 // ensured after the execution (and termination) of this operation.
 function traverse(program: ir.Program, op: ir.Op, state: VerificationState, context: VerificationContext): void {
 	if (op.tag === "op-branch") {
-		const symbolicCondition: smt.UFConstraint = {
-			tag: "predicate",
-			predicate: state.getValue(op.condition).value,
-		}
+		const symbolicCondition: uf.ValueID = state.getValue(op.condition).value;
 
-		const definedConstants: smt.UFVariable[] = [];
+		const phis: uf.ValueID[] = [];
 		for (const destination of op.destinations) {
-			const sort = sortOf(destination.destination.type);
-			definedConstants.push(state.vendConstant(sort, "branch"));
+			phis.push(state.smt.createVariable(destination.destination.type));
 		}
 
 		state.pushScope();
-		state.pushConstraint(symbolicCondition);
+		state.pushPathConstraint(symbolicCondition);
 		traverseBlock(program, op.trueBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
 				if (source === "undef") continue;
-				state.addTautology([
-					negate(symbolicCondition),
-					{
-						tag: "=",
-						left: definedConstants[i],
-						right: state.getValue(source).value,
-					},
+				state.smt.addConstraint([
+					state.negate(symbolicCondition),
+					state.eq(phis[i], state.getValue(source).value),
 				]);
 			}
 		})
-		state.popConstraint();
+		state.popPathConstraint();
 		state.popScope();
 
 		state.pushScope();
-		state.pushConstraint(negate(symbolicCondition));
+		state.pushPathConstraint(state.negate(symbolicCondition));
 		traverseBlock(program, op.falseBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
 				if (source === "undef") continue;
-				state.addTautology([
+				state.smt.addConstraint([
 					symbolicCondition,
-					{
-						tag: "=",
-						left: definedConstants[i],
-						right: state.getValue(source).value,
-					},
+					state.eq(phis[i], state.getValue(source).value),
 				]);
 			}
 		});
-		state.popConstraint();
+		state.popPathConstraint();
 		state.popScope();
 
 		for (let i = 0; i < op.destinations.length; i++) {
-			state.defineVariable(op.destinations[i].destination, definedConstants[i]);
+			state.defineVariable(op.destinations[i].destination, phis[i]);
 		}
 
 		return;
 	} else if (op.tag === "op-const") {
 		// Like assignment, this requires no manipulation of constraints, only
 		// the state of variables.
-		const literal: smt.UFLiteralValue = {
-			tag: "literal",
-			literal: op.value,
-			sort: sortOf(op.destination.type),
-		};
-		state.defineVariable(op.destination, literal);
+		const constant = state.smt.createConstant(op.destination.type, op.value);
+		state.defineVariable(op.destination, constant);
 		return;
 	} else if (op.tag === "op-field") {
 		const object = state.getValue(op.object);
-		const baseType = object.type;
-		const f = createFieldFunctionID(state, baseType, op.field, op.destination.type);
-		const fieldValue: smt.UFValue = {
-			tag: "app",
-			f,
-			args: [object.value],
-		};
+		const baseType = object.type as ir.TypeCompound;
+		const f = state.fieldMap.get(baseType.record, baseType.type_arguments, op.field);
+		const fieldValue = state.smt.createApplication(f, [object.value]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -444,22 +415,14 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		for (let field of fieldNames) {
 			fields.push(state.getValue(op.fields[field]).value);
 		}
-		const constructor = createConstructorFunctionID(state, op.destination.type);
-		const recordValue: smt.UFValue = {
-			tag: "app",
-			f: constructor,
-			args: fields,
-		};
+		const recordType = op.destination.type as ir.TypeCompound;
+		const constructor = state.constructorMap.get(recordType.record, recordType.type_arguments);
+		const recordValue = state.smt.createApplication(constructor, fields);
 		state.defineVariable(op.destination, recordValue);
 		for (let i = 0; i < fields.length; i++) {
-			const fieldType = state.getValue(op.fields[fieldNames[i]]).type;
-			const getField = createFieldFunctionID(state, op.destination.type, fieldNames[i], fieldType);
-			state.addTautology([
-				{
-					tag: "=",
-					left: { tag: "app", f: getField, args: [recordValue] },
-					right: fields[i],
-				},
+			const getField = state.fieldMap.get(recordType.record, recordType.type_arguments, fieldNames[i]);
+			state.smt.addConstraint([
+				state.eq(fields[i], state.smt.createApplication(getField, [recordValue])),
 			]);
 		}
 		return;
@@ -477,7 +440,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				// The original parameters might have been shadowed, so they
 				// need to be redeclared.
 				for (const parameter of context.parameters) {
-					state.defineVariable(parameter.definition, parameter.constant);
+					state.defineVariable(parameter.definition, parameter.symbolic);
 				}
 				for (let i = 0; i < postcondition.returnedValues.length; i++) {
 					state.defineVariable(postcondition.returnedValues[i], values[i].value);
@@ -492,13 +455,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 					// Check if it's possible for the indicated boolean to be
 					// false.
-					const bool: smt.UFConstraint = {
-						tag: "predicate",
-						predicate: state.getValue(postcondition.postcondition).value,
-					};
-					state.pushConstraint(negate(bool));
-					const refutation = state.checkReachable(reason, context.constraintSolver);
-					state.popConstraint();
+					const bool = state.getValue(postcondition.postcondition).value;
+					state.pushPathConstraint(state.negate(bool));
+					const refutation = state.checkReachable(reason);
+					state.popPathConstraint();
 					if (refutation !== "refuted") {
 						state.failedVerifications.push(reason);
 					}
@@ -537,17 +497,11 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 					+ " must return exactly 1 value");
 			}
 			const destination = op.destinations[0];
-			const eqConstant = state.vendConstant(sortOf(destination.type), "eq");
-			learnEquality(state, args[0], args[1], eqConstant);
-			state.defineVariable(destination, eqConstant);
+			state.defineVariable(destination, state.eq(args[0], args[1]));
 		} else {
-			const fIDs = createFunctionIDs(state, op.destinations, op.operation, signature, []);
+			const fIDs = state.foreign.get(op.operation);
 			for (let i = 0; i < op.destinations.length; i++) {
-				state.defineVariable(op.destinations[i], {
-					tag: "app",
-					f: fIDs[i],
-					args,
-				});
+				state.defineVariable(op.destinations[i], state.smt.createApplication(fIDs[i], args));
 			}
 		}
 		return;
@@ -555,7 +509,8 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		traverseStaticCall(program, op, state, context);
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		const fs = createDynamicFunctionID(state, op);
+		const typeArguments = op.constraint.subjects.concat(op.signature_type_arguments);
+		const fs = state.dynamicFunctions.get(op.constraint.interface, op.signature_id as ir.FunctionID, typeArguments);
 		const constraint = program.interfaces[op.constraint.interface];
 		const signature = constraint.signatures[op.signature_id];
 
@@ -584,7 +539,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				tag: "failed-assert",
 				assertLocation: op.diagnostic_location,
 			};
-		if (state.checkReachable(reason, context.constraintSolver) !== "refuted") {
+		if (state.checkReachable(reason) !== "refuted") {
 			state.failedVerifications.push(reason);
 		}
 
@@ -626,13 +581,12 @@ function traverseStaticCall(
 			const recursiveContext: VerificationContext = {
 				returnsPostConditions: [],
 				parameters: [],
-				constraintSolver: context.constraintSolver,
 			};
 			for (let i = 0; i < op.arguments.length; i++) {
 				state.defineVariable(signature.parameters[i], args[i]);
 				recursiveContext.parameters.push({
 					definition: signature.parameters[i],
-					constant: args[i],
+					symbolic: args[i],
 				});
 			}
 
@@ -643,17 +597,13 @@ function traverseStaticCall(
 					preconditionLocation: precondition.location,
 				};
 
-				const bool: smt.UFConstraint = {
-					tag: "predicate",
-					predicate: state.getValue(precondition.precondition).value,
-				};
-
-				state.pushConstraint(negate(bool));
-				const refutation = state.checkReachable(reason, context.constraintSolver);
+				const bool = state.getValue(precondition.precondition).value;
+				state.pushPathConstraint(state.negate(bool));
+				const refutation = state.checkReachable(reason);
 				if (refutation !== "refuted") {
 					state.failedVerifications.push(reason);
 				}
-				state.popConstraint();
+				state.popPathConstraint();
 			});
 			state.popScope();
 		}
@@ -661,13 +611,10 @@ function traverseStaticCall(
 		delete state.recursivePreconditions.blockedFunctions[fn];
 	}
 
-	const smtFnID = createFunctionIDs(state, op.destinations, fn, signature, op.type_arguments);
+	const smtFns = state.functions.get(fn).get(op.type_arguments);
 	for (let i = 0; i < op.destinations.length; i++) {
-		state.defineVariable(op.destinations[i], {
-			tag: "app",
-			f: smtFnID[i],
-			args,
-		});
+		const result = state.smt.createApplication(smtFns[i], args);
+		state.defineVariable(op.destinations[i], result);
 	}
 
 	for (const postcondition of signature.postconditions) {
@@ -694,55 +641,13 @@ function traverseStaticCall(
 
 		// TODO: Do we need a different context?
 		traverseBlock(program, postcondition.block, state, context, () => {
-			const bool: smt.UFConstraint = {
-				tag: "predicate",
-				predicate: state.getValue(postcondition.postcondition).value,
-			};
-			state.pushConstraint(negate(bool));
+			const bool = state.getValue(postcondition.postcondition).value;
+			state.pushPathConstraint(state.negate(bool));
 			state.markPathUnreachable();
-			state.popConstraint();
+			state.popPathConstraint();
 		});
 
 		state.popScope();
 		delete state.recursivePostconditions.blockedFunctions[fn];
 	}
-
-	// Handle the special semantics of functions.
-	if (signature.semantics?.eq === true) {
-		if (op.arguments.length !== 2) {
-			throw new Error("Function signature with `eq` semantics must take exactly 2 arguments (" + fn + ")");
-		}
-		const left = state.getValue(op.arguments[0]).value;
-		const right = state.getValue(op.arguments[1]).value;
-		if (op.destinations.length !== 1) {
-			throw new Error("Function signatures with `eq` semantics must return exactly 1 value (" + fn + ")");
-		}
-		const destination = op.destinations[0];
-		const constant = state.vendConstant(sortOf(destination.type), "feq");
-		learnEquality(state, left, right, constant);
-		state.defineVariable(op.destinations[0], constant);
-	}
-}
-
-export function checkUnreachableSMT(
-	_: FailedVerification,
-	constantSorts: Record<string, smt.UFSort>,
-	functionSorts: Record<string, smt.UFSort>,
-	clauses: smt.UFConstraint[][],
-): "refuted" | {} {
-	const theory = new smt.UFTheory();
-	for (let variable in constantSorts) {
-		theory.defineVariable(variable, constantSorts[variable]);
-	}
-	for (let func in functionSorts) {
-		theory.defineFunction(func, functionSorts[func]);
-	}
-	for (let clause of clauses) {
-		if (clause.length === 0) {
-			return "refuted";
-		}
-		theory.addConstraint(clause);
-	}
-
-	return theory.attemptRefutation();
 }

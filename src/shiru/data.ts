@@ -51,55 +51,86 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	}
 }
 
-interface Edge<K> {
-	next: number,
+export class DefaultMap<K, V> {
+	private map = new Map<K, V>();
+	constructor(private defaulter: (k: K) => V) { }
+
+	get(key: K): V {
+		if (this.map.has(key)) {
+			return this.map.get(key)!;
+		} else {
+			const v = this.defaulter(key);
+			this.map.set(key, v);
+			return v;
+		}
+	}
+
+	*[Symbol.iterator]() {
+		yield* this.map[Symbol.iterator]();
+	}
+}
+
+interface Edge<E, K> {
+	next: E,
 	key: K,
 };
 
-type BFS<K> = { n: number, parent: null } | { n: number, parent: BFS<K>, key: K };
+type BFS<E, K> = { n: E, parent: null } | { n: E, parent: BFS<E, K>, key: K };
 
 /// DisjointSet implements the "disjoint set" (a.k.a. "union find") data-
 /// structure, which tracks the set of components in an undirected graph between
 /// a set of integers {0, 1, 2, ... n} as edges are added.
 /// This implementation is augmented with information about "keys" so that
 /// queries can find a path between two nodes in the same component.
-export class DisjointSet<K> {
-	parents: number[] = [];
-	ranks: number[] = [];
-	outgoingEdges: Edge<K>[][] = [];
+export class DisjointSet<E, K> {
+	parents: Map<E, E> = new Map();
+	ranks: Map<E, number> = new Map();
+	outgoingEdges: Map<E, Edge<E, K>[]> = new Map();
 
-	expandTo(n: number) {
-		for (let i = this.parents.length; i <= n; i++) {
-			this.parents.push(i);
-			this.ranks.push(0);
-			this.outgoingEdges.push([]);
+	reset() {
+		for (const [k, _] of this.parents) {
+			this.parents.set(k, k);
+			this.ranks.set(k, 0);
+			this.outgoingEdges.set(k, []);
+		}
+	}
+
+	init(e: E) {
+		if (!this.parents.has(e)) {
+			this.parents.set(e, e);
+			this.ranks.set(e, 0);
+			this.outgoingEdges.set(e, []);
 		}
 	}
 
 	/// representative returns a "representative" element of the given object's
 	/// equivalence class, such that two elements are members of the same
 	/// equivalence class if and only if their representatives are the same.
-	representative(n: number): number {
-		this.expandTo(n);
-		while (this.parents[n] !== n) {
-			// "Path halving"
-			this.parents[n] = this.parents[this.parents[n]];
-			n = this.parents[n];
+	representative(e: E): E {
+		this.init(e);
+		while (true) {
+			const parent = this.parents.get(e)!;
+			if (parent === e) {
+				break;
+			}
+			const grandparent = this.parents.get(parent)!;
+			this.parents.set(e, grandparent);
+			e = grandparent;
 		}
-		return n;
+		return e;
 	}
 
 	/// compareEqual returns whether or not the two objects are members of the
 	/// same equivalence class.
-	compareEqual(a: number, b: number): boolean {
+	compareEqual(a: E, b: E): boolean {
 		return this.representative(a) === this.representative(b);
 	}
 
 	/// explainEquality returns a sequences of keys linking the two values in
 	/// the same component.
-	explainEquality(a: number, b: number): K[] {
+	explainEquality(a: E, b: E): K[] {
 		// Perform BFS on the outgoing edges graph.
-		const q: BFS<K>[] = [{ n: a, parent: null }];
+		const q: BFS<E, K>[] = [{ n: a, parent: null }];
 		for (let i = 0; i < q.length; i++) {
 			const top = q[i];
 			if (top.n === b) {
@@ -111,7 +142,7 @@ export class DisjointSet<K> {
 				}
 				return keys;
 			}
-			for (let e of this.outgoingEdges[top.n]) {
+			for (const e of this.outgoingEdges.get(top.n)!) {
 				q.push({
 					n: e.next,
 					parent: top,
@@ -127,20 +158,20 @@ export class DisjointSet<K> {
 	/// objects a and b.
 	/// RETURNS false when the objects were already members of the same
 	///         equivalence class.
-	union(a: number, b: number, key: K): boolean {
-		this.expandTo(a < b ? b : a);
+	union(a: E, b: E, key: K): boolean {
+		this.init(a);
+		this.init(b);
 		const ra = this.representative(a);
 		const rb = this.representative(b);
 		if (ra == rb) {
 			return false;
 		}
-		this.outgoingEdges[a].push({ next: b, key: key });
-		this.outgoingEdges[b].push({ next: a, key: key });
+		this.outgoingEdges.get(a)!.push({ next: b, key: key });
+		this.outgoingEdges.get(b)!.push({ next: a, key: key });
 
-		let child: number;
-		let parent: number;
-
-		if (this.ranks[ra] < this.ranks[rb]) {
+		let child: E;
+		let parent: E;
+		if (this.ranks.get(ra)! < this.ranks.get(rb)!) {
 			child = ra;
 			parent = rb;
 		} else {
@@ -148,28 +179,24 @@ export class DisjointSet<K> {
 			parent = ra;
 		}
 
-		this.parents[child] = parent;
-		if (this.ranks[child] === this.ranks[parent]) {
-			this.ranks[parent] += 1;
+		this.parents.set(child, parent);
+		if (this.ranks.get(child) === this.ranks.get(parent)) {
+			this.ranks.set(parent, this.ranks.get(parent)! + 1);
 		}
 		return true;
 	}
 
 	/// RETURNS the set of equivalence classes managed by this data structure.
-	components(): number[][] {
-		let components: number[][] = [];
-		for (let i = 0; i < this.parents.length; i++) {
-			components.push([]);
-		}
-		for (let i = 0; i < this.parents.length; i++) {
-			components[this.parents[i]].push(i);
-		}
-		let out: number[][] = [];
-		for (let i = 0; i < components.length; i++) {
-			if (components[i].length !== 0) {
-				out.push(components[i]);
+	components(): E[][] {
+		let components: Map<E, E[]> = new Map();
+		for (const [e, parent] of this.parents) {
+			if (e === parent) {
+				components.set(e, []);
 			}
 		}
-		return out;
+		for (const [e, _] of this.parents) {
+			components.get(this.representative(e))!.push(e);
+		}
+		return [...components.values()];
 	}
 }

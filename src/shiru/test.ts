@@ -1,12 +1,14 @@
+import * as data_tests from "./data_tests";
+import * as egraph_tests from "./egraph_tests";
+import * as grammar_tests from "./grammar_tests";
 import * as interpreter_tests from "./interpreter_tests";
+import * as lexer_tests from "./lexer_tests";
 import * as parser_tests from "./parser_tests";
 import * as sat_tests from "./sat_tests";
-import * as smt_tests from "./smt_tests";
-import * as data_tests from "./data_tests";
-import * as verify_tests from "./verify_tests";
-import * as lexer_tests from "./lexer_tests";
-import * as grammar_tests from "./grammar_tests";
 import * as semantics_tests from "./semantics_tests";
+import * as smt_tests from "./smt_tests";
+import * as uf_tests from "./uf_tests";
+import * as verify_tests from "./verify_tests";
 
 import * as util from "util";
 
@@ -84,8 +86,29 @@ export class TestRunner {
 	}
 }
 
-function deepEqual(a: any, b: any): { eq: true } | { eq: false, path: any[] } {
-	if (a === b) {
+export const spec = Symbol("test-spec");
+
+export type Spec<T> = T
+	| (T extends object ? { [K in keyof T]: Spec<T[K]> } : never)
+	| { [spec]: (t: T) => ReturnType<typeof deepEqual> };
+
+export function specSupersetOf<T>(subset: Set<T>): Spec<Set<T>> {
+	return {
+		[spec](test: Set<T>) {
+			for (const e of subset) {
+				if (!test.has(e)) {
+					return { eq: false, path: [e] };
+				}
+			}
+			return { eq: true };
+		},
+	}
+}
+
+function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[] } {
+	if (b !== null && typeof b === "object" && spec in b) {
+		return b[spec](a);
+	} else if (a === b) {
 		return { eq: true };
 	} else if (typeof a !== typeof b) {
 		return { eq: false, path: [] };
@@ -129,7 +152,7 @@ function deepEqual(a: any, b: any): { eq: true } | { eq: false, path: any[] } {
 	}
 }
 
-export function assert<A, B extends A>(a: A, op: "is equal to", b: B): asserts a is B;
+export function assert<A, B extends A>(a: A, op: "is equal to", b: Spec<B>): asserts a is B;
 export function assert<A>(a: A, op: A extends any[] ? "is array" : never): asserts a is any[] & A;
 export function assert(a: () => void, op: "throws", e: unknown): void;
 
@@ -170,12 +193,14 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 const testRunner = new TestRunner(process.argv[2]);
 
 testRunner.runTests("data_tests", data_tests.tests);
+testRunner.runTests("egraph_tests", egraph_tests.tests);
+testRunner.runTests("grammar_tests", grammar_tests.tests);
 testRunner.runTests("interpreter_tests", interpreter_tests.tests);
+testRunner.runTests("lexer_tests", lexer_tests.tests);
 testRunner.runTests("parser_tests", parser_tests.tests);
 testRunner.runTests("sat_tests", sat_tests.tests);
-testRunner.runTests("smt_tests", smt_tests.tests);
-testRunner.runTests("verify_tests", verify_tests.tests);
-testRunner.runTests("lexer_tests", lexer_tests.tests);
-testRunner.runTests("grammar_tests", grammar_tests.tests);
 testRunner.runTests("semantics_tests", semantics_tests.tests);
+testRunner.runTests("smt_tests", smt_tests.tests);
+testRunner.runTests("uf_tests", uf_tests.tests);
+testRunner.runTests("verify_tests", verify_tests.tests);
 testRunner.printReport();

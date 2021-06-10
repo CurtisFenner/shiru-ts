@@ -37,13 +37,13 @@ export class EGraph<Term, Tag, Reason> {
 		return out;
 	}
 
-	add(term: Term, operands: symbol[], tag?: Tag): symbol {
+	add(term: Term, operands: symbol[], tag?: Tag, hint?: string): symbol {
 		const tuple: [Term, ...symbol[]] = [term, ...operands];
 		const existing = this.tuples.get(tuple);
 		if (existing) {
 			return existing;
 		} else {
-			const id: symbol = Symbol("egraph-term");
+			const id: symbol = Symbol("egraph-term(" + hint + ")");
 			this.tuples.put(tuple, id);
 			if (tag !== undefined) {
 				this.tagged.get(tag).get(id).add(id);

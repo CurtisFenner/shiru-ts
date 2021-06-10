@@ -31,9 +31,13 @@ type Reason = number;
 
 export type ValueID = symbol & { __brand: "uf.ValueID" };
 
-interface Semantics {
+export interface Semantics {
 	eq?: true,
 	not?: true,
+
+	interpreter?: {
+		f(...args: (unknown | null)[]): unknown | null,
+	},
 }
 
 interface FnInfo {
@@ -53,33 +57,44 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	private literalByValue = new Map<ValueID, number>();
 
 	private eg = new egraph.EGraph<VarID | FnID | LiteralValue, "constant", Reason>();
+	private values = new Map<ValueID, Value>();
+	private functions = new Map<FnID, FnInfo>();
 
 	private constantValue = new Map<ValueID, unknown>();
 	private constants = new DefaultMap<unknown, ValueID>(c => {
 		const term: LiteralValue = { tag: "literal", literal: c };
-		const id = this.eg.add(term, [], "constant") as ValueID;
+		const id = this.eg.add(term, [], "constant", "constant") as ValueID;
 		this.constantValue.set(id, c);
+		this.values.set(id, term);
 		return id;
 	});
 
-	private values = new Map<ValueID, Value>();
-	private functions = new Map<FnID, FnInfo>();
 
 	createVariable(type: ir.Type): ValueID {
 		const varID = Symbol("uf-symbol") as VarID;
-		const variable = this.eg.add(varID, []) as ValueID;
+		const variable = this.eg.add(varID, [], undefined, "variable") as ValueID;
 		this.values.set(variable, { tag: "var", variable: varID });
-		if (ir.equalTypes(type, ir.T_BOOLEAN)) {
-			const term = this.nextTerm;
-			this.nextTerm += 1;
-			this.literalByValue.set(variable, +term);
-			this.valueByTerm.set(term, variable);
+		return this.vendTermForBoolean(type, variable);
+	}
+
+	private vendTermForBoolean(t: ir.Type, id: ValueID): ValueID {
+		if (ir.equalTypes(t, ir.T_BOOLEAN)) {
+			if (!this.literalByValue.has(id)) {
+				const term = this.nextTerm;
+				this.nextTerm += 1;
+				this.literalByValue.set(id, +term);
+				this.valueByTerm.set(term, id);
+			}
 		}
-		return variable;
+		return id;
 	}
 
 	createConstant(t: ir.Type, c: unknown): ValueID {
-		return this.constants.get(c);
+		if (c === null) {
+			throw new Error("createConstant: cannot use `null` as constant");
+		}
+		const id = this.constants.get(c);
+		return this.vendTermForBoolean(t, id);
 	}
 
 	createFunction(returnType: ir.Type, semantics: Semantics): FnID {
@@ -93,7 +108,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		if (fn === undefined) {
 			throw new Error("UFTheory.createApplication: undefined function");
 		}
-		const value = this.eg.add(fnID, args) as ValueID;
+		const value = this.eg.add(fnID, args, undefined, "app(" + fnID.toString() + ")") as ValueID;
 		if (!this.values.has(value)) {
 			this.values.set(value, {
 				tag: "app",
@@ -110,15 +125,73 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 					}
 					this.literalByValue.set(value, -sub);
 				} else {
-					const term = this.nextTerm;
-					this.nextTerm += 1;
-					this.valueByTerm.set(term, value);
-					this.literalByValue.set(value, +term);
+					this.vendTermForBoolean(ir.T_BOOLEAN, value);
 				}
 			}
 		}
 
 		return value;
+	}
+
+	/// `evaluateConstant` returns a constant (as it was passed to
+	/// `createConstant`) that is equal to the given value under the current
+	/// constraints.
+	evaluateConstant(value: ValueID): { constant: unknown, reason: Set<number> } | null {
+		const constants = this.eg.getTagged("constant", value);
+		if (constants.length === 0) {
+			return null;
+		}
+		const id = constants[0].id;
+		const constant = this.constantValue.get(id as ValueID);
+		return {
+			constant,
+			reason: this.eg.query(value, id)!,
+		};
+	}
+
+	/// `interpretFunctions` adds additional constants and equalities by using
+	/// the `interpreter` semantics of functions.
+	interpretFunctions() {
+		let madeChanges = false;
+		while (true) {
+			let iterationMadeChanges = false;
+			for (const [eclass, { members }] of this.eg.getClasses()) {
+				for (const member of members) {
+					const fn = this.functions.get(member.term as FnID);
+					if (fn !== undefined) {
+						const interpreter = fn.semantics.interpreter;
+						if (interpreter !== undefined) {
+							const reason = new Set<number>();
+							const args = [];
+							for (const operand of member.operands) {
+								const ec = this.evaluateConstant(operand as ValueID);
+								if (ec !== null) {
+									args.push(ec.constant);
+									for (const s of ec.reason) {
+										reason.add(s);
+									}
+								} else {
+									args.push(null);
+								}
+							}
+							const r = interpreter.f(...args);
+							if (r !== null) {
+								const constant = this.createConstant(fn.returnType, r);
+								const changed = this.eg.merge(constant, eclass, reason);
+								if (changed) {
+									iterationMadeChanges = true;
+								}
+							}
+						}
+					}
+				}
+			}
+			if (!iterationMadeChanges) {
+				break;
+			}
+			madeChanges = true;
+		}
+		return madeChanges;
 	}
 
 	clausify(constraint: ValueID[]): number[][] {
@@ -141,7 +214,10 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		for (const literal of literals) {
 			const term = literal > 0 ? literal : -literal;
 			const positiveValue = this.valueByTerm.get(term)!;
-			const definition = this.values.get(positiveValue)!;
+			const definition = this.values.get(positiveValue);
+			if (definition === undefined) {
+				throw new Error("rejectModel: undefined literal");
+			}
 
 			if (literal > 0) {
 				this.eg.merge(positiveValue, trueObject, new Set([literal]));
@@ -187,7 +263,9 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 				}
 			}
 
-			let madeChanges = this.eg.updateCongruence();
+			let madeChanges = false;
+			madeChanges = this.eg.updateCongruence() || madeChanges;
+			madeChanges = this.interpretFunctions() || madeChanges;
 
 			if (!madeChanges) {
 				return {};

@@ -958,7 +958,10 @@ function compileCall(
 			throw new diagnostics.TypeMismatchErr({
 				givenType: displayType(valueType),
 				givenLocation: value.tuple.location,
-				givenIndex: { index0: value.i, count: value.tuple.values.length },
+				givenIndex: {
+					index0: value.i,
+					count: value.tuple.values.length,
+				},
 				expectedType: displayType(expectedType),
 				expectedLocation: fn.parameters[i].location,
 			});
@@ -972,7 +975,11 @@ function compileCall(
 		const returnType = ir.typeSubstitute(templateType, typeArgumentMapping);
 
 		const destination = stack.uniqueID("fncall" + i);
-		destinations.push({ variable: destination, type: returnType });
+		destinations.push({
+			variable: destination,
+			type: returnType,
+			location,
+		});
 	}
 
 	const typeArgumentList = [];
@@ -1117,6 +1124,7 @@ function compileRecordLiteral(
 	const destination = {
 		variable: stack.uniqueID("record" + t.record),
 		type: t,
+		location: e.location,
 	};
 
 	ops.push({
@@ -1140,7 +1148,11 @@ function compileExpressionAtom(
 	if (e.tag === "iden") {
 		const v = stack.resolve(e);
 		return {
-			values: [{ type: v.t, variable: v.currentValue }],
+			values: [{
+				type: v.t,
+				variable: v.currentValue,
+				location: e.location,
+			}],
 			location: e.location,
 		};
 	} else if (e.tag === "paren") {
@@ -1157,11 +1169,13 @@ function compileExpressionAtom(
 		const destination = {
 			variable: stack.uniqueID("number"),
 			type: ir.T_INT,
+			location: e.location,
 		};
 		ops.push({
 			tag: "op-const",
 			destination,
-			value: e.value,
+			type: "Int",
+			int: e.int,
 		});
 		return { values: [destination], location: e.location };
 	} else if (e.tag === "call") {
@@ -1171,11 +1185,13 @@ function compileExpressionAtom(
 			const destination = {
 				variable: stack.uniqueID("boolean"),
 				type: ir.T_BOOLEAN,
+				location: e.location,
 			};
 			ops.push({
 				tag: "op-const",
 				destination,
-				value: e.keyword === "true",
+				type: "Boolean",
+				boolean: e.keyword === "true",
 			});
 			return { values: [destination], location: e.location };
 		} else if (e.keyword === "return") {
@@ -1198,11 +1214,13 @@ function compileExpressionAtom(
 		const destination = {
 			variable: stack.uniqueID("string"),
 			type: ir.T_BYTES,
+			location: e.location,
 		};
 		ops.push({
 			tag: "op-const",
 			destination,
-			value: e.value,
+			type: "Bytes",
+			bytes: e.value,
 		});
 		return { values: [destination], location: e.location };
 	}
@@ -1255,6 +1273,7 @@ function compileOperand(
 			const destination = {
 				variable: stack.uniqueID("field"),
 				type: fieldType,
+				location,
 			};
 			ops.push({
 				tag: "op-field",
@@ -1599,6 +1618,7 @@ function compileExpressionTree(
 		const destination = {
 			variable: stack.uniqueID("logical"),
 			type: ir.T_BOOLEAN,
+			location: tree.location,
 		};
 
 		const trueOps: ir.Op[] = [];
@@ -1641,10 +1661,12 @@ function compileExpressionTree(
 			const trueConst = {
 				variable: stack.uniqueID("falseimplies"),
 				type: ir.T_BOOLEAN,
+				location: ir.NONE,
 			};
 			falseOps.push({
 				tag: "op-const",
-				value: true,
+				type: "Boolean",
+				boolean: true,
 				destination: trueConst,
 			});
 			falseSource = trueConst.variable;
@@ -1727,9 +1749,11 @@ function compileExpressionTree(
 				+ foreign.return_types.length + " values");
 		}
 
+		const location = ir.locationSpan(left.location, right.location);
 		const destination = {
 			variable: stack.uniqueID("arithmetic"),
 			type: foreign.return_types[0],
+			location,
 		};
 
 		ops.push({
@@ -1741,7 +1765,7 @@ function compileExpressionTree(
 
 		return {
 			values: [destination],
-			location: ir.locationSpan(left.location, right.location),
+			location,
 		};
 	}
 }
@@ -1763,7 +1787,7 @@ function compileExpression(
 
 /// `displayType` formats the given IR `Type` as a string of (fully qualified)
 /// Shiru code.
-function displayType(t: ir.Type): string {
+export function displayType(t: ir.Type): string {
 	if (t.tag === "type-compound") {
 		const base = t.record;
 		const args = t.type_arguments.map(displayType);
@@ -1786,7 +1810,7 @@ function displayType(t: ir.Type): string {
 /// `displayConstraint` formats the given IR constraint as a string, potentially
 /// formatted for the given `SourceContext` (considering import aliases and
 /// such).
-function displayConstraint(c: ir.ConstraintParameter): string {
+export function displayConstraint(c: ir.ConstraintParameter): string {
 	const base = c.interface;
 	if (c.subjects.length === 0) {
 		throw new Error("ICE: Invalid constraint `" + base + "`");
@@ -2045,7 +2069,11 @@ function compileFunctionSignature(
 		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
 		const parameterVariableID = parameterAST.name.name as ir.VariableID;
 		stack.defineLocal(parameterAST.name.name, t, parameterAST.name.location, parameterVariableID);
-		signature.parameters.push({ variable: parameterVariableID, type: t });
+		signature.parameters.push({
+			variable: parameterVariableID,
+			type: t,
+			location: parameterAST.name.location,
+		});
 	}
 
 	const context: FunctionContext = {
@@ -2084,6 +2112,8 @@ function compileFunctionSignature(
 			ensuresReturnExpression.values.push({
 				variable: stack.uniqueID("return" + i),
 				type: signature.return_types[i],
+				// TODO:
+				location: ir.NONE,
 			});
 		}
 
@@ -2205,8 +2235,16 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int==": {
 			// Equality
 			parameters: [
-				{ variable: "left" as ir.VariableID, type: ir.T_INT },
-				{ variable: "right" as ir.VariableID, type: ir.T_INT },
+				{
+					variable: "left" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
+				{
+					variable: "right" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
 			],
 			return_types: [ir.T_BOOLEAN],
 			type_parameters: [],
@@ -2220,8 +2258,16 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int+": {
 			// Addition
 			parameters: [
-				{ variable: "left" as ir.VariableID, type: ir.T_INT },
-				{ variable: "right" as ir.VariableID, type: ir.T_INT },
+				{
+					variable: "left" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
+				{
+					variable: "right" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
 			],
 			return_types: [ir.T_INT],
 			type_parameters: [],
@@ -2232,8 +2278,16 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 		"Int-": {
 			// Subtract
 			parameters: [
-				{ variable: "left" as ir.VariableID, type: ir.T_INT },
-				{ variable: "right" as ir.VariableID, type: ir.T_INT },
+				{
+					variable: "left" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
+				{
+					variable: "right" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
 			],
 			return_types: [ir.T_INT],
 			type_parameters: [],

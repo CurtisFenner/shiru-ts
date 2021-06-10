@@ -23,11 +23,26 @@ export function verifyProgram(
 	return problems;
 }
 
+const foreignInterpeters = {
+	"Int+": {
+		f(a: unknown | null, b: unknown | null): unknown | null {
+			if (a === null || b === null) {
+				return null;
+			} else if (typeof a !== "bigint") {
+				throw new Error("foreignInterpreters['Int+']: got non bigint `" + a + "`");
+			} else if (typeof b !== "bigint") {
+				throw new Error("foreignInterpreters['Int+']: got non bigint `" + b + "`");
+			}
+			return (a as bigint) + (b as bigint);
+		},
+	},
+};
+
 function verifyFunction(
 	program: ir.Program,
 	fName: string,
 ): FailedVerification[] {
-	const state = new VerificationState(program);
+	const state = new VerificationState(program, foreignInterpeters);
 
 	const f = program.functions[fName];
 
@@ -48,7 +63,7 @@ function verifyFunction(
 	// Execute and validate the function's preconditions.
 	for (let i = 0; i < f.signature.preconditions.length; i++) {
 		const precondition = f.signature.preconditions[i];
-		traverseBlock(program, precondition.block, state, {
+		traverseBlock(program, new Map(), precondition.block, state, {
 			// Return statements do not return a value.
 			returnsPostConditions: [],
 			parameters: contextParameters,
@@ -60,7 +75,33 @@ function verifyFunction(
 		});
 	}
 
-	traverseBlock(program, f.body, state, {
+	// Validate that the function's postconditions explicitly guarantee their
+	// requirements.
+	state.smt.pushScope();
+	let symbolicReturned = [];
+	for (const r of f.signature.return_types) {
+		symbolicReturned.push(state.smt.createVariable(r));
+	}
+	for (const postcondition of f.signature.postconditions) {
+		const local = new Map<ir.VariableDefinition, uf.ValueID>();
+		for (let i = 0; i < symbolicReturned.length; i++) {
+			local.set(postcondition.returnedValues[i], symbolicReturned[i]);
+		}
+		traverseBlock(program, local, postcondition.block, state, {
+			returnsPostConditions: [],
+			parameters: contextParameters,
+		}, () => {
+			const bool = state.getValue(postcondition.postcondition).value;
+			state.pushPathConstraint(state.negate(bool));
+			state.markPathUnreachable();
+			state.popPathConstraint();
+		});
+	}
+	state.smt.popScope();
+
+	// Check the function's body (including that each return op guarantees the
+	// ensured postconditions).
+	traverseBlock(program, new Map(), f.body, state, {
 		returnsPostConditions: f.signature.postconditions,
 		parameters: contextParameters,
 	});
@@ -192,6 +233,7 @@ class ConstructorMap {
 
 class VerificationState {
 	private program: ir.Program;
+	private foreignInterpreters: Record<string, uf.Semantics["interpreter"]>;
 
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
@@ -217,7 +259,10 @@ class VerificationState {
 		}
 		const out = [];
 		for (const r of fn.return_types) {
-			out.push(this.smt.createFunction(r, { eq: fn.semantics?.eq }));
+			out.push(this.smt.createFunction(r, {
+				eq: fn.semantics?.eq,
+				interpreter: this.foreignInterpreters[op],
+			}));
 		}
 		return out;
 	});
@@ -252,8 +297,12 @@ class VerificationState {
 	// Multiple failures can be returned.
 	failedVerifications: FailedVerification[] = [];
 
-	constructor(program: ir.Program) {
+	constructor(
+		program: ir.Program,
+		foreignInterpeters: Record<string, uf.Semantics["interpreter"]>,
+	) {
 		this.program = program;
+		this.foreignInterpreters = foreignInterpeters;
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.constructorMap = new ConstructorMap(this.program, this.smt);
 		this.fieldMap = new FieldMap(this.program, this.smt);
@@ -267,13 +316,13 @@ class VerificationState {
 		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
-	pushScope() {
+	pushDefinitionScope() {
 		this.scopes.push({
 			variables: new Map(),
 		});
 	}
 
-	popScope() {
+	popDefinitionScope() {
 		this.scopes.pop();
 	}
 
@@ -327,13 +376,18 @@ class VerificationState {
 
 function traverseBlock(
 	program: ir.Program,
+	locals: Map<ir.VariableDefinition, uf.ValueID>,
 	block: ir.OpBlock,
 	state: VerificationState,
 	context: VerificationContext,
 	then?: () => unknown,
 ) {
 	// Blocks bound variable scopes, so variables must be cleared after.
-	state.pushScope();
+	state.pushDefinitionScope();
+
+	for (const [k, v] of locals) {
+		state.defineVariable(k, v);
+	}
 
 	for (let subop of block.ops) {
 		traverse(program, subop, state, context);
@@ -345,7 +399,7 @@ function traverseBlock(
 	}
 
 	// Clear variables defined within this block.
-	state.popScope();
+	state.popDefinitionScope();
 }
 
 // MUTATES the verification state parameter, to add additional clauses that are
@@ -359,9 +413,8 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			phis.push(state.smt.createVariable(destination.destination.type));
 		}
 
-		state.pushScope();
 		state.pushPathConstraint(symbolicCondition);
-		traverseBlock(program, op.trueBranch, state, context, () => {
+		traverseBlock(program, new Map(), op.trueBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
@@ -373,11 +426,9 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			}
 		})
 		state.popPathConstraint();
-		state.popScope();
 
-		state.pushScope();
 		state.pushPathConstraint(state.negate(symbolicCondition));
-		traverseBlock(program, op.falseBranch, state, context, () => {
+		traverseBlock(program, new Map(), op.falseBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
@@ -389,7 +440,6 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			}
 		});
 		state.popPathConstraint();
-		state.popScope();
 
 		for (let i = 0; i < op.destinations.length; i++) {
 			state.defineVariable(op.destinations[i].destination, phis[i]);
@@ -399,7 +449,17 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-const") {
 		// Like assignment, this requires no manipulation of constraints, only
 		// the state of variables.
-		const constant = state.smt.createConstant(op.destination.type, op.value);
+		let constant: uf.ValueID;
+		if (op.type === "Int") {
+			constant = state.smt.createConstant(op.destination.type, BigInt(op.int));
+		} else if (op.type === "Boolean") {
+			constant = state.smt.createConstant(op.destination.type, op.boolean);
+		} else if (op.type === "Bytes") {
+			constant = state.smt.createConstant(op.destination.type, op.bytes);
+		} else {
+			const _: never = op;
+			throw new Error("traverse: unexpected op-const type `" + op["type"] + "`");
+		}
 		state.defineVariable(op.destination, constant);
 		return;
 	} else if (op.tag === "op-field") {
@@ -427,26 +487,21 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		}
 		return;
 	} else if (op.tag === "op-proof") {
-		return traverseBlock(program, op.body, state, context);
+		return traverseBlock(program, new Map(), op.body, state, context);
 	} else if (op.tag === "op-return") {
 		if (context.returnsPostConditions.length !== 0) {
 			for (let postcondition of context.returnsPostConditions) {
-				state.pushScope();
-				const values = [];
-				for (const source of op.sources) {
-					values.push(state.getValue(source));
-				}
-
 				// The original parameters might have been shadowed, so they
 				// need to be redeclared.
+				const locals = new Map<ir.VariableDefinition, uf.ValueID>();
 				for (const parameter of context.parameters) {
-					state.defineVariable(parameter.definition, parameter.symbolic);
+					locals.set(parameter.definition, parameter.symbolic);
 				}
 				for (let i = 0; i < postcondition.returnedValues.length; i++) {
-					state.defineVariable(postcondition.returnedValues[i], values[i].value);
+					locals.set(postcondition.returnedValues[i], state.getValue(op.sources[i]).value);
 				}
 
-				traverseBlock(program, postcondition.block, state, context, () => {
+				traverseBlock(program, locals, postcondition.block, state, context, () => {
 					const reason: FailedVerification = {
 						tag: "failed-postcondition",
 						returnLocation: op.diagnostic_return_site,
@@ -463,8 +518,6 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 						state.failedVerifications.push(reason);
 					}
 				});
-
-				state.popScope();
 			}
 		}
 
@@ -576,21 +629,20 @@ function traverseStaticCall(
 		state.recursivePreconditions.blockedFunctions[fn] = true;
 
 		for (const precondition of signature.preconditions) {
-			state.pushScope();
-
 			const recursiveContext: VerificationContext = {
 				returnsPostConditions: [],
 				parameters: [],
 			};
+			const locals = new Map<ir.VariableDefinition, uf.ValueID>();
 			for (let i = 0; i < op.arguments.length; i++) {
-				state.defineVariable(signature.parameters[i], args[i]);
+				locals.set(signature.parameters[i], args[i]);
 				recursiveContext.parameters.push({
 					definition: signature.parameters[i],
 					symbolic: args[i],
 				});
 			}
 
-			traverseBlock(program, precondition.block, state, recursiveContext, () => {
+			traverseBlock(program, locals, precondition.block, state, recursiveContext, () => {
 				const reason: FailedVerification = {
 					tag: "failed-precondition",
 					callLocation: op.diagnostic_callsite,
@@ -605,7 +657,6 @@ function traverseStaticCall(
 				}
 				state.popPathConstraint();
 			});
-			state.popScope();
 		}
 
 		delete state.recursivePreconditions.blockedFunctions[fn];
@@ -619,35 +670,26 @@ function traverseStaticCall(
 
 	for (const postcondition of signature.postconditions) {
 		state.recursivePostconditions.blockedFunctions[fn] = true;
-		state.pushScope();
-
-		const parameters = [];
+		const locals = new Map<ir.VariableDefinition, uf.ValueID>();
 		for (let i = 0; i < op.arguments.length; i++) {
-			parameters.push({
-				variable: signature.parameters[i],
-				value: state.getValue(op.arguments[i]).value,
-			});
+			const variable = signature.parameters[i];
+			const value = state.getValue(op.arguments[i]).value;
+			locals.set(variable, value);
 		}
 		for (let i = 0; i < op.destinations.length; i++) {
-			parameters.push({
-				variable: postcondition.returnedValues[i],
-				value: state.getValue(op.destinations[i].variable).value,
-			});
-		}
-
-		for (const parameter of parameters) {
-			state.defineVariable(parameter.variable, parameter.value);
+			const variable = postcondition.returnedValues[i];
+			const value = state.getValue(op.destinations[i].variable).value;
+			locals.set(variable, value);
 		}
 
 		// TODO: Do we need a different context?
-		traverseBlock(program, postcondition.block, state, context, () => {
+		traverseBlock(program, locals, postcondition.block, state, context, () => {
 			const bool = state.getValue(postcondition.postcondition).value;
 			state.pushPathConstraint(state.negate(bool));
 			state.markPathUnreachable();
 			state.popPathConstraint();
 		});
 
-		state.popScope();
 		delete state.recursivePostconditions.blockedFunctions[fn];
 	}
 }

@@ -11,6 +11,12 @@ export interface SourceLocation {
 	length: number,
 }
 
+export const NONE: SourceLocation = {
+	fileID: "unknown",
+	offset: 0,
+	length: 0,
+}
+
 export function locationSpan(from: SourceLocation, to: SourceLocation) {
 	return {
 		fileID: from.fileID,
@@ -73,14 +79,33 @@ export type TypeVariableID = string & { __brand: "type-variable-id" };
 export interface VariableDefinition {
 	variable: VariableID,
 	type: Type,
+	// The location of this variable, for basic IDE support.
+	location: SourceLocation,
 }
 
 /// `OpConst` defines a primitive-typed destination variable with a constant.
-export interface OpConst {
+export type OpConst = {
 	tag: "op-const",
 	destination: VariableDefinition,
-	value: number | boolean | string,
-};
+} & (OpConstInt | OpConstBytes | OpConstBoolean);
+
+export interface OpConstInt {
+	type: "Int",
+
+	// `int` is encoded as ASCII digits.
+	int: string,
+}
+
+export interface OpConstBytes {
+	type: "Bytes",
+	// TODO: Encoding
+	bytes: string,
+}
+
+export interface OpConstBoolean {
+	type: "Boolean",
+	boolean: boolean,
+}
 
 /// `OpBranch` chooses which branch to execute depending on the current value of
 /// a `condition` variable.

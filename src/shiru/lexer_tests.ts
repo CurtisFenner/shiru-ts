@@ -109,12 +109,12 @@ export const tests = {
 		assert(tokens, "is equal to", [
 			{
 				tag: "number-literal",
-				value: 1,
+				int: "1",
 				location: { fileID: "test-file", offset: 0, length: 1 },
 			},
 			{
 				tag: "number-literal",
-				value: 12,
+				int: "12",
 				location: { fileID: "test-file", offset: 2, length: 2 },
 			},
 			{

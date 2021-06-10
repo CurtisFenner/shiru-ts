@@ -18,7 +18,7 @@ export type BytesValue = {
 };
 export type IntValue = {
 	sort: "int",
-	int: number,
+	int: bigint,
 };
 
 interface VTable {
@@ -372,14 +372,14 @@ function* interpretOp(
 		return op.sources.map(variable => frame.load(variable));
 	} else if (op.tag === "op-const") {
 		let value: Value;
-		if (typeof op.value === "boolean") {
-			value = { sort: "boolean", boolean: op.value };
-		} else if (typeof op.value === "number") {
-			value = { sort: "int", int: op.value };
-		} else if (typeof op.value === "string") {
-			value = { sort: "bytes", bytes: op.value };
+		if (op.type === "Boolean") {
+			value = { sort: "boolean", boolean: op.boolean };
+		} else if (op.type === "Int") {
+			value = { sort: "int", int: BigInt(op.int) };
+		} else if (op.type === "Bytes") {
+			value = { sort: "bytes", bytes: op.bytes };
 		} else {
-			const _: never = op.value;
+			const _: never = op;
 			throw new Error("interpretOp: unhandled op-const value");
 		}
 		frame.define(op.destination, value);
@@ -563,7 +563,16 @@ export function printOp(
 		return;
 	} else if (op.tag === "op-const") {
 		const lhs = printVariable(op.destination);
-		lines.push(indent + lhs + " = " + op.value + ";");
+		if (op.type === "Int") {
+			lines.push(indent + lhs + " = " + op.int + ";");
+		} else if (op.type === "Boolean") {
+			lines.push(indent + lhs + " = " + op.boolean + ";");
+		} else if (op.type === "Bytes") {
+			lines.push(indent + lhs + " = " + JSON.stringify(op.bytes) + ";");
+		} else {
+			const _: never = op;
+			throw new Error("printOp: unrecognized const type");
+		}
 		return;
 	} else if (op.tag === "op-foreign") {
 		const lhs = op.destinations.map(printVariable).join(", ");

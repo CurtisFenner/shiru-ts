@@ -168,11 +168,90 @@ export const tests = {
 		record Main {
 			fn main(x: Int): Int 
 			requires x == 1 
-			ensures 1 + 1 == 2 implies return == 2 {
-				return x + 1;
+			ensures return == 3 {
+				return x + 2;
 			}
 		}
 		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"ill-formed-ensures"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn justOne(x: Int): Boolean
+			requires x == 1
+			ensures return {
+				return true;
+			}
+
+			fn problematic(): Int
+			// this call is not well-formed since the signature does not ensure
+			// the precondition that return == 1
+			ensures Main.justOne(return) {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 277, length: 20 },
+				preconditionLocation: { fileID: "test-file", offset: 80, length: 6 },
+			},
+		]);
+	},
+	"precondition-in-ensures-satisfied-by-implictation"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn justOne(x: Int): Boolean
+			requires x == 1
+			ensures return {
+				return true;
+			}
+
+			fn problematic(): Int
+			ensures return == 1 implies Main.justOne(return) {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"precondition-in-ensures-satisfied-by-previous-ensures"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn justOne(x: Int): Boolean
+			requires x == 1
+			ensures return {
+				return true;
+			}
+
+			fn problematic(): Int
+			ensures return == 1
+			// the precondition is satisfied by the previous ensures
+			ensures Main.justOne(return) {
+				return 1;
+			}
+		}
+		`;
+
 		const ast = grammar.parseSource(source, "test-file");
 		const program = semantics.compileSources({ ast });
 		const failures = verify.verifyProgram(program);

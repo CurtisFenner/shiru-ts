@@ -29,14 +29,29 @@ export function opBlock(...ops: ir.Op[]): ir.OpBlock {
 }
 
 export function opConst(destination: string, value: number | boolean): ir.OpConst {
-	return {
-		tag: "op-const",
-		destination: {
-			variable: destination as ir.VariableID,
-			type: typeof value === "number" ? ir.T_INT : ir.T_BOOLEAN,
-		},
-		value,
-	};
+	if (typeof value === "number") {
+		return {
+			tag: "op-const",
+			destination: {
+				variable: destination as ir.VariableID,
+				type: typeof value === "number" ? ir.T_INT : ir.T_BOOLEAN,
+				location: UNKNOWN_LOCATION,
+			},
+			type: "Int",
+			int: value.toFixed(0),
+		};
+	} else {
+		return {
+			tag: "op-const",
+			destination: {
+				variable: destination as ir.VariableID,
+				type: typeof value === "number" ? ir.T_INT : ir.T_BOOLEAN,
+				location: UNKNOWN_LOCATION,
+			},
+			type: "Boolean",
+			boolean: value,
+		};
+	}
 }
 
 export function opForeign({ dst, args, f }: { dst: [string, ir.Type][], args: string[], f: string }): ir.OpForeign {
@@ -46,6 +61,7 @@ export function opForeign({ dst, args, f }: { dst: [string, ir.Type][], args: st
 		destinations: dst.map(x => ({
 			variable: x[0] as ir.VariableID,
 			type: x[1],
+			location: UNKNOWN_LOCATION,
 		})),
 		arguments: args as ir.VariableID[],
 	};
@@ -63,7 +79,11 @@ export function opStaticCall({ f, dst, args, ts }: { f: string, dst: [string, ir
 	return {
 		tag: "op-static-call",
 		function: f as ir.FunctionID,
-		destinations: dst.map(x => ({ variable: x[0] as ir.VariableID, type: x[1] })),
+		destinations: dst.map(x => ({
+			variable: x[0] as ir.VariableID,
+			type: x[1],
+			location: UNKNOWN_LOCATION,
+		})),
 		arguments: args as ir.VariableID[],
 		type_arguments: ts,
 		diagnostic_callsite: UNKNOWN_LOCATION,
@@ -88,7 +108,11 @@ export function opDynamicCall(
 		},
 		signature_id: f,
 		signature_type_arguments: ts,
-		destinations: dst.map(x => ({ variable: x[0] as ir.VariableID, type: x[1] })),
+		destinations: dst.map(x => ({
+			variable: x[0] as ir.VariableID,
+			type: x[1],
+			location: UNKNOWN_LOCATION,
+		})),
 		arguments: args as ir.VariableID[],
 		diagnostic_callsite: UNKNOWN_LOCATION,
 	};
@@ -98,8 +122,16 @@ const foreign: Record<string, ir.FunctionSignature> = {
 	"Int==": {
 		// Equality
 		parameters: [
-			{ variable: "left" as ir.VariableID, type: ir.T_INT },
-			{ variable: "right" as ir.VariableID, type: ir.T_INT },
+			{
+				variable: "left" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
+			{
+				variable: "right" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
 		],
 		return_types: [ir.T_BOOLEAN],
 		type_parameters: [],
@@ -113,8 +145,16 @@ const foreign: Record<string, ir.FunctionSignature> = {
 	"Int+": {
 		// Addition
 		parameters: [
-			{ variable: "left" as ir.VariableID, type: ir.T_INT },
-			{ variable: "right" as ir.VariableID, type: ir.T_INT },
+			{
+				variable: "left" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
+			{
+				variable: "right" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
 		],
 		return_types: [ir.T_INT],
 		type_parameters: [],
@@ -125,8 +165,16 @@ const foreign: Record<string, ir.FunctionSignature> = {
 	"Int-": {
 		// Addition
 		parameters: [
-			{ variable: "left" as ir.VariableID, type: ir.T_INT },
-			{ variable: "right" as ir.VariableID, type: ir.T_INT },
+			{
+				variable: "left" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
+			{
+				variable: "right" as ir.VariableID,
+				type: ir.T_INT,
+				location: UNKNOWN_LOCATION,
+			},
 		],
 		return_types: [ir.T_INT],
 		type_parameters: [],
@@ -162,7 +210,11 @@ export const tests = {
 				},
 				"fib": {
 					signature: {
-						parameters: [{ variable: "k" as ir.VariableID, type: ir.T_INT }],
+						parameters: [{
+							variable: "k" as ir.VariableID,
+							type: ir.T_INT,
+							location: UNKNOWN_LOCATION,
+						}],
 						return_types: [ir.T_INT],
 						type_parameters: [],
 						constraint_parameters: [],
@@ -224,7 +276,7 @@ export const tests = {
 			},
 		});
 		assert(returned.sort, "is equal to", "int" as const);
-		assert(returned.int, "is equal to", 8);
+		assert(returned.int, "is equal to", BigInt(8));
 	},
 	"dynamic-dispatch-from-global-vtable-factory"() {
 		const program: ir.Program = {
@@ -310,7 +362,7 @@ export const tests = {
 		const [returned] = interpret("main" as ir.FunctionID, [], program, {});
 		assert(returned, "is equal to", {
 			sort: "int",
-			int: 42,
+			int: BigInt(42),
 		});
 	},
 	"dynamic-dispatch-from-type-parameter"() {
@@ -424,7 +476,7 @@ export const tests = {
 		const [returned] = interpret("main" as ir.FunctionID, [], program, {});
 		assert(returned, "is equal to", {
 			sort: "int",
-			int: 13,
+			int: BigInt(13),
 		});
 	},
 	"dynamic-dispatch-from-type-constraint-closure"() {
@@ -588,7 +640,7 @@ export const tests = {
 		});
 		assert(returned, "is equal to", {
 			sort: "int",
-			int: 49,
+			int: BigInt(49),
 		});
 	},
 	"end-to-end"() {
@@ -628,13 +680,13 @@ export const tests = {
 			},
 		});
 		assert(result, "is equal to", [
-			{ sort: "int", int: 1 },
-			{ sort: "int", int: 3 },
-			{ sort: "int", int: 4 },
-			{ sort: "int", int: 7 },
-			{ sort: "int", int: 11 },
-			{ sort: "int", int: 18 },
-			{ sort: "int", int: 29 },
+			{ sort: "int", int: BigInt(1) },
+			{ sort: "int", int: BigInt(3) },
+			{ sort: "int", int: BigInt(4) },
+			{ sort: "int", int: BigInt(7) },
+			{ sort: "int", int: BigInt(11) },
+			{ sort: "int", int: BigInt(18) },
+			{ sort: "int", int: BigInt(29) },
 		]);
 	},
 	"construct-record-literal"() {
@@ -657,16 +709,16 @@ export const tests = {
 		const program = semantics.compileSources({ ast });
 
 		const inputs: Value[] = [
-			{ sort: "int", int: 13 },
-			{ sort: "int", int: 17 },
+			{ sort: "int", int: BigInt(13) },
+			{ sort: "int", int: BigInt(17) },
 		];
 		const result = interpret("example.V.make" as ir.FunctionID, inputs, program, {});
 		assert(result, "is equal to", [
 			{
 				sort: "record",
 				fields: {
-					x: { sort: "int", int: 13 },
-					y: { sort: "int", int: 17 },
+					x: { sort: "int", int: BigInt(13) },
+					y: { sort: "int", int: BigInt(17) },
 				},
 			}
 		]);
@@ -691,15 +743,15 @@ export const tests = {
 			{
 				sort: "record",
 				fields: {
-					x: { sort: "int", int: 13 },
-					y: { sort: "int", int: 17 },
+					x: { sort: "int", int: BigInt(13) },
+					y: { sort: "int", int: BigInt(17) },
 				},
 			},
 		];
 		const result = interpret("example.V.unmake" as ir.FunctionID, inputs, program, {});
 		assert(result, "is equal to", [
-			{ sort: "int", int: 13 },
-			{ sort: "int", int: 17 },
+			{ sort: "int", int: BigInt(13) },
+			{ sort: "int", int: BigInt(17) },
 		]);
 	},
 	"callsite-dyn-call"() {
@@ -848,7 +900,7 @@ export const tests = {
 		};
 
 		const result = interpret("main" as ir.FunctionID, [], program, {});
-		assert(result, "is equal to", [{ sort: "int", int: 17 }]);
+		assert(result, "is equal to", [{ sort: "int", int: BigInt(17) }]);
 	},
 	"basic-static-method"() {
 		const source = `
@@ -878,15 +930,15 @@ export const tests = {
 			{
 				sort: "record",
 				fields: {
-					x: { sort: "int", int: 1 },
-					y: { sort: "int", int: 2 },
+					x: { sort: "int", int: BigInt(1) },
+					y: { sort: "int", int: BigInt(2) },
 				},
 			},
 			{
 				sort: "record",
 				fields: {
-					x: { sort: "int", int: 30 },
-					y: { sort: "int", int: 40 },
+					x: { sort: "int", int: BigInt(30) },
+					y: { sort: "int", int: BigInt(40) },
 				},
 			},
 		];
@@ -898,8 +950,8 @@ export const tests = {
 			},
 		});
 		assert(result, "is equal to", [
-			{ sort: "int", int: 31 },
-			{ sort: "int", int: 42 },
+			{ sort: "int", int: BigInt(31) },
+			{ sort: "int", int: BigInt(42) },
 		]);
 	},
 };

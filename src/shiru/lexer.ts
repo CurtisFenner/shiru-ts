@@ -42,8 +42,8 @@ export interface StringLiteralToken {
 
 export interface NumberLiteralToken {
 	tag: "number-literal",
-	// TODO: Precision?
-	value: number,
+	/// `int` is encoded as ASCII digits.
+	int: string,
 	location: SourceLocation,
 }
 
@@ -285,12 +285,10 @@ function parseToken(blob: string, from: number, fileID: string): { token: Token 
 			]);
 		}
 
-		const value = parseInt(slice);
-
 		return {
 			token: {
 				tag: "number-literal",
-				value,
+				int: slice,
 				location,
 			},
 			consumed: breaks - from,

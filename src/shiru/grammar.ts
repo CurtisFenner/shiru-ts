@@ -241,6 +241,7 @@ const keywords = {
 	ensures: keywordParser("ensures"),
 	fn: keywordParser("fn"),
 	if: keywordParser("if"),
+	impl: keywordParser("impl"),
 	import: keywordParser("import"),
 	is: keywordParser("is"),
 	interface: keywordParser("interface"),
@@ -299,21 +300,29 @@ export interface Import {
 	imported: ImportOfObject | ImportOfPackage,
 }
 
-export type Definition = RecordDefinition | InterfaceDefinition;
+export type Definition = RecordDefinition | InterfaceDefinition | ImplDefinition;
 
 export interface RecordDefinition {
 	tag: "record-definition",
 	entityName: TypeIdenToken,
 	typeParameters: TypeParameters,
-	implementations: ImplementationClaims,
 	fields: Field[],
 	fns: Fn[],
 
 	location: SourceLocation,
 }
 
-export interface ImplementationClaims {
-	claimed: TypeNamed[],
+export interface ImplDefinition {
+	tag: "impl-definition",
+
+	impl: KeywordToken,
+	typeParameters: TypeParameters,
+
+	base: TypeNamed,
+	constraint: TypeNamed,
+	fns: Fn[],
+
+	location: SourceLocation,
 }
 
 export interface InterfaceMember {
@@ -557,7 +566,7 @@ type ASTs = {
 	FnParameters: FnParameters,
 	FnSignature: FnSignature,
 	IfSt: IfSt,
-	ImplementationClaims: ImplementationClaims,
+	ImplDefinition: ImplDefinition,
 	Import: Import,
 	ImportOfObject: ImportOfObject,
 	ImportOfPackage: ImportOfPackage,
@@ -599,7 +608,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
 	Definition: choice(() => grammar,
-		"RecordDefinition", "InterfaceDefinition"),
+		"RecordDefinition", "ImplDefinition", "InterfaceDefinition"),
 	ElseClause: new RecordParser(() => ({
 		_else: keywords.else,
 		body: grammar.Block
@@ -763,11 +772,6 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		elseIfClauses: new RepeatParser(grammar.ElseIfClause),
 		elseClause: grammar.ElseClause.otherwise(null),
 	})),
-	ImplementationClaims: new RecordParser(() => ({
-		_is: keywords.is,
-		claimed: new CommaParser(grammar.TypeNamed, "Expected an interface at", 1)
-			.required(parseProblem("Expected at least one interface after `is` in implementation claims at", atHead)),
-	})),
 	InterfaceMember: new RecordParser(() => ({
 		signature: grammar.FnSignature,
 		_semicolon: punctuation.semicolon
@@ -784,6 +788,23 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_close: punctuation.curlyClose
 			.required(parseProblem("Expected a `}` at", atHead,
 				"to complete an interface definition beginning at", atReference("_open"))),
+	})),
+	ImplDefinition: new StructParser(() => ({
+		impl: keywords.impl,
+		tag: new ConstParser("impl-definition"),
+		typeParameters: grammar.TypeParameters
+			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
+		base: grammar.TypeNamed
+			.required(parseProblem("Expected a compound type after `impl` at", atHead)),
+		_is: keywords.is
+			.required(parseProblem("Expected `is` after compound type in `impl` definition at", atHead)),
+		constraint: grammar.TypeNamed
+			.required(parseProblem("Expected a constraint after `is` in `impl` definition at", atHead)),
+		_open: punctuation.curlyOpen
+			.required(parseProblem("Expected a `{` after constraint in `impl` definition at", atHead)),
+		fns: new RepeatParser(grammar.Fn),
+		_close: punctuation.curlyClose
+			.required(parseProblem("Expected a `}` after `impl` defition function members at", atHead)),
 	})),
 	Import: new RecordParser(() => ({
 		_import: keywords.import,
@@ -822,8 +843,6 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a type name after `record` at", atHead)),
 		typeParameters: grammar.TypeParameters
 			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
-		implementations: grammar.ImplementationClaims
-			.otherwise({ claimed: [] }),
 		_open: punctuation.curlyOpen
 			.required(parseProblem("Expected a `{` to begin record body at", atHead)),
 		fields: new RepeatParser(grammar.Field),

@@ -2,6 +2,7 @@ import * as grammar from "./grammar";
 import * as ir from "./ir";
 import * as diagnostics from "./diagnostics";
 import * as lexer from "./lexer";
+import { DefaultMap } from "./data";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,
@@ -45,8 +46,8 @@ interface RecordEntityDef {
 	typeScope: TypeScopeI<ir.TypeCompound>,
 	fields: Record<string, FieldBinding>,
 
-	/// The set of constraints that this entity is the method-subject of.
-	implements: ConstraintBinding[],
+	/// The set of constraints that this record type is the method-subject of.
+	implsByInterface: DefaultMap<ir.InterfaceID, ImplEntityDef[]>,
 
 	fns: Record<string, FnBinding>,
 }
@@ -61,7 +62,20 @@ interface InterfaceEntityDef {
 	fns: Record<string, InterfaceFnBinding>,
 }
 
-type EntityDef = RecordEntityDef | InterfaceEntityDef;
+interface ImplEntityDef {
+	tag: "impl",
+	ast: grammar.ImplDefinition,
+	headLocation: ir.SourceLocation,
+	sourceID: string,
+
+	typeScope: TypeScopeI<ir.Type>,
+	constraint: ir.ConstraintParameter,
+
+	fns: Record<string, FnBinding>,
+}
+
+type NamedEntityDef = RecordEntityDef | InterfaceEntityDef;
+type EntityDef = NamedEntityDef | ImplEntityDef;
 
 interface EntityBinding {
 	canonicalName: string,
@@ -82,7 +96,7 @@ class ProgramContext {
 
 	/// `entitiesByCanonical` identifies information of the entity with the
 	/// given "canonical" name.of the entity.
-	entitiesByCanonical: Record<string, EntityDef> = {};
+	entitiesByCanonical: Record<string, NamedEntityDef> = {};
 
 	foreignSignatures: Record<string, ir.FunctionSignature> = {};
 
@@ -126,8 +140,89 @@ interface SourceContext {
 	/// qualification in that form is not allowed.
 	namespaces: Record<string, PackageBinding>,
 
+	implASTs: grammar.ImplDefinition[],
+
 	/// `programContext` is a reference to the single common `ProgramContext`.
 	programContext: ProgramContext,
+}
+
+function collectInterfaceRecordEntity(
+	programContext: ProgramContext,
+	pack: Record<string, string>,
+	packageName: string,
+	sourceID: string,
+	definition: grammar.InterfaceDefinition | grammar.RecordDefinition,
+) {
+	const entityName = definition.entityName.name;
+	const bindingLocation = definition.entityName.location;
+	if (pack[entityName] !== undefined) {
+		const firstCanonical = pack[entityName];
+		const firstBinding = programContext.entitiesByCanonical[firstCanonical];
+		throw new diagnostics.EntityRedefinedErr({
+			name: `${packageName}.${entityName}`,
+			firstBinding: firstBinding.bindingLocation,
+			secondBinding: bindingLocation,
+		})
+	}
+	const canonicalName = packageName + "." + entityName;
+
+	let entity: EntityDef;
+	if (definition.tag === "record-definition") {
+		const thisType: ir.Type = {
+			tag: "type-compound",
+			record: canonicalName as ir.RecordID,
+			type_arguments: definition.typeParameters.parameters.map(t => ({
+				tag: "type-variable",
+				id: t.name as ir.TypeVariableID,
+			})),
+		};
+
+		entity = {
+			tag: "record",
+			ast: definition,
+			bindingLocation,
+			sourceID,
+
+			typeScope: {
+				thisType,
+
+				constraints: [],
+				typeVariables: new Map(),
+				typeVariableList: [],
+			},
+
+			// These are filled in by `collectMembers`.
+			fields: {},
+			fns: {},
+			implsByInterface: new DefaultMap<ir.InterfaceID, ImplEntityDef[]>(() => []),
+		};
+	} else {
+		const thisType = "This" as ir.TypeVariableID;
+		entity = {
+			tag: "interface",
+			ast: definition,
+			bindingLocation,
+			sourceID,
+
+			// The "first" type-parameter is `This` rather than a named
+			// `#T` type-variable.
+			typeScope: {
+				thisType: {
+					tag: "type-variable",
+					id: thisType,
+				},
+				constraints: [],
+				typeVariables: new Map(),
+				typeVariableList: [],
+			},
+
+			// These are filled in by `collectMembers`.
+			fns: {},
+		};
+	}
+
+	programContext.entitiesByCanonical[canonicalName] = entity;
+	pack[entityName] = canonicalName;
 }
 
 // Collects the set of entities defined across all given sources.
@@ -141,75 +236,11 @@ function collectAllEntities(sources: Record<string, grammar.Source>) {
 		const pack = programContext.canonicalByQualifiedName[packageName] || {};
 		programContext.canonicalByQualifiedName[packageName] = pack;
 		for (let definition of source.definitions) {
-			const entityName = definition.entityName.name;
-			const bindingLocation = definition.entityName.location;
-			if (pack[entityName] !== undefined) {
-				const firstCanonical = pack[entityName];
-				const firstBinding = programContext.entitiesByCanonical[firstCanonical];
-				throw new diagnostics.EntityRedefinedErr({
-					name: `${packageName}.${entityName}`,
-					firstBinding: firstBinding.bindingLocation,
-					secondBinding: bindingLocation,
-				})
-			}
-			const canonicalName = packageName + "." + entityName;
-
-			let entity: EntityDef;
-			if (definition.tag === "record-definition") {
-				const thisType: ir.Type = {
-					tag: "type-compound",
-					record: canonicalName as ir.RecordID,
-					type_arguments: definition.typeParameters.parameters.map(t => ({
-						tag: "type-variable",
-						id: t.name as ir.TypeVariableID,
-					})),
-				};
-
-				entity = {
-					tag: "record",
-					ast: definition,
-					bindingLocation,
-					sourceID,
-
-					typeScope: {
-						thisType,
-
-						constraints: [],
-						typeVariables: new Map(),
-						typeVariableList: [],
-					},
-
-					// These are filled in by `collectMembers`.
-					fields: {},
-					fns: {},
-					implements: [],
-				};
+			if (definition.tag === "impl-definition") {
+				// These are instead collected in `resolveSourceContext`.
 			} else {
-				const thisType = "This" as ir.TypeVariableID;
-				entity = {
-					tag: "interface",
-					ast: definition,
-					bindingLocation,
-					sourceID,
-
-					// The "first" type-parameter is `This` rather than a named
-					// `#T` type-variable.
-					typeScope: {
-						thisType: {
-							tag: "type-variable",
-							id: thisType,
-						},
-						constraints: [],
-						typeVariables: new Map(),
-						typeVariableList: [],
-					},
-
-					// These are filled in by `collectMembers`.
-					fns: {},
-				};
+				collectInterfaceRecordEntity(programContext, pack, packageName, sourceID, definition);
 			}
-			programContext.entitiesByCanonical[canonicalName] = entity;
-			pack[entityName] = canonicalName;
 		}
 	}
 	return programContext;
@@ -220,21 +251,19 @@ interface TypeVariableBinding {
 	variable: ir.TypeVariable,
 }
 
-interface ConstraintBinding {
-	/// The "method subject" of this constraint binding is the first element of
-	/// `constraint.subjects`.
-	constraint: ir.ConstraintParameter,
-	location: ir.SourceLocation,
-}
-
 interface TypeScopeI<This> {
-	thisType: This,
+	thisType: This | null,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
 	typeVariables: Map<ir.TypeVariableID, TypeVariableBinding>,
 	typeVariableList: ir.TypeVariableID[],
 
-	constraints: ConstraintBinding[],
+	constraints: TypeArgumentConstraint[],
+}
+
+interface TypeArgumentConstraint {
+	constraint: ir.ConstraintParameter,
+	location: ir.SourceLocation,
 }
 
 type TypeScope = TypeScopeI<ir.Type>;
@@ -331,7 +360,11 @@ function compileConstraint(
 		}
 
 		const instantiation = ir.typeArgumentsMap(interfaceEntity.typeScope.typeVariableList, argumentSubjects);
-		instantiation.set(interfaceEntity.typeScope.thisType.id, methodSubject);
+		const thisType = interfaceEntity.typeScope.thisType;
+		if (thisType === null) {
+			throw new Error("compileConstraint: InterfaceEntity thisType must be a type variable.");
+		}
+		instantiation.set(thisType.id, methodSubject);
 		for (const requirementBinding of interfaceEntity.typeScope.constraints) {
 			const genericConstraint = requirementBinding.constraint;
 			const instantiated: ir.ConstraintParameter = ir.constraintSubstitute(genericConstraint, instantiation);
@@ -369,22 +402,26 @@ function checkConstraintSatisfied(
 		neededAt: ir.SourceLocation,
 	},
 ) {
-	if (requiredConstraint.subjects.length === 0) {
-		throw new Error("ICE: Expected at least one subject");
-	}
+	const programContext = sourceContext.programContext;
 	const methodSubject = requiredConstraint.subjects[0];
 	if (methodSubject === undefined) {
 		throw new Error("ICE: Constraint requires at least one subject.");
 	} else if (methodSubject.tag === "type-compound") {
-		const programContext = sourceContext.programContext;
 		const recordEntity = programContext.getRecord(methodSubject.record);
-		for (const implementation of recordEntity.implements) {
-			if (implementation.constraint.interface !== requiredConstraint.interface) {
-				continue;
-			}
-			const instantiation = ir.typeArgumentsMap(recordEntity.typeScope.typeVariableList, methodSubject.type_arguments);
-			const provided = ir.constraintSubstitute(implementation.constraint, instantiation);
-			if (allEqualTypes(provided.subjects, requiredConstraint.subjects)) {
+
+		const implCandidates = recordEntity.implsByInterface.get(requiredConstraint.interface);
+		for (const impl of implCandidates) {
+			// Check whether `impl.constraint` may be instantiated by replacing
+			// `impl.typeScope`'s variables to become `requiredConstraint`.
+			const unifier = ir.unifyTypes(
+				impl.typeScope.typeVariableList,
+				impl.constraint.subjects,
+				[],
+				requiredConstraint.subjects,
+			);
+
+			if (unifier !== null) {
+				// This instantiation was possible.
 				return;
 			}
 		}
@@ -397,6 +434,7 @@ function checkConstraintSatisfied(
 				return;
 			}
 		}
+
 		// No implementation was found in the type scope.
 	} else if (methodSubject.tag === "type-primitive") {
 		// TODO: Defer to the "built in" set of constraints (Eq, etc).
@@ -577,15 +615,25 @@ function resolveImport(
 function resolveSourceContext(
 	sourceID: string,
 	source: grammar.Source,
-	programContext: Readonly<ProgramContext>) {
+	programContext: Readonly<ProgramContext>,
+) {
 	const packageName = source.package.packageName.name;
 	const pack = programContext.canonicalByQualifiedName[packageName];
 
 	const sourceContext: SourceContext = {
 		entityAliases: {},
 		namespaces: {},
+		implASTs: [],
 		programContext,
 	};
+
+	for (const definition of source.definitions) {
+		if (definition.tag === "impl-definition") {
+			// impls will only be processed after all available types have been
+			// resolved.
+			sourceContext.implASTs.push(definition);
+		}
+	}
 
 	// Bring all entities defined within this package into scope.
 	for (let entityName in pack) {
@@ -606,11 +654,10 @@ function resolveSourceContext(
 }
 
 function collectTypeScope(
-	programContext: ProgramContext,
-	sourceID: string,
+	sourceContext: SourceContext,
 	typeScope: TypeScope,
 	typeParameters: grammar.TypeParameters,
-) {
+): void {
 	for (const parameter of typeParameters.parameters) {
 		const id = parameter.name as ir.TypeVariableID;
 		const existingBinding = typeScope.typeVariables.get(id);
@@ -628,7 +675,6 @@ function collectTypeScope(
 		typeScope.typeVariableList.push(parameter.name as ir.TypeVariableID);
 	}
 	for (let c of typeParameters.constraints) {
-		const sourceContext = programContext.sourceContexts[sourceID];
 		const methodSubject = compileType(c.methodSubject, typeScope,
 			sourceContext, "skip")
 		const constraint = compileConstraint(c.constraint, methodSubject,
@@ -643,24 +689,14 @@ function collectTypeScope(
 /// Collects enough information to determine which types satisfy which
 /// interfaces, so that types collected in `collectMembers` can be ensured to be
 /// valid.
-function collectTypeScopesAndConstraints(programContext: ProgramContext, entityName: string) {
+function resolveAvailableTypes(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
-	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	if (entity.tag === "record") {
-		collectTypeScope(programContext, entity.sourceID,
+		collectTypeScope(programContext.sourceContexts[entity.sourceID],
 			entity.typeScope, entity.ast.typeParameters);
-
-		for (let claimAST of entity.ast.implementations.claimed) {
-			const constraint = compileConstraint(claimAST, entity.typeScope.thisType,
-				sourceContext, entity.typeScope, "skip");
-			entity.implements.push({
-				constraint,
-				location: claimAST.location,
-			});
-		}
 		return;
 	} else if (entity.tag === "interface") {
-		collectTypeScope(programContext, entity.sourceID,
+		collectTypeScope(programContext.sourceContexts[entity.sourceID],
 			entity.typeScope, entity.ast.typeParameters);
 		return;
 	}
@@ -675,7 +711,7 @@ function collectTypeScopesAndConstraints(programContext: ProgramContext, entityN
 /// `collectTypeScopesAndConstraints` prior to invoking `collectMembers`.
 /// NOTE that this does NOT include compiling "requires" and "ensures" clauses,
 /// which are compiled alongside function bodies in a later pass.
-function collectMembers(programContext: ProgramContext, entityName: string) {
+function resolveBodies(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
 	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	if (entity.tag === "record") {
@@ -1825,6 +1861,15 @@ export function displayConstraint(c: ir.ConstraintParameter): string {
 	}
 }
 
+export function displayTypeScope(c: TypeScope, opt: { space: boolean }) {
+	if (c.typeVariableList.length === 0) {
+		return "";
+	} else {
+		return "[" + c.typeVariableList.map(x => "#" + x).join(", ") + "]" +
+			(opt.space ? " " : "");
+	}
+}
+
 function compileVarSt(
 	statement: grammar.VarSt,
 	ops: ir.Op[],
@@ -2298,6 +2343,57 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 	};
 }
 
+function associateImplWithBase(
+	record: RecordEntityDef,
+	constraint: ir.ConstraintParameter,
+	sourceID: string,
+	typeScope: TypeScope,
+	implAST: grammar.ImplDefinition,
+) {
+
+	const headLocation = ir.locationSpan(implAST.impl.location, implAST.constraint.location);
+
+	// Check if an existing impl conflicts with this one.
+	const existingImpls = record.implsByInterface.get(constraint.interface);
+	for (const candidate of existingImpls) {
+		const unifier = ir.unifyTypes(
+			candidate.typeScope.typeVariableList,
+			candidate.constraint.subjects,
+			typeScope.typeVariableList,
+			constraint.subjects,
+		);
+		if (unifier !== null) {
+			const firstImpl =
+				displayTypeScope(candidate.typeScope, { space: true }) +
+				displayConstraint(candidate.constraint);
+			const secondImpl =
+				displayTypeScope(typeScope, { space: true }) +
+				displayConstraint(constraint);
+			throw new diagnostics.OverlappingImplsErr({
+				firstImpl,
+				firstLocation: candidate.headLocation,
+				secondImpl,
+				secondLocation: headLocation,
+			});
+		}
+	}
+
+	// TODO: Check for "orphan" instances.
+
+	// Record this impl.
+	record.implsByInterface.get(constraint.interface).push({
+		tag: "impl",
+		ast: implAST,
+		headLocation,
+		sourceID,
+		typeScope,
+		constraint,
+
+		// Functions will be filled in after all impls have been collected.
+		fns: {},
+	});
+}
+
 /// `compileSources` transforms the ASTs making up a Shiru program into a
 /// `ir.Program`.
 /// THROWS `SemanticError` if a type-error is discovered within the given source
@@ -2312,7 +2408,32 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 
 	// Resolve type scopes and constraints.
 	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		collectTypeScopesAndConstraints(programContext, canonicalEntityName);
+		resolveAvailableTypes(programContext, canonicalEntityName);
+	}
+
+	// Resolve all impl blocks.
+	for (const sourceID in programContext.sourceContexts) {
+		const sourceContext = programContext.sourceContexts[sourceID];
+		for (const implAST of sourceContext.implASTs) {
+			const typeScope: TypeScope = {
+				thisType: null,
+				typeVariables: new Map(),
+				typeVariableList: [],
+				constraints: [],
+			};
+			collectTypeScope(sourceContext, typeScope, implAST.typeParameters);
+
+			const baseType = compileType(implAST.base, typeScope, sourceContext, "skip");
+			if (baseType.tag !== "type-compound") {
+				throw new Error("compileSources: ICE");
+			}
+			const record = programContext.getRecord(baseType.record);
+
+			const constraint = compileConstraint(implAST.constraint, baseType, sourceContext, typeScope, "skip");
+
+			// Associate the impl with its base record type.
+			associateImplWithBase(record, constraint, sourceID, typeScope, implAST);
+		}
 	}
 
 	// Recheck all the unchecked types & constraints found in the above step:
@@ -2330,7 +2451,7 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	// Resolve members of entities. Type arguments must be validated based on
 	// collected constraints.
 	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		collectMembers(programContext, canonicalEntityName);
+		resolveBodies(programContext, canonicalEntityName);
 	}
 
 	const program: ir.Program = {

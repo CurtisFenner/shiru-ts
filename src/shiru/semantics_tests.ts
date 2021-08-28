@@ -235,7 +235,9 @@ export const tests = {
 
 		record A[#T | #T is Good] {}
 
-		record B is Good {}
+		record B {}
+
+		impl B is Good {}
 
 		record Main {
 			fn f(a: A[B]): Int {
@@ -245,6 +247,66 @@ export const tests = {
 		`;
 		const ast = grammar.parseSource(source, "test-file");
 		const compiled = semantics.compileSources({ ast });
+	},
+	"conflicting-simple-impl"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T] {}
+
+		impl A[Int] is Good {}
+		impl A[Int] is Good {}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl `example.A[Int] is example.Good` given at",
+				{ fileID: "test-file", offset: 87, length: 19 },
+				"conflicts with the impl `example.A[Int] is example.Good` given at",
+				{ fileID: "test-file", offset: 62, length: 19 },
+			],
+		});
+	},
+	"conflicting-impl-universal-with-argument"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T] {}
+
+		impl [#X] A[#X] is Good {}
+		impl A[Int] is Good {}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl `example.A[Int] is example.Good` given at",
+				{ fileID: "test-file", offset: 91, length: 19 },
+				"conflicts with the impl `[#X] example.A[#X] is example.Good` given at",
+				{ fileID: "test-file", offset: 62, length: 23 },
+			],
+		});
+	},
+	"conflicting-impl-universal-with-universal"() {
+		const source = `
+		package example;
+		interface Good {}
+
+		record A[#T] {}
+
+		impl [#X] A[#X] is Good {}
+		impl [#Y] A[#Y] is Good {}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl `[#Y] example.A[#Y] is example.Good` given at",
+				{ fileID: "test-file", offset: 91, length: 23 },
+				"conflicts with the impl `[#X] example.A[#X] is example.Good` given at",
+				{ fileID: "test-file", offset: 62, length: 23 },
+			],
+		});
 	},
 	"type-parameter-does-not-satisfy-constraint"() {
 		const source = `
@@ -315,14 +377,15 @@ export const tests = {
 
 		interface I[#T] { }
 
-		record A is I {
-		}
+		record A {}
+		
+		impl A is I {}
 		`;
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"The interface `example.I` was given 0 type parameters at",
-				{ fileID: "test-file", offset: 58, length: 1 },
+				{ fileID: "test-file", offset: 73, length: 1 },
 				"but 1 type parameter was expected at",
 				{ fileID: "test-file", offset: 35, length: 2 },
 			],

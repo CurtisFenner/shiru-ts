@@ -469,3 +469,19 @@ export class TypeParameterCountMismatchErr extends SemanticError {
 		]);
 	}
 }
+
+export class OverlappingImplsErr extends SemanticError {
+	constructor(args: {
+		firstImpl: string,
+		firstLocation: SourceLocation,
+		secondImpl: string,
+		secondLocation: SourceLocation,
+	}) {
+		super([
+			"The impl `" + args.secondImpl + "` given at",
+			args.secondLocation,
+			"conflicts with the impl `" + args.firstImpl + "` given at",
+			args.firstLocation,
+		]);
+	}
+}

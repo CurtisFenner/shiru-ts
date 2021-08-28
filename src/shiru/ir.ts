@@ -403,6 +403,149 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 	return false;
 }
 
+function typeContainsVariable(
+	t: Type,
+	v: TypeVariableID,
+	assignments: Map<TypeVariableID, Type | null>,
+): boolean {
+	if (t.tag === "type-compound") {
+		for (const arg of t.type_arguments) {
+			if (typeContainsVariable(arg, v, assignments)) {
+				return true;
+			}
+		}
+		return false;
+	} else if (t.tag === "type-primitive") {
+		return false;
+	} else if (t.tag === "type-variable") {
+		if (t.id === v) {
+			return true;
+		}
+		const assigned = assignments.get(t.id);
+		if (assigned !== null && assigned !== undefined) {
+			return typeContainsVariable(assigned, v, assignments);
+		}
+		return false;
+	}
+
+	const _: never = t;
+	throw new Error("typeContainsVariable: unreachable `" + t["tag"] + "`");
+}
+
+function unifyTypeArrayHelper(
+	lefts: Type[],
+	rights: Type[],
+	assignments: Map<TypeVariableID, Type | null>,
+): Map<TypeVariableID, Type | null> | null {
+	for (let i = 0; i < lefts.length; i++) {
+		if (unifyTypePairHelper(lefts[i], rights[i], assignments) === null) {
+			return null;
+		}
+	}
+	return assignments;
+}
+
+function unifyTypePairHelper(
+	left: Type,
+	right: Type,
+	assignments: Map<TypeVariableID, Type | null>,
+): Map<TypeVariableID, Type | null> | null {
+	if (left.tag === "type-variable") {
+		const mapping = assignments.get(left.id);
+		if (mapping === null) {
+			if (typeContainsVariable(right, left.id, assignments)) {
+				return null;
+			}
+			assignments.set(left.id, right);
+			return assignments;
+		} else if (mapping !== undefined) {
+			return unifyTypePairHelper(mapping, right, assignments);
+		}
+	}
+	if (right.tag === "type-variable") {
+		const mapping = assignments.get(right.id);
+		if (mapping === null) {
+			if (typeContainsVariable(left, right.id, assignments)) {
+				return null;
+			}
+			assignments.set(right.id, left);
+			return assignments;
+		} else if (mapping !== undefined) {
+			return unifyTypePairHelper(left, mapping, assignments);
+		}
+	}
+
+	if (left.tag === "type-compound") {
+		if (right.tag !== "type-compound") {
+			return null;
+		} else if (left.record !== right.record) {
+			return null;
+		}
+		return unifyTypeArrayHelper(left.type_arguments, right.type_arguments, assignments);
+	} else if (left.tag === "type-primitive") {
+		if (right.tag !== "type-primitive") {
+			return null;
+		}
+		return left.primitive !== right.primitive ? null : assignments;
+	} else if (left.tag === "type-variable") {
+		if (right.tag !== "type-variable") {
+			return null;
+		}
+		return left.id !== right.id ? null : assignments;
+	}
+
+	const _: never = left;
+	throw new Error("unifyTypesHelper: unreachable `" + left["tag"] + "`");
+}
+
+export interface UnificationResult {
+	leftRenaming: Map<TypeVariableID, TypeVariable>,
+	rightRenaming: Map<TypeVariableID, TypeVariable>,
+
+	/// A `null` instantiation is "free".
+	/// Instantiations may reference other type-variables, but these references
+	/// will not be cyclic.
+	instantiations: Map<TypeVariableID, Type | null>,
+}
+
+/// RETURNS the most-general unification of the two types.
+export function unifyTypes(
+	leftVars: TypeVariableID[],
+	lefts: Type[],
+	rightVars: TypeVariableID[],
+	rights: Type[],
+): UnificationResult | null {
+	const assignments = new Map<TypeVariableID, Type | null>();
+
+	// Rename variables so that they are distinct.
+	const leftRenaming = new Map<TypeVariableID, TypeVariable>();
+	for (const leftVar of leftVars) {
+		const id = "unify_" + leftVar + Math.random() as TypeVariableID;
+		assignments.set(id, null);
+		leftRenaming.set(leftVar, { tag: "type-variable", id });
+	}
+
+	const rightRenaming = new Map<TypeVariableID, TypeVariable>();
+	for (const rightVar of rightVars) {
+		const id = "unify_" + rightVar + Math.random() as TypeVariableID;
+		assignments.set(id, null);
+		rightRenaming.set(rightVar, { tag: "type-variable", id });
+	}
+
+	lefts = lefts.map(t => typeSubstitute(t, leftRenaming));
+	rights = rights.map(t => typeSubstitute(t, rightRenaming));
+
+	const out = unifyTypeArrayHelper(lefts, rights, assignments);
+	if (out === null) {
+		return null;
+	}
+	return {
+		leftRenaming,
+		rightRenaming,
+		instantiations: assignments,
+	};
+}
+
 export function typeArgumentsMap(
 	parameters: TypeVariableID[],
 	args: Type[],
@@ -436,6 +579,32 @@ export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 
 	const _: never = t;
 	throw new Error(`unhandled type tag \`${t}\`.`);
+}
+
+export function typeRecursiveSubstitute(t: Type, map: Map<TypeVariableID, Type | null>): Type {
+	if (t.tag === "type-variable") {
+		const e = map.get(t.id);
+		if (e === undefined) {
+			return t;
+		} else if (e === null) {
+			return t;
+		} else {
+			const r = typeRecursiveSubstitute(e, map);
+			map.set(t.id, r);
+			return r;
+		}
+	} else if (t.tag === "type-compound") {
+		return {
+			tag: t.tag,
+			record: t.record,
+			type_arguments: t.type_arguments.map(a => typeRecursiveSubstitute(a, map)),
+		};
+	} else if (t.tag === "type-primitive") {
+		return t;
+	}
+
+	const _: never = t;
+	throw new Error(`unhandled type tag \`${t["tag"]}\`.`);
 }
 
 export function constraintSubstitute(

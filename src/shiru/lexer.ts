@@ -109,6 +109,7 @@ export const KEYWORDS = {
 	"forall": true,
 	"foreign": true,
 	"if": true,
+	"impl": true,
 	"import": true,
 	"implies": true,
 	"interface": true,

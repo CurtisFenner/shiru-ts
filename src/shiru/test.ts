@@ -9,6 +9,7 @@ import * as semantics_tests from "./semantics_tests";
 import * as smt_tests from "./smt_tests";
 import * as uf_tests from "./uf_tests";
 import * as verify_tests from "./verify_tests";
+import * as ir_tests from "./ir_tests";
 
 import * as util from "util";
 
@@ -126,6 +127,26 @@ function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[
 		return { eq: true };
 	} else if (a instanceof Set || b instanceof Set) {
 		return { eq: false, path: [] };
+	} else if (a instanceof Map && b instanceof Map) {
+		for (let [k, v] of a) {
+			if (!b.has(k)) {
+				return { eq: false, path: [k] };
+			}
+			const cmp = deepEqual(v, b.get(k));
+			if (!cmp.eq) {
+				return { eq: false, path: [k].concat(cmp.path) };
+			}
+		}
+		for (let [k, v] of b) {
+			if (!a.has(k)) {
+				return { eq: false, path: [k] };
+			}
+			const cmp = deepEqual(v, a.get(k));
+			if (!cmp.eq) {
+				return { eq: false, path: [k].concat(cmp.path) };
+			}
+		}
+		return { eq: true };
 	} else if (a instanceof Map || b instanceof Map) {
 		return { eq: false, path: [] };
 	} else if (typeof a === "object") {
@@ -155,8 +176,9 @@ function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[
 export function assert<A, B extends A>(a: A, op: "is equal to", b: Spec<B>): asserts a is B;
 export function assert<A>(a: A, op: A extends any[] ? "is array" : never): asserts a is any[] & A;
 export function assert(a: () => void, op: "throws", e: unknown): void;
+export function assert<A>(a: A | null, op: "is not null"): asserts a is A;
 
-export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"] | [() => void, "throws", unknown]) {
+export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "is array"] | [() => void, "throws", unknown] | [A, "is not null"]) {
 	if (args[1] === "is equal to") {
 		const [a, op, b] = args;
 		const cmp = deepEqual(a, b);
@@ -185,7 +207,14 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		if (!threw) {
 			throw new Error(`Expected an error to be thrown.`);
 		}
+	} else if (args[1] === "is not null") {
+		const a = args[0];
+		if (a === null) {
+			const sa = util.inspect(a, { depth: 16, colors: true });
+			throw new Error(`Expected \n${sa}\nto be not null.`);
+		}
 	} else {
+		const _: never = args;
 		throw new Error("unhandled assertion type `" + JSON.stringify(args[1]) + "`");
 	}
 }
@@ -193,6 +222,7 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 const testRunner = new TestRunner(process.argv[2]);
 
 testRunner.runTests("data_tests", data_tests.tests);
+testRunner.runTests("ir_tests", ir_tests.tests);
 testRunner.runTests("egraph_tests", egraph_tests.tests);
 testRunner.runTests("grammar_tests", grammar_tests.tests);
 testRunner.runTests("interpreter_tests", interpreter_tests.tests);

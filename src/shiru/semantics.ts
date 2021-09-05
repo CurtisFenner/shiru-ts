@@ -1315,8 +1315,12 @@ function compileExpressionAtom(
 		};
 		ops.push({
 			tag: "op-copy",
-			source: v.currentValue,
-			destination,
+			copies: [
+				{
+					source: v.currentValue,
+					destination,
+				}
+			],
 		});
 		return {
 			values: [{
@@ -1375,19 +1379,24 @@ function compileExpressionAtom(
 			}
 
 			const destinations = [];
+			const copies = [];
 			for (const source of context.ensuresReturnExpression.values) {
 				const destination = {
 					variable: stack.uniqueID("return"),
 					type: source.type,
 					location: e.location,
 				};
-				ops.push({
-					tag: "op-copy",
+				copies.push({
 					source: source.variable,
 					destination,
 				});
 				destinations.push(destination);
 			}
+			ops.push({
+				tag: "op-copy",
+				copies,
+
+			});
 			return {
 				values: destinations,
 				location: e.location,

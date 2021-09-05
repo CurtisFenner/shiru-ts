@@ -467,8 +467,9 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.defineVariable(op.destination, constant);
 		return;
 	} else if (op.tag === "op-copy") {
-		const source = state.getValue(op.source);
-		state.defineVariable(op.destination, source.value);
+		for (const copy of op.copies) {
+			state.defineVariable(copy.destination, state.getValue(copy.source).value);
+		}
 		return;
 	} else if (op.tag === "op-field") {
 		const object = state.getValue(op.object);

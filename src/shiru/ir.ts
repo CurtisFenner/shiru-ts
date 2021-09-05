@@ -107,12 +107,16 @@ export interface OpConstBoolean {
 	boolean: boolean,
 }
 
+export interface Copy {
+	source: VariableID,
+	destination: VariableDefinition,
+}
+
 /// `OpCopy` copies a value from one variable to a new variable.
 export interface OpCopy {
 	tag: "op-copy",
 
-	source: VariableID,
-	destination: VariableDefinition,
+	copies: Copy[],
 }
 
 /// `OpBranch` chooses which branch to execute depending on the current value of

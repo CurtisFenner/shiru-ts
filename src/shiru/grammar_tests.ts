@@ -162,4 +162,27 @@ export const tests = {
 			],
 		});
 	},
+	"multi-declaration-missing-var"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn multiple(): Int, String, Boolean {
+				return 1, "hi", false;
+			}
+				
+			fn main(): Int {
+				var a: Int, b: String, c: Boolean = Main.multiple();
+				return 1;
+			}
+		}
+		`;
+
+		assert(() => grammar.parseSource(source, "test-file"), "throws", {
+			message: [
+				"Expected another `var` variable declaration at",
+				{ fileID: "test-file", offset: 151, length: 1 },
+			],
+		});
+	},
 };

@@ -925,7 +925,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword, tokens.typeVarIden]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,
-		arguments: new CommaParser(grammar.Type, "Expected a type argument at")
+		arguments: new CommaParser(grammar.Type, "Expected another type argument at")
 			.map(requireAtLeastOne("type argument")),
 		_close: punctuation.squareClose
 			.required(parseProblem("Expected a `]` at", atHead,
@@ -961,11 +961,11 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `;` after `unreachable` at", atHead)),
 	})),
 	VarSt: new StructParser(() => ({
-		variables: new CommaParser(grammar.VarDecl, "variable declaration", 1),
+		variables: new CommaParser(grammar.VarDecl, "Expected another `var` variable declaration at", 1),
 		tag: new ConstParser("var"),
 		"_eq": punctuation.equal
 			.required(parseProblem("Expected a `=` after variable declarations at", atHead)),
-		initialization: new CommaParser(grammar.Expression, "expression", 1)
+		initialization: new CommaParser(grammar.Expression, "Expected another expression expression at", 1)
 			.required(parseProblem("Expected an initialization expression after `=` in a variable declaration at", atHead)),
 		"_semicolon": punctuation.semicolon
 			.required(parseProblem("Expected a `;` after variable initialization at", atHead)),

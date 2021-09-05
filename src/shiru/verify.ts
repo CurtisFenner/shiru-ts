@@ -306,6 +306,11 @@ class VerificationState {
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.constructorMap = new ConstructorMap(this.program, this.smt);
 		this.fieldMap = new FieldMap(this.program, this.smt);
+
+		// SMT requires at least one constraint.
+		this.smt.addConstraint([
+			this.smt.createConstant(ir.T_BOOLEAN, true),
+		]);
 	}
 
 	negate(bool: uf.ValueID): uf.ValueID {
@@ -338,10 +343,6 @@ class VerificationState {
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
-		if (this.pathConstraints.length === 0) {
-			return {};
-		}
-
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
 			this.smt.addConstraint([constraint]);
@@ -355,7 +356,8 @@ class VerificationState {
 	/// constraints is not considered satisfiable in subsequent invocations of
 	/// the `smt` solver.
 	markPathUnreachable() {
-		this.smt.addConstraint(this.pathConstraints.map(e => this.negate(e)));
+		const pathUnreachable = this.pathConstraints.map(e => this.negate(e));
+		this.smt.addConstraint(pathUnreachable);
 	}
 
 	defineVariable(variable: ir.VariableDefinition, value: uf.ValueID) {
@@ -601,6 +603,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				tag: "failed-assert",
 				assertLocation: op.diagnostic_location,
 			};
+
 		if (state.checkReachable(reason) !== "refuted") {
 			state.failedVerifications.push(reason);
 		}

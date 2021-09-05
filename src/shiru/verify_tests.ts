@@ -297,4 +297,43 @@ export const tests = {
 			}
 		]);
 	},
+	"fn-need-not-return-if-else-unreachable"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn f(b: Boolean): Int
+			requires b {
+				if b {
+					return 1;
+				} else {
+					unreachable;
+				}
+			}
+		}
+		`
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"fn-need-not-return-if-then-exhaustive"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn f(): Int {
+				if true {
+					return 1;
+				}
+			}
+		}
+		`
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

@@ -277,4 +277,24 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"empty-function-missing-return"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn f(): Int {
+			}
+		}
+		`
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-return",
+				blockEndLocation: { fileID: "test-file", offset: 57, length: 1 },
+			}
+		]);
+	},
 };

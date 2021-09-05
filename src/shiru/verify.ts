@@ -338,6 +338,10 @@ class VerificationState {
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
+		if (this.pathConstraints.length === 0) {
+			return {};
+		}
+
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
 			this.smt.addConstraint([constraint]);

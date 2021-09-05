@@ -672,28 +672,30 @@ function traverseStaticCall(
 		state.defineVariable(op.destinations[i], result);
 	}
 
-	for (const postcondition of signature.postconditions) {
-		state.recursivePostconditions.blockedFunctions[fn] = true;
-		const locals = new Map<ir.VariableDefinition, uf.ValueID>();
-		for (let i = 0; i < op.arguments.length; i++) {
-			const variable = signature.parameters[i];
-			const value = state.getValue(op.arguments[i]).value;
-			locals.set(variable, value);
-		}
-		for (let i = 0; i < op.destinations.length; i++) {
-			const variable = postcondition.returnedValues[i];
-			const value = state.getValue(op.destinations[i].variable).value;
-			locals.set(variable, value);
-		}
+	if (state.recursivePostconditions.blockedFunctions[fn] !== true) {
+		for (const postcondition of signature.postconditions) {
+			state.recursivePostconditions.blockedFunctions[fn] = true;
+			const locals = new Map<ir.VariableDefinition, uf.ValueID>();
+			for (let i = 0; i < op.arguments.length; i++) {
+				const variable = signature.parameters[i];
+				const value = state.getValue(op.arguments[i]).value;
+				locals.set(variable, value);
+			}
+			for (let i = 0; i < op.destinations.length; i++) {
+				const variable = postcondition.returnedValues[i];
+				const value = state.getValue(op.destinations[i].variable).value;
+				locals.set(variable, value);
+			}
 
-		// TODO: Do we need a different context?
-		traverseBlock(program, locals, postcondition.block, state, context, () => {
-			const bool = state.getValue(postcondition.postcondition).value;
-			state.pushPathConstraint(state.negate(bool));
-			state.markPathUnreachable();
-			state.popPathConstraint();
-		});
+			// TODO: Do we need a different context?
+			traverseBlock(program, locals, postcondition.block, state, context, () => {
+				const bool = state.getValue(postcondition.postcondition).value;
+				state.pushPathConstraint(state.negate(bool));
+				state.markPathUnreachable();
+				state.popPathConstraint();
+			});
 
-		delete state.recursivePostconditions.blockedFunctions[fn];
+			delete state.recursivePostconditions.blockedFunctions[fn];
+		}
 	}
 }

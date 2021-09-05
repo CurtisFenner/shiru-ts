@@ -257,4 +257,24 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"recursive-ensures"() {
+		const source = `
+		package example;
+
+		record R {
+			fn dec(n: Int): Int
+			ensures n < 0 or return == R.dec(n - 1) {
+				if n < 0 {
+					return 0;
+				}
+				return R.dec(n - 1);
+			} 
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

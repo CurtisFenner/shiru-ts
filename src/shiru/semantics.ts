@@ -1540,6 +1540,8 @@ function resolveOperator(
 			return "Int-" as ir.FunctionID;
 		} else if (opStr === "==") {
 			return "Int==" as ir.FunctionID;
+		} else if (opStr === "<") {
+			return "Int<" as ir.FunctionID;
 		}
 	}
 
@@ -2618,6 +2620,26 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 			semantics: {
 				eq: true,
 			},
+		},
+		"Int<": {
+			parameters: [
+				{
+					variable: "left" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
+				{
+					variable: "right" as ir.VariableID,
+					type: ir.T_INT,
+					location: ir.NONE,
+				},
+			],
+			return_types: [ir.T_BOOLEAN],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [],
+			semantics: {},
 		},
 		"Int+": {
 			// Addition

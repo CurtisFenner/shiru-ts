@@ -82,6 +82,19 @@ export const tests = {
 			],
 		});
 	},
+	"redefined-field-as-method-in-record"() {
+		const source = `package example; record A { var f1: A; fn f1(): Int { return 1; } }`;
+		const ast = grammar.parseSource(source, "test-file");
+
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `f1` was defined for a second time at",
+				{ fileID: "test-file", offset: 42, length: 2 },
+				"The first definition of `f1` was at",
+				{ fileID: "test-file", offset: 32, length: 2 },
+			],
+		});
+	},
 	"undefined-type-referenced-in-field"() {
 		const source = `package example; record A { var b: B; }`;
 		const ast = grammar.parseSource(source, "test-file");
@@ -158,13 +171,18 @@ export const tests = {
 		});
 	},
 	"return-expression-illegal-in-requires"() {
-		const source = `package example; record A { fn f(): Boolean requires return { return true; } }`;
+		const source = `
+		package example;
+		record A {
+			fn f(): Boolean requires return { return true; }
+		}
+		`;
 		const ast = grammar.parseSource(source, "test-file");
 
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A `return` expression cannot be used outside an `ensures` clause like it is at",
-				{ fileID: "test-file", offset: 53, length: 6 },
+				{ fileID: "test-file", offset: 61, length: 6 },
 			]
 		});
 	},
@@ -180,7 +198,10 @@ export const tests = {
 		});
 	},
 	"return-expression-legal-in-ensures"() {
-		const source = `package example; record A { fn f(): Boolean ensures return { return true; } }`;
+		const source = `
+		package example;
+		record A { fn f(): Boolean ensures return { return true; } }
+		`;
 		const ast = grammar.parseSource(source, "test-file");
 
 		semantics.compileSources({ ast });
@@ -364,9 +385,13 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
-				"The record `A` was given 0 type parameters at",
+				"The record `A` was given ",
+				"0 ",
+				"type parameters at",
 				{ fileID: "test-file", offset: 120, length: 1 },
-				"but 1 type parameter was expected at",
+				"but 1 ",
+				"type parameter was ",
+				"expected at",
 				{ fileID: "test-file", offset: 32, length: 2 },
 			],
 		});
@@ -384,9 +409,13 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
-				"The interface `example.I` was given 0 type parameters at",
+				"The interface `example.I` was given ",
+				"0 ",
+				"type parameters at",
 				{ fileID: "test-file", offset: 73, length: 1 },
-				"but 1 type parameter was expected at",
+				"but 1 ",
+				"type parameter was ",
+				"expected at",
 				{ fileID: "test-file", offset: 35, length: 2 },
 			],
 		});
@@ -411,6 +440,275 @@ export const tests = {
 				{ fileID: "test-file", offset: 93, length: 3 },
 				"cannot be converted to the type `#T` as expected at",
 				{ fileID: "test-file", offset: 77, length: 2 },
+			],
+		});
+	},
+	"missing-impl-for-constraint-call"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(): Int;
+		}
+
+		record R {
+			fn main(): Int {
+				return (R is I).get();
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"There is no implementation for `example.R is example.I` at",
+				{ fileID: "test-file", offset: 104, length: 8 },
+			],
+		});
+	},
+	"missing-fn-for-constraint-call"() {
+		const source = `
+		package example;
+
+		interface I {
+		}
+
+		record R {
+			fn main(): Int {
+				return (R is I).get();
+			}
+		}
+
+		impl R is I {}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The type `example.R is example.I` ",
+				"does not have a function member named `get` ",
+				"so the function call is illegal at",
+				{ fileID: "test-file", offset: 95, length: 3 },
+			],
+		});
+	},
+	"missing-function-in-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(): Int;
+		}
+
+		record R {
+		}
+
+		impl R is I {
+			// Missing fn get
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl `example.R is example.I` ",
+				"is missing member `get` at",
+				{ fileID: "test-file", offset: 80, length: 11 },
+				"However, the interface `example.I` requires a `get` member at",
+				{ fileID: "test-file", offset: 43, length: 3 },
+			],
+		});
+	},
+	"extra-fn-in-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(): Int;
+		}
+
+		record R {
+		}
+
+		impl R is I {
+			// Extra fn
+			fn set(n: Int): Unit {
+			}
+
+			fn get(): Int {
+				return 3;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl `example.R is example.I` ",
+				"defines a member `set` at",
+				{ fileID: "test-file", offset: 115, length: 3 },
+				"However, the interface `example.I` defined at",
+				{ fileID: "test-file", offset: 33, length: 1 },
+				"does not have a member named `set`.",
+			],
+		});
+	},
+	"wrong-fn-signature-in-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(a: Int): Int;
+		}
+
+		record R {
+		}
+
+		impl R is I {
+			// Wrong type
+			fn get(a: Boolean): Int {
+				return 42;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The type `Boolean` ",
+				"of the 1st parameter ",
+				"of the impl member `get` at",
+				{ fileID: "test-file", offset: 130, length: 7 },
+				"does not match the type `Int` ",
+				"as required of a `example.R is example.I` by the interface member defined at",
+				{ fileID: "test-file", offset: 50, length: 3 },
+			],
+		});
+	},
+	"body-must-type-check-in-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(): Int;
+		}
+
+		record R {
+		}
+
+		impl R is I {
+			fn get(): Int {
+				// bad type
+				return "str";
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"A value with type `Bytes` at",
+				{ fileID: "test-file", offset: 140, length: 5 },
+				"cannot be converted to the type `Int` as expected at",
+				{ fileID: "test-file", offset: 107, length: 3 },
+			],
+		});
+	},
+	"redefine-fn-in-record"() {
+		const source = `
+		package example;
+
+		record R {
+			fn get(): Int { return 1; }
+			fn get(): Int { return 1; }
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `get` was defined for a second time at",
+				{ fileID: "test-file", offset: 71, length: 3 },
+				"The first definition of `get` was at",
+				{ fileID: "test-file", offset: 40, length: 3 },
+			],
+		});
+	},
+	"redefine-fn-in-interface"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn alpha(): Int;
+			fn alpha(): Int;
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `alpha` was defined for a second time at",
+				{ fileID: "test-file", offset: 63, length: 5 },
+				"The first definition of `alpha` was at",
+				{ fileID: "test-file", offset: 43, length: 5 },
+			],
+		});
+	},
+	"redefine-fn-in-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn alpha(): Int;
+		}
+
+		record R {}
+
+		impl R is I {
+			fn alpha(): Int {
+				return 1;
+			}
+			fn alpha(): Int {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `alpha` was defined for a second time at",
+				{ fileID: "test-file", offset: 139, length: 5 },
+				"The first definition of `alpha` was at",
+				{ fileID: "test-file", offset: 99, length: 5 },
+			],
+		});
+	},
+	"impl-has-too-few-parameters"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn alpha(p: Int): Int;
+		}
+
+		record R {}
+
+		impl R is I {
+			fn alpha(): Int {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The impl member `alpha` has ",
+				"0 parameters at",
+				{ fileID: "test-file", offset: 110, length: 2 },
+				"However, `example.R is example.I` needs 1, as defined at",
+				{ fileID: "test-file", offset: 48, length: 8 },
 			],
 		});
 	},

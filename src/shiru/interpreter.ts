@@ -427,9 +427,14 @@ function* interpretOp(
 	} else if (op.tag === "op-dynamic-call") {
 		const args = op.arguments.map(arg => frame.load(arg));
 		const vtableProducer = makeVTableProducer(context.constraintContext, op.constraint);
-		const signature = context.program.interfaces[op.constraint.interface].signatures[op.signature_id];
+		const int = context.program.interfaces[op.constraint.interface];
+		const signature = int.signatures[op.signature_id];
+
+		const interfaceMap = ir.typeArgumentsMap(int.type_parameters, op.constraint.subjects);
+		const signatureMap = ir.typeArgumentsMap(signature.type_parameters, op.signature_type_arguments);
+		const substitutionMap = new Map([...interfaceMap.entries(), ...signatureMap.entries()]);
+
 		const callsite: VTable[] = [];
-		const substitutionMap = ir.typeArgumentsMap(signature.type_parameters, op.signature_type_arguments);
 		for (const genericConstraint of signature.constraint_parameters) {
 			const neededConstraint = ir.constraintSubstitute(genericConstraint, substitutionMap);
 			const argumentProducer = makeVTableProducer(context.constraintContext, neededConstraint);

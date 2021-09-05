@@ -12,27 +12,40 @@ interface FieldBinding {
 
 interface TypeBinding {
 	t: ir.Type,
-	location: ir.SourceLocation,
+	nameLocation: ir.SourceLocation,
+	typeLocation: ir.SourceLocation,
 }
 
 interface FnBinding {
+	tag: "fn-binding",
+
 	nameLocation: ir.SourceLocation,
 	parameters: TypeBinding[],
+	parametersLocation: ir.SourceLocation,
 	returns: TypeBinding[],
 	ast: grammar.Fn,
 
-	// The list of ALL type parameters of the function, in the order to appear
-	// in a op-static-call of the function.
-	typeParameterList: ir.TypeVariableID[],
+	/// The type variables bound by the containing entity (e.g., record).
+	entityTypeVariables: ir.TypeVariableID[],
+
+	/// The type variables bound specifically to this signature.
+	signatureTypeVariables: ir.TypeVariableID[],
 
 	id: ir.FunctionID,
 }
 
 interface InterfaceFnBinding {
+	tag: "vtable-binding",
+	signature_id: string,
+
 	nameLocation: ir.SourceLocation,
 	parameters: TypeBinding[],
+	parametersLocation: ir.SourceLocation,
 	returns: TypeBinding[],
 	ast: grammar.InterfaceMember,
+
+	interfaceTypeVariables: ir.TypeVariableID[],
+	signatureTypeVariables: ir.TypeVariableID[],
 }
 
 interface RecordEntityDef {
@@ -68,10 +81,8 @@ interface ImplEntityDef {
 	headLocation: ir.SourceLocation,
 	sourceID: string,
 
-	typeScope: TypeScopeI<ir.Type>,
+	typeScope: TypeScopeI<null>,
 	constraint: ir.ConstraintParameter,
-
-	fns: Record<string, FnBinding>,
 }
 
 type NamedEntityDef = RecordEntityDef | InterfaceEntityDef;
@@ -121,6 +132,14 @@ class ProgramContext {
 		const entity = this.entitiesByCanonical[recordID];
 		if (entity === undefined || entity.tag !== "record") {
 			throw new Error("ICE: unexpected non-record ID `" + recordID + "`");
+		}
+		return entity;
+	}
+
+	getInterface(interfaceID: ir.InterfaceID): InterfaceEntityDef {
+		const entity = this.entitiesByCanonical[interfaceID];
+		if (entity === undefined || entity.tag !== "interface") {
+			throw new Error("ICE: unexpected non-interface ID `" + interfaceID + "`");
 		}
 		return entity;
 	}
@@ -213,7 +232,7 @@ function collectInterfaceRecordEntity(
 				},
 				constraints: [],
 				typeVariables: new Map(),
-				typeVariableList: [],
+				typeVariableList: [thisType],
 			},
 
 			// These are filled in by `collectMembers`.
@@ -251,8 +270,8 @@ interface TypeVariableBinding {
 	variable: ir.TypeVariable,
 }
 
-interface TypeScopeI<This> {
-	thisType: This | null,
+interface TypeScopeI<This extends ir.Type | null> {
+	thisType: This,
 
 	/// `typeVariables` maps from the `TypeVarToken.name` to the ID in IR.
 	typeVariables: Map<ir.TypeVariableID, TypeVariableBinding>,
@@ -266,7 +285,7 @@ interface TypeArgumentConstraint {
 	location: ir.SourceLocation,
 }
 
-type TypeScope = TypeScopeI<ir.Type>;
+type TypeScope = TypeScopeI<ir.Type | null>;
 
 function resolveEntity(
 	t: grammar.TypeNamed,
@@ -359,12 +378,15 @@ function compileConstraint(
 			});
 		}
 
-		const instantiation = ir.typeArgumentsMap(interfaceEntity.typeScope.typeVariableList, argumentSubjects);
+		const allArguments = [methodSubject, ...argumentSubjects];
+		if (interfaceEntity.typeScope.typeVariableList[0] !== interfaceEntity.typeScope.thisType!.id) {
+			throw new Error("ICE: First InterfaceEntity type parameter must be `this` type")
+		}
+		const instantiation = ir.typeArgumentsMap(interfaceEntity.typeScope.typeVariableList, allArguments);
 		const thisType = interfaceEntity.typeScope.thisType;
 		if (thisType === null) {
 			throw new Error("compileConstraint: InterfaceEntity thisType must be a type variable.");
 		}
-		instantiation.set(thisType.id, methodSubject);
 		for (const requirementBinding of interfaceEntity.typeScope.constraints) {
 			const genericConstraint = requirementBinding.constraint;
 			const instantiated: ir.ConstraintParameter = ir.constraintSubstitute(genericConstraint, instantiation);
@@ -398,7 +420,7 @@ function checkConstraintSatisfied(
 	typeScope: TypeScope,
 	sourceContext: SourceContext,
 	{ constraintDeclaredAt, neededAt }: {
-		constraintDeclaredAt: ir.SourceLocation,
+		constraintDeclaredAt: ir.SourceLocation | null,
 		neededAt: ir.SourceLocation,
 	},
 ) {
@@ -705,110 +727,138 @@ function resolveAvailableTypes(programContext: ProgramContext, entityName: strin
 	throw new Error("collectTypeScopesAndConstraints: unhandled tag `" + entity["tag"] + "`");
 }
 
+function resolveRecordMemberSignatures(
+	entity: RecordEntityDef,
+	sourceContext: SourceContext,
+	entityName: string,
+) {
+	// Collect the defined fields.
+	for (let field of entity.ast.fields) {
+		const fieldName = field.name.name;
+		const existingField = entity.fields[fieldName];
+		if (existingField !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fieldName,
+				firstBinding: existingField.nameLocation,
+				secondBinding: field.name.location,
+			});
+		}
+
+		const fieldType = compileType(field.t,
+			entity.typeScope, sourceContext, "check");
+
+		entity.fields[fieldName] = {
+			nameLocation: field.name.location,
+			t: fieldType,
+			typeLocation: field.t.location,
+		};
+	}
+
+	// Collect the defined methods.
+	for (let fn of entity.ast.fns) {
+		const fnName = fn.signature.name.name;
+		const existingField = entity.fields[fnName];
+		if (existingField !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName,
+				firstBinding: existingField.nameLocation,
+				secondBinding: fn.signature.name.location,
+			});
+		}
+		const existingFn = entity.fns[fnName];
+		if (existingFn !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName,
+				firstBinding: existingFn.nameLocation,
+				secondBinding: fn.signature.name.location,
+			});
+		}
+
+		const parameterTypes = fn.signature.parameters.list.map(p => ({
+			t: compileType(p.t, entity.typeScope, sourceContext, "check"),
+			nameLocation: p.name.location,
+			typeLocation: p.t.location,
+		}));
+
+		const returnTypes = fn.signature.returns.map(r => ({
+			t: compileType(r, entity.typeScope, sourceContext, "check"),
+			nameLocation: r.location,
+			typeLocation: r.location,
+		}));
+
+		entity.fns[fnName] = {
+			tag: "fn-binding",
+			id: canonicalFunctionName(entityName, fnName),
+
+			nameLocation: fn.signature.name.location,
+			parameters: parameterTypes,
+			parametersLocation: fn.signature.parameters.location,
+			returns: returnTypes,
+			ast: fn,
+
+			entityTypeVariables: entity.typeScope.typeVariableList,
+			signatureTypeVariables: [],
+		};
+	}
+}
+
+function resolveInterfaceMemberSignatures(
+	entity: InterfaceEntityDef,
+	sourceContext: SourceContext,
+) {
+	// Collect the defined methods.
+	for (const member of entity.ast.members) {
+		const fnName = member.signature.name.name;
+		const existingFn = entity.fns[fnName];
+		if (existingFn !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName,
+				firstBinding: existingFn.nameLocation,
+				secondBinding: member.signature.name.location,
+			});
+		}
+
+		const parameterTypes = member.signature.parameters.list.map(p => ({
+			t: compileType(p.t, entity.typeScope, sourceContext, "check"),
+			nameLocation: p.name.location,
+			typeLocation: p.t.location,
+		}));
+
+		const returnTypes = member.signature.returns.map(r => ({
+			t: compileType(r, entity.typeScope, sourceContext, "check"),
+			nameLocation: r.location,
+			typeLocation: r.location,
+		}));
+
+		entity.fns[fnName] = {
+			tag: "vtable-binding",
+			signature_id: fnName,
+
+			nameLocation: member.signature.name.location,
+			parameters: parameterTypes,
+			parametersLocation: member.signature.parameters.location,
+			returns: returnTypes,
+			ast: member,
+			interfaceTypeVariables: entity.typeScope.typeVariableList,
+			signatureTypeVariables: [],
+		};
+	}
+}
+
 /// Collects the "signatures" such that references to this entity within the
 /// bodies of other entities can be type-checked.
 /// Constraints must have already been collected in all entities using
 /// `collectTypeScopesAndConstraints` prior to invoking `collectMembers`.
 /// NOTE that this does NOT include compiling "requires" and "ensures" clauses,
 /// which are compiled alongside function bodies in a later pass.
-function resolveBodies(programContext: ProgramContext, entityName: string) {
+function resolveMemberSignatures(programContext: ProgramContext, entityName: string) {
 	const entity = programContext.entitiesByCanonical[entityName];
 	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	if (entity.tag === "record") {
-		// Collect the defined fields.
-		for (let field of entity.ast.fields) {
-			const fieldName = field.name.name;
-			const existingField = entity.fields[fieldName];
-			if (existingField !== undefined) {
-				throw new diagnostics.MemberRedefinedErr({
-					memberName: fieldName,
-					firstBinding: existingField.nameLocation,
-					secondBinding: field.name.location,
-				});
-			}
-
-			const fieldType = compileType(field.t,
-				entity.typeScope, sourceContext, "check");
-
-			entity.fields[fieldName] = {
-				nameLocation: field.name.location,
-				t: fieldType,
-				typeLocation: field.t.location,
-			};
-		}
-
-		// Collect the defined methods.
-		for (let fn of entity.ast.fns) {
-			const fnName = fn.signature.name.name;
-			const existingField = entity.fields[fnName];
-			if (existingField !== undefined) {
-				throw new diagnostics.MemberRedefinedErr({
-					memberName: fnName,
-					firstBinding: existingField.nameLocation,
-					secondBinding: fn.signature.name.location,
-				});
-			}
-			const existingFn = entity.fns[fnName];
-			if (existingFn !== undefined) {
-				throw new diagnostics.MemberRedefinedErr({
-					memberName: fnName,
-					firstBinding: existingFn.nameLocation,
-					secondBinding: fn.signature.name.location,
-				});
-			}
-
-			const parameterTypes = fn.signature.parameters.map(p => ({
-				t: compileType(p.t, entity.typeScope, sourceContext, "check"),
-				location: p.t.location,
-			}));
-
-			const returnTypes = fn.signature.returns.map(r => ({
-				t: compileType(r, entity.typeScope, sourceContext, "check"),
-				location: r.location,
-			}));
-
-			entity.fns[fnName] = {
-				nameLocation: fn.signature.name.location,
-				parameters: parameterTypes,
-				returns: returnTypes,
-				ast: fn,
-				id: canonicalFunctionName(entityName, fnName),
-				typeParameterList: entity.typeScope.typeVariableList,
-			};
-		}
-
+		resolveRecordMemberSignatures(entity, sourceContext, entityName);
 		return;
 	} else if (entity.tag === "interface") {
-		// Collect the defined methods.
-		for (const member of entity.ast.members) {
-			const fnName = member.signature.name.name;
-			const existingFn = entity.fns[fnName];
-			if (existingFn !== undefined) {
-				throw new diagnostics.MemberRedefinedErr({
-					memberName: fnName,
-					firstBinding: existingFn.nameLocation,
-					secondBinding: member.signature.name.location,
-				});
-			}
-
-			const parameterTypes = member.signature.parameters.map(p => ({
-				t: compileType(p.t, entity.typeScope, sourceContext, "check"),
-				location: p.t.location,
-			}));
-
-			const returnTypes = member.signature.returns.map(r => ({
-				t: compileType(r, entity.typeScope, sourceContext, "check"),
-				location: r.location,
-			}));
-
-			entity.fns[fnName] = {
-				nameLocation: member.signature.name.location,
-				parameters: parameterTypes,
-				returns: returnTypes,
-				ast: member,
-			};
-		}
-
+		resolveInterfaceMemberSignatures(entity, sourceContext);
 		return;
 	}
 
@@ -961,11 +1011,15 @@ function compileCall(
 	ops: ir.Op[],
 	stack: VariableStack,
 	args: ValueInfo[],
-	fn: FnBinding,
-	typeArgumentMapping: Map<ir.TypeVariableID, ir.Type>,
-	location: ir.SourceLocation,
-): ValueInfo {
+	fn: FnBinding | InterfaceFnBinding,
 
+	/// An assignment for all the signatureTypeVariables and
+	/// entityTypeVariables/interfaceTypeVariables.
+	typeArgumentMapping: Map<ir.TypeVariableID, ir.Type>,
+
+	location: ir.SourceLocation,
+	constraint: ir.ConstraintParameter | null,
+): ValueInfo {
 	const argValues = [];
 	for (const tuple of args) {
 		for (let i = 0; i < tuple.values.length; i++) {
@@ -978,7 +1032,7 @@ function compileCall(
 			actualCount: argValues.length,
 			actualLocation: ir.locationsSpan(args),
 			expectedCount: fn.parameters.length,
-			expectedLocation: ir.locationsSpan(fn.parameters),
+			expectedLocation: fn.parametersLocation,
 		});
 	}
 
@@ -999,7 +1053,7 @@ function compileCall(
 					count: value.tuple.values.length,
 				},
 				expectedType: displayType(expectedType),
-				expectedLocation: fn.parameters[i].location,
+				expectedLocation: fn.parameters[i].nameLocation,
 			});
 		}
 		argumentSources.push(value.tuple.values[value.i].variable);
@@ -1018,20 +1072,52 @@ function compileCall(
 		});
 	}
 
-	const typeArgumentList = [];
-	for (const arg of fn.typeParameterList) {
-		typeArgumentList.push(typeArgumentMapping.get(arg)!);
+
+	if (fn.tag === "fn-binding") {
+		const typeArgumentList = [];
+		for (const typeParameter of fn.entityTypeVariables) {
+			typeArgumentList.push(typeArgumentMapping.get(typeParameter)!);
+		}
+		for (const typeParameter of fn.signatureTypeVariables) {
+			typeArgumentList.push(typeArgumentMapping.get(typeParameter)!);
+		}
+
+		ops.push({
+			tag: "op-static-call",
+			function: fn.id,
+
+			arguments: argumentSources,
+			type_arguments: typeArgumentList,
+			destinations: destinations,
+
+			diagnostic_callsite: location,
+		});
+
+		if (constraint !== null) {
+			throw new Error("compileCall: expected `null` constraint for fn-binding")
+		}
+	} else {
+		if (constraint === null) {
+			throw new Error("compileCall: expected non-null constraint for vtable-binding");
+		}
+
+		const typeArgumentList = [];
+		for (const typeParameter of fn.signatureTypeVariables) {
+			typeArgumentList.push(typeArgumentMapping.get(typeParameter)!);
+		}
+
+		ops.push({
+			tag: "op-dynamic-call",
+			constraint,
+			signature_id: fn.signature_id,
+
+			arguments: argumentSources,
+			signature_type_arguments: typeArgumentList,
+			destinations,
+
+			diagnostic_callsite: location,
+		});
 	}
-	ops.push({
-		tag: "op-static-call",
-		function: fn.id,
-
-		arguments: argumentSources,
-		type_arguments: typeArgumentList,
-		destinations: destinations,
-
-		diagnostic_callsite: location,
-	});
 
 	return {
 		values: destinations,
@@ -1039,8 +1125,8 @@ function compileCall(
 	};
 }
 
-function compileCallExpression(
-	e: grammar.ExpressionCall,
+function compileTypeCallExpression(
+	e: grammar.ExpressionTypeCall,
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
@@ -1048,7 +1134,6 @@ function compileCallExpression(
 ): ValueInfo {
 	const baseType = compileType(e.t, typeScope, context.sourceContext, "check");
 	if (baseType.tag !== "type-compound") {
-		// TODO: Handle dynamic dispatch on type parameters.
 		throw new diagnostics.CallOnNonCompoundErr({
 			baseType: displayType(baseType),
 			location: e.t.location,
@@ -1071,13 +1156,53 @@ function compileCallExpression(
 	}
 
 	const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
-	if (fn.typeParameterList.length !== baseType.type_arguments.length) {
+	if (fn.signatureTypeVariables.length !== 0) {
 		throw new Error("TODO: Handle member-scoped type arguments.");
 	}
-	for (let i = 0; i < fn.typeParameterList.length; i++) {
-		typeArgumentMapping.set(fn.typeParameterList[i], baseType.type_arguments[i]);
+	for (let i = 0; i < baseType.type_arguments.length; i++) {
+		typeArgumentMapping.set(fn.entityTypeVariables[i], baseType.type_arguments[i]);
 	}
-	return compileCall(ops, stack, args, fn, typeArgumentMapping, e.location);
+	return compileCall(ops, stack, args, fn, typeArgumentMapping, e.location, null);
+}
+
+function compileConstraintCallExpression(
+	e: grammar.ExpressionConstraintCall,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	const subject = compileType(e.constraint.subject, typeScope, context.sourceContext, "check");
+	const constraint = compileConstraint(e.constraint.constraint, subject, context.sourceContext, typeScope, "check");
+
+	checkConstraintSatisfied(constraint, typeScope, context.sourceContext, {
+		neededAt: e.constraint.location,
+		constraintDeclaredAt: null,
+	});
+
+	const int = context.sourceContext.programContext.getInterface(constraint.interface);
+	const fn = int.fns[e.methodName.name];
+	if (fn === undefined) {
+		throw new diagnostics.NoSuchFnErr({
+			baseType: displayConstraint(constraint),
+			methodName: e.methodName.name,
+			methodNameLocation: e.methodName.location,
+		});
+	}
+
+	const args = [];
+	for (const arg of e.arguments) {
+		args.push(compileExpression(arg, ops, stack, typeScope, context));
+	}
+
+	const typeArgumentMapping = new Map<ir.TypeVariableID, ir.Type>();
+	for (let i = 0; i < constraint.subjects.length; i++) {
+		typeArgumentMapping.set(fn.interfaceTypeVariables[i], constraint.subjects[i]);
+	}
+	if (fn.signatureTypeVariables.length !== 0) {
+		throw new Error("TODO: Handle member scoped dynamic type arguments");
+	}
+	return compileCall(ops, stack, args, fn, typeArgumentMapping, e.location, constraint);
 }
 
 function compileRecordLiteral(
@@ -1214,8 +1339,10 @@ function compileExpressionAtom(
 			int: e.int,
 		});
 		return { values: [destination], location: e.location };
-	} else if (e.tag === "call") {
-		return compileCallExpression(e, ops, stack, typeScope, context);
+	} else if (e.tag === "type-call") {
+		return compileTypeCallExpression(e, ops, stack, typeScope, context);
+	} else if (e.tag === "constraint-call") {
+		return compileConstraintCallExpression(e, ops, stack, typeScope, context);
 	} else if (e.tag === "keyword") {
 		if (e.keyword === "false" || e.keyword === "true") {
 			const destination = {
@@ -1349,14 +1476,14 @@ function compileOperand(
 			}
 
 			const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
-			if (fn.typeParameterList.length !== base.type.type_arguments.length) {
+			for (let i = 0; i < fn.entityTypeVariables.length; i++) {
+				typeArgumentMapping.set(fn.entityTypeVariables[i], base.type.type_arguments[i]);
+			}
+			if (fn.signatureTypeVariables.length !== 0) {
 				throw new Error("TODO: Handle member-scoped type arguments.");
 			}
-			for (let i = 0; i < fn.typeParameterList.length; i++) {
-				typeArgumentMapping.set(fn.typeParameterList[i], base.type.type_arguments[i]);
-			}
 
-			value = compileCall(ops, stack, args, fn, typeArgumentMapping, location);
+			value = compileCall(ops, stack, args, fn, typeArgumentMapping, location, null);
 		} else {
 			const _: never = access;
 			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
@@ -2092,14 +2219,18 @@ function compileBlock(
 function compileFunctionSignature(
 	signatureAST: grammar.FnSignature,
 	typeScope: TypeScope,
+	typeVariablesArePreBound: boolean,
 	sourceContext: SourceContext,
 ): {
 	signature: ir.FunctionSignature,
 	stack: VariableStack,
 	context: FunctionContext,
 } {
+	const typeVariables = typeVariablesArePreBound
+		? []
+		: typeScope.typeVariableList.slice(0);
 	const signature: ir.FunctionSignature = {
-		type_parameters: typeScope.typeVariableList,
+		type_parameters: typeVariables,
 		constraint_parameters: typeScope.constraints.map(c => c.constraint),
 
 		parameters: [],
@@ -2110,7 +2241,7 @@ function compileFunctionSignature(
 	};
 
 	const stack = new VariableStack();
-	for (const parameterAST of signatureAST.parameters) {
+	for (const parameterAST of signatureAST.parameters.list) {
 		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
 		const parameterVariableID = parameterAST.name.name as ir.VariableID;
 		stack.defineLocal(parameterAST.name.name, t, parameterAST.name.location, parameterVariableID);
@@ -2184,7 +2315,7 @@ function compileFunctionSignature(
 	return { signature, stack, context };
 }
 
-function compileFunction(
+function compileMemberFunction(
 	program: ir.Program,
 	def: FnBinding,
 	fName: string,
@@ -2192,7 +2323,7 @@ function compileFunction(
 	typeScope: TypeScope) {
 
 	const { signature, stack, context } = compileFunctionSignature(
-		def.ast.signature, typeScope, sourceContext);
+		def.ast.signature, typeScope, false, sourceContext);
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
 
 	// Make the verifier prove that this function definitely does not exit
@@ -2208,22 +2339,178 @@ function compileFunction(
 	program.functions[fName] = { signature, body };
 }
 
+function checkImplMemberConformance(
+	int: InterfaceEntityDef,
+	fnName: { name: string, location: ir.SourceLocation },
+	constraint: ir.ConstraintParameter,
+	signature: ir.FunctionSignature,
+	signatureAST: grammar.FnSignature,
+) {
+	const corresponding = int.fns[fnName.name];
+
+	// Check that a corresponding member exists.
+	if (corresponding === undefined) {
+		throw new diagnostics.ImplMemberDoesNotExistOnInterface({
+			impl: displayConstraint(constraint),
+			member: fnName.name,
+			memberLocation: fnName.location,
+			interface: constraint.interface,
+			interfaceLocation: int.bindingLocation,
+		});
+	}
+
+	// Determine the expected signatures.
+	if (corresponding.signatureTypeVariables.length !== 0) {
+		throw new Error("TODO: interface member with type parameters");
+	}
+	const instantiation = ir.typeArgumentsMap(corresponding.interfaceTypeVariables, constraint.subjects);
+
+	// Check the parameter types.
+	if (corresponding.parameters.length !== signature.parameters.length) {
+		throw new diagnostics.ImplParameterCountMismatch({
+			impl: displayConstraint(constraint),
+			member: fnName.name,
+			implCount: signature.parameters.length,
+			interfaceCount: corresponding.parameters.length,
+			implLocation: signatureAST.parameters.location,
+			interfaceLocation: corresponding.parametersLocation,
+		});
+	}
+	for (let i = 0; i < corresponding.parameters.length; i++) {
+		const expected = ir.typeSubstitute(corresponding.parameters[i].t, instantiation);
+		if (!ir.equalTypes(expected, signature.parameters[i].type)) {
+			throw new diagnostics.ImplParameterTypeMismatch({
+				impl: displayConstraint(constraint),
+				parameterIndex0: i,
+				memberName: fnName.name,
+				implType: displayType(signature.parameters[i].type),
+				interfaceType: displayType(expected),
+				implLocation: signatureAST.parameters.list[i].t.location,
+				interfaceLocation: corresponding.parameters[i].typeLocation,
+			});
+		}
+	}
+
+	// Check the return types.
+	if (corresponding.returns.length !== signature.return_types.length) {
+		throw new diagnostics.ImplReturnCountMismatch({
+			impl: displayConstraint(constraint),
+			member: fnName.name,
+			implCount: signature.return_types.length,
+			interfaceCount: corresponding.returns.length,
+			implLocation: ir.locationsSpan(signatureAST.returns),
+			interfaceLocation: ir.locationsSpan(corresponding.returns.map(x => ({ location: x.typeLocation }))),
+		});
+	}
+	for (let i = 0; i < corresponding.returns.length; i++) {
+		const expected = ir.typeSubstitute(corresponding.returns[i].t, instantiation);
+		if (!ir.equalTypes(expected, signature.return_types[i])) {
+			throw new diagnostics.ImplReturnTypeMismatch({
+				impl: displayConstraint(constraint),
+				returnIndex0: i,
+				memberName: fnName.name,
+				implType: displayType(signature.return_types[i]),
+				interfaceType: displayType(expected),
+				implLocation: signatureAST.returns[i].location,
+				interfaceLocation: corresponding.returns[i].typeLocation,
+			});
+		}
+	}
+
+}
+
+function compileImpl(
+	program: ir.Program,
+	impl: ImplEntityDef,
+	namingInterface: ir.InterfaceID,
+	namingRecord: string,
+	namingCount: string,
+	programContext: ProgramContext,
+) {
+	const sourceContext = programContext.sourceContexts[impl.sourceID];
+	const int = programContext.getInterface(impl.constraint.interface);
+
+	const vtable: ir.VTableFactory = {
+		for_any: impl.typeScope.typeVariableList,
+		provides: impl.constraint,
+		entries: {},
+	};
+
+	const canonicalImplName = `impl__${namingInterface}__${namingRecord}__${namingCount}`;
+
+	const memberBindings = new Map<string, ir.SourceLocation>();
+	for (const fnAST of impl.ast.fns) {
+		const fnName = fnAST.signature.name;
+		const existingBinding = memberBindings.get(fnName.name);
+		if (existingBinding !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName.name,
+				firstBinding: existingBinding,
+				secondBinding: fnName.location,
+			});
+		}
+		memberBindings.set(fnName.name, fnName.location);
+
+		// TODO: Reject ensures/requires refinements on impl.
+
+		const { signature, stack, context } = compileFunctionSignature(
+			fnAST.signature, impl.typeScope, false, sourceContext);
+
+		checkImplMemberConformance(int, fnName, impl.constraint, signature, fnAST.signature);
+
+		const body = compileBlock(fnAST.body, stack, int.typeScope, context);
+
+		// Make the verifier prove that this function definitely does not exit
+		// without returning.
+		if (body.ops.length === 0 || !ir.opTerminates(body.ops[body.ops.length - 1])) {
+			body.ops.push({
+				tag: "op-unreachable",
+				diagnostic_kind: "return",
+				diagnostic_location: fnAST.body.closing,
+			});
+		}
+
+		// TODO: Handle signature type constraints.
+		const closureConstraints = impl.typeScope.constraints.map(x => x.constraint);
+
+		const canonicalMemberName = `${canonicalImplName}__${fnName.name}`;
+		program.functions[canonicalMemberName] = { signature, body };
+		vtable.entries[fnName.name] = {
+			implementation: canonicalMemberName as ir.FunctionID,
+			constraint_parameters: closureConstraints,
+		};
+	}
+
+	for (const expected in int.fns) {
+		if (memberBindings.get(expected) === undefined) {
+			throw new diagnostics.ImplMissingInterfaceMember({
+				impl: displayConstraint(impl.constraint),
+				member: expected,
+				implLocation: impl.headLocation,
+				interface: impl.constraint.interface,
+				memberLocation: int.fns[expected].nameLocation,
+			});
+		}
+	}
+
+	program.globalVTableFactories[canonicalImplName] = vtable;
+}
+
 function compileInterfaceEntity(
 	program: ir.Program,
 	entity: InterfaceEntityDef,
 	entityName: string,
 	programContext: ProgramContext,
 ) {
-	const thisType = entity.typeScope.thisType as ir.TypeVariable;
 	const compiled: ir.IRInterface = {
-		type_parameters: [thisType.id].concat(entity.typeScope.typeVariableList),
+		type_parameters: entity.typeScope.typeVariableList,
 		signatures: {},
 	};
 	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	for (const fnName in entity.fns) {
 		const fn = entity.fns[fnName];
 		const signature = compileFunctionSignature(
-			fn.ast.signature, entity.typeScope, sourceContext);
+			fn.ast.signature, entity.typeScope, true, sourceContext);
 		compiled.signatures[fnName] = signature.signature;
 	}
 
@@ -2245,12 +2532,19 @@ function compileRecordEntity(
 		program.records[entityName].fields[fieldName] = entity.fields[fieldName].t;
 	}
 
-	// Implement functions.
+	// Compile member functions.
 	for (const f in entity.fns) {
 		const def = entity.fns[f];
 		const fName = def.id;
-		compileFunction(program, def, fName,
+		compileMemberFunction(program, def, fName,
 			programContext.sourceContexts[entity.sourceID], entity.typeScope);
+	}
+
+	// Compile impls.
+	for (const [interfaceID, impls] of entity.implsByInterface) {
+		for (let i = 0; i < impls.length; i++) {
+			compileImpl(program, impls[i], interfaceID, entityName, i + "", programContext);
+		}
 	}
 
 	// TODO: Implement vtable factories.
@@ -2347,7 +2641,7 @@ function associateImplWithBase(
 	record: RecordEntityDef,
 	constraint: ir.ConstraintParameter,
 	sourceID: string,
-	typeScope: TypeScope,
+	typeScope: TypeScopeI<null>,
 	implAST: grammar.ImplDefinition,
 ) {
 
@@ -2388,9 +2682,6 @@ function associateImplWithBase(
 		sourceID,
 		typeScope,
 		constraint,
-
-		// Functions will be filled in after all impls have been collected.
-		fns: {},
 	});
 }
 
@@ -2415,7 +2706,7 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	for (const sourceID in programContext.sourceContexts) {
 		const sourceContext = programContext.sourceContexts[sourceID];
 		for (const implAST of sourceContext.implASTs) {
-			const typeScope: TypeScope = {
+			const typeScope: TypeScopeI<null> = {
 				thisType: null,
 				typeVariables: new Map(),
 				typeVariableList: [],
@@ -2451,7 +2742,7 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	// Resolve members of entities. Type arguments must be validated based on
 	// collected constraints.
 	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		resolveBodies(programContext, canonicalEntityName);
+		resolveMemberSignatures(programContext, canonicalEntityName);
 	}
 
 	const program: ir.Program = {

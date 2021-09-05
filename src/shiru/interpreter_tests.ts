@@ -954,4 +954,86 @@ export const tests = {
 			{ sort: "int", int: BigInt(42) },
 		]);
 	},
+	"invoke-concrete-impl"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn get(): Int;
+		}
+
+		record R {
+			fn main(): Int {
+				return (R is I).get();
+			}
+		}
+
+		impl R is I {
+			fn get(): Int {
+				return 32;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+
+		const inputs: Value[] = [];
+		const result = interpret("example.R.main" as ir.FunctionID, inputs, program, {});
+
+		assert(result, "is equal to", [
+			{ sort: "int", int: BigInt(32) },
+		]);
+	},
+	"invoke-type-parameter-impl"() {
+		const source = `
+		package example;
+
+		interface Convertible[#To] {
+			fn convert(t: This): #To;
+		}
+
+		record R {
+			var r: Int;
+		}
+
+		record S {
+			var s: Int;
+		}
+
+		impl R is Convertible[S] {
+			fn convert(r: R): S {
+				return S{s = r.r};
+			}
+		}
+
+		record Delegating[#A, #B | #A is Convertible[#B]] {
+			fn convert(a: #A): #B {
+				return (#A is Convertible[#B]).convert(a);
+			}
+		}
+
+		record Main {
+			fn main(): S {
+				var r: R = R{r = 17};
+				return Delegating[R, S].convert(r);
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+
+		const inputs: Value[] = [];
+		const result = interpret("example.Main.main" as ir.FunctionID, inputs, program, {});
+
+		assert(result, "is equal to", [
+			{
+				sort: "record",
+				fields: {
+					s: { sort: "int", int: BigInt(17) },
+				},
+			},
+		]);
+	},
 };

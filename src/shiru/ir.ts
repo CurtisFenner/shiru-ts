@@ -258,7 +258,8 @@ export interface IRInterface {
 	/// All interfaces have at least one type-parameter (the "this" parameter).
 	type_parameters: TypeVariableID[],
 
-	/// N.B.: The type_parameters of each method is the same as the inteface's.
+	/// N.B.: The `type_parameters` array of each member does not include the
+	/// `type_parameters` of the interface.
 	signatures: Record<string, FunctionSignature>,
 };
 
@@ -295,6 +296,8 @@ export interface Postcondition {
 
 export interface FunctionSignature {
 	/// The type-parameters bound by this signature.
+	/// For a IRInterface signature, this does NOT include the type-parameters
+	/// of the interface.
 	type_parameters: TypeVariableID[],
 
 	/// A v-table is passed at runtime for each constraint in

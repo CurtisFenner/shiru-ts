@@ -319,7 +319,7 @@ export interface ImplDefinition {
 	typeParameters: TypeParameters,
 
 	base: TypeNamed,
-	constraint: TypeNamed,
+	constraint: Constraint,
 	fns: Fn[],
 
 	location: SourceLocation,
@@ -342,7 +342,9 @@ export interface Field {
 }
 
 export interface FnParameters {
-	parameters: FnParameter[],
+	list: FnParameter[],
+
+	location: SourceLocation,
 }
 
 export interface FnParameter {
@@ -353,7 +355,7 @@ export interface FnParameter {
 export interface FnSignature {
 	proof: KeywordToken | false,
 	name: IdenToken,
-	parameters: FnParameter[],
+	parameters: FnParameters,
 	returns: Type[],
 	requires: RequiresClause[],
 	ensures: EnsuresClause[],
@@ -385,7 +387,7 @@ interface TypeArguments {
 
 interface TypeConstraint {
 	methodSubject: TypeVarToken,
-	constraint: TypeNamed,
+	constraint: Constraint,
 
 	location: SourceLocation,
 }
@@ -510,11 +512,29 @@ export interface ExpressionParenthesized {
 	location: SourceLocation,
 }
 
-export interface ExpressionCall {
-	tag: "call",
+export interface ExpressionTypeCall {
+	tag: "type-call",
 	t: Type,
 	methodName: IdenToken,
 	arguments: Expression[],
+
+	location: SourceLocation,
+}
+
+export interface ExpressionConstraintCall {
+	tag: "constraint-call",
+	constraint: ExpressionConstraint,
+	methodName: IdenToken,
+	arguments: Expression[],
+
+	location: SourceLocation,
+}
+
+type Constraint = TypeNamed;
+
+export interface ExpressionConstraint {
+	subject: Type,
+	constraint: Constraint,
 
 	location: SourceLocation,
 }
@@ -538,8 +558,9 @@ export type ExpressionAtom = ExpressionParenthesized
 	| BooleanLiteralToken
 	| (KeywordToken & { keyword: "return" })
 	| IdenToken
-	| ExpressionCall
-	| ExpressionRecordLiteral;
+	| ExpressionTypeCall
+	| ExpressionRecordLiteral
+	| ExpressionConstraintCall;
 
 type ASTs = {
 	Block: Block,
@@ -552,14 +573,16 @@ type ASTs = {
 	ExpressionAccessField: ExpressionAccessField,
 	ExpressionAccessMethod: ExpressionAccessMethod,
 	ExpressionAtom: ExpressionAtom,
-	ExpressionCall: ExpressionCall,
-	ExpressionRecordLiteral: ExpressionRecordLiteral,
-	ExpressionRecordFieldInit: ExpressionRecordFieldInit,
+	ExpressionConstraint: ExpressionConstraint,
+	ExpressionConstraintCall: ExpressionConstraintCall,
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
 	ExpressionOperationBinary: ExpressionOperationBinary,
 	ExpressionOperationLogical: ExpressionOperationLogical,
 	ExpressionParenthesized: ExpressionParenthesized,
+	ExpressionRecordLiteral: ExpressionRecordLiteral,
+	ExpressionRecordFieldInit: ExpressionRecordFieldInit,
+	ExpressionTypeCall: ExpressionTypeCall,
 	Field: Field,
 	Fn: Fn,
 	FnParameter: FnParameter,
@@ -656,16 +679,44 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		tokens.booleanLiteral,
 		tokens.returnKeyword,
 		tokens.iden,
-		grammar.ExpressionCall,
+		grammar.ExpressionTypeCall,
 		grammar.ExpressionRecordLiteral,
+		grammar.ExpressionConstraintCall,
 	]),
-	ExpressionCall: new StructParser(() => ({
-		t: grammar.Type,
-		tag: new ConstParser("call"),
+	ExpressionConstraint: new StructParser(() => ({
+		_open: punctuation.roundOpen,
+		subject: grammar.Type,
+		_is: keywords.is,
+		constraint: grammar.TypeNamed
+			.required(parseProblem(
+				"Expected a constraint after `is` at", atHead)),
+		_close: punctuation.roundClose
+			.required(parseProblem(
+				"Expected a `)`", atHead,
+				"to complete constraint group at", atReference("_open"))),
+	})),
+	ExpressionConstraintCall: new StructParser(() => ({
+		constraint: grammar.ExpressionConstraint,
+		tag: new ConstParser("constraint-call"),
 		_dot: punctuation.dot,
 		methodName: tokens.iden
 			.required(parseProblem(
-				"Expected a function name after `.` in a call expression", atHead)),
+				"Expected a function name after `.` in a constraint-call expression at", atHead)),
+		_open: punctuation.roundOpen
+			.required(parseProblem(
+				"Expected a `(` after a function name in a call expression at", atHead)),
+		arguments: new CommaParser(grammar.Expression, "Expected another argument at"),
+		_close: punctuation.roundClose
+			.required(parseProblem("Expected a `)` at", atHead,
+				"to complete a function call beginning at", atReference("_open"))),
+	})),
+	ExpressionTypeCall: new StructParser(() => ({
+		t: grammar.Type,
+		tag: new ConstParser("type-call"),
+		_dot: punctuation.dot,
+		methodName: tokens.iden
+			.required(parseProblem(
+				"Expected a function name after `.` in a type-call expression at", atHead)),
 		_open: punctuation.roundOpen
 			.required(parseProblem(
 				"Expected a `(` after a function name in a call expression at", atHead)),
@@ -677,9 +728,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	})),
 	ExpressionRecordLiteral: new StructParser(() => ({
 		t: grammar.Type,
-		_open: punctuation.curlyOpen
-			.required(parseProblem(
-				"Expected a `{` or `.` after type name at", atHead)),
+		_open: punctuation.curlyOpen,
 		tag: new ConstParser("record-literal"),
 		initializations: new TrailingCommaParser(grammar.ExpressionRecordFieldInit),
 		_close: punctuation.curlyClose
@@ -740,9 +789,9 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_colon: punctuation.colon,
 		t: grammar.Type,
 	})),
-	FnParameters: new RecordParser(() => ({
+	FnParameters: new StructParser(() => ({
 		_open: punctuation.roundOpen,
-		parameters: new CommaParser(grammar.FnParameter,
+		list: new CommaParser(grammar.FnParameter,
 			"Expected another function parameter after `,` at"),
 		_close: punctuation.roundClose
 			.required(parseProblem("Expected a `)` at", atHead,
@@ -753,7 +802,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_fn: keywords.fn,
 		name: tokens.iden
 			.required(parseProblem("Expected a function name after `fn` at", atHead)),
-		parameters: grammar.FnParameters.map(x => x.parameters)
+		parameters: grammar.FnParameters
 			.required(parseProblem("Expected a `(` to begin function parameters at", atHead)),
 		_colon: punctuation.colon
 			.required(parseProblem("Expected a `:` after function parameters at", atHead)),

@@ -82,7 +82,11 @@ export class InvalidThisTypeErr extends SemanticError {
 }
 
 export class MemberRedefinedErr extends SemanticError {
-	constructor(args: { memberName: string, secondBinding: SourceLocation, firstBinding: SourceLocation }) {
+	constructor(args: {
+		memberName: string,
+		secondBinding: SourceLocation,
+		firstBinding: SourceLocation,
+	}) {
 		super([
 			"The member `" + args.memberName + "` was defined for a second time at",
 			args.secondBinding,
@@ -206,6 +210,88 @@ export class TypeMismatchErr extends SemanticError {
 			args.givenLocation,
 			"cannot be converted to the type `" + args.expectedType + "` as expected at",
 			args.expectedLocation,
+		]);
+	}
+}
+
+export class ImplParameterCountMismatch extends SemanticError {
+	constructor(args: {
+		impl: string,
+		member: string,
+		implCount: number,
+		interfaceCount: number,
+		implLocation: SourceLocation,
+		interfaceLocation: SourceLocation,
+	}) {
+		super([
+			"The impl member `" + args.member + "` has ",
+			args.implCount + " " + pluralize(args.implCount, "parameter") + " at",
+			args.implLocation,
+			"However, `" + args.impl + "` needs " + args.interfaceCount + ", as defined at",
+			args.interfaceLocation,
+		]);
+	}
+}
+
+export class ImplReturnCountMismatch extends SemanticError {
+	constructor(args: {
+		impl: string,
+		member: string,
+		implCount: number,
+		interfaceCount: number,
+		implLocation: SourceLocation,
+		interfaceLocation: SourceLocation,
+	}) {
+		super([
+			"The impl member `" + args.member + "` has ",
+			args.implCount + " " + pluralize(args.implCount, "return") + " at",
+			args.implLocation,
+			"However, `" + args.impl + "` needs " + args.interfaceCount + ", as defined at",
+			args.interfaceLocation,
+		]);
+	}
+}
+
+export class ImplParameterTypeMismatch extends SemanticError {
+	constructor(args: {
+		impl: string,
+		memberName: string,
+		parameterIndex0: number,
+		implType: string,
+		interfaceType: string,
+		implLocation: SourceLocation,
+		interfaceLocation: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.implType + "` ",
+			"of the " + nth(args.parameterIndex0 + 1) + " parameter ",
+			"of the impl member `" + args.memberName + "` at",
+			args.implLocation,
+			"does not match the type `" + args.interfaceType + "` ",
+			"as required of a `" + args.impl + "` by the interface member defined at",
+			args.interfaceLocation,
+		]);
+	}
+}
+
+export class ImplReturnTypeMismatch extends SemanticError {
+	constructor(args: {
+		impl: string,
+		memberName: string,
+		returnIndex0: number,
+		implType: string,
+		interfaceType: string,
+		implLocation: SourceLocation,
+		interfaceLocation: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.implType + "` ",
+			"of the " + nth(args.returnIndex0 + 1) + " return ",
+			"of the impl member `" + args.memberName + "` at",
+			args.implLocation,
+			"does not match the required type `" + args.interfaceType + "` ",
+			"as required of a `" + args.impl + "` by the interface member defined at",
+			args.interfaceLocation,
 		]);
 	}
 }
@@ -376,14 +462,17 @@ export class TypesDontSatisfyConstraintErr extends SemanticError {
 		/// `"X is Y[Z]"`.
 		neededConstraint: string,
 		neededLocation: SourceLocation,
-		constraintLocation: SourceLocation,
+		constraintLocation: SourceLocation | null,
 	}) {
-		super([
+		const arr = [
 			"There is no implementation for `" + args.neededConstraint + "` at",
 			args.neededLocation,
-			"This implementation is required by the constraint at",
-			args.constraintLocation,
-		]);
+		];
+		if (args.constraintLocation !== null) {
+			arr.push("This implementation is required by the constraint at",
+				args.constraintLocation);
+		}
+		super(arr);
 	}
 }
 
@@ -439,8 +528,8 @@ export class UninitializedFieldErr extends SemanticError {
 		initializerLocation: SourceLocation,
 	}) {
 		super([
-			"The initialization of type `" + args.recordType
-			+ "` is missing field `" + args.missingFieldName + "` at",
+			"The initialization of type `" + args.recordType + "` ",
+			"is missing field `" + args.missingFieldName + "` at",
 			args.initializerLocation,
 			"The field `" + args.missingFieldName + "` is defined at",
 			args.definedLocation,
@@ -458,13 +547,13 @@ export class TypeParameterCountMismatchErr extends SemanticError {
 		givenLocation: SourceLocation,
 	}) {
 		super([
-			"The " + args.entityType + " `" + args.entityName + "` was given"
-			+ " " + args.givenCount + " "
-			+ pluralize(args.givenCount, "type parameter") + " at",
+			"The " + args.entityType + " `" + args.entityName + "` was given ",
+			args.givenCount + " ",
+			pluralize(args.givenCount, "type parameter") + " at",
 			args.givenLocation,
-			"but " + args.expectedCount + " "
-			+ pluralize(args.expectedCount,
-				"type parameter was", "type parameters were") + " expected at",
+			"but " + args.expectedCount + " ",
+			pluralize(args.expectedCount, "type parameter was ", "type parameters were "),
+			"expected at",
 			args.expectedLocation,
 		]);
 	}
@@ -482,6 +571,43 @@ export class OverlappingImplsErr extends SemanticError {
 			args.secondLocation,
 			"conflicts with the impl `" + args.firstImpl + "` given at",
 			args.firstLocation,
+		]);
+	}
+}
+
+export class ImplMemberDoesNotExistOnInterface extends SemanticError {
+	constructor(args: {
+		impl: string,
+		member: string,
+		memberLocation: SourceLocation,
+		interface: string,
+		interfaceLocation: SourceLocation,
+	}) {
+		super([
+			"The impl `" + args.impl + "` ",
+			"defines a member `" + args.member + "` at",
+			args.memberLocation,
+			"However, the interface `" + args.interface + "` defined at",
+			args.interfaceLocation,
+			"does not have a member named `" + args.member + "`.",
+		]);
+	}
+}
+
+export class ImplMissingInterfaceMember extends SemanticError {
+	constructor(args: {
+		impl: string,
+		member: string,
+		implLocation: SourceLocation,
+		interface: string,
+		memberLocation: SourceLocation,
+	}) {
+		super([
+			"The impl `" + args.impl + "` ",
+			"is missing member `" + args.member + "` at",
+			args.implLocation,
+			"However, the interface `" + args.interface + "` requires a `" + args.member + "` member at",
+			args.memberLocation,
 		]);
 	}
 }

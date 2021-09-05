@@ -1308,10 +1308,20 @@ function compileExpressionAtom(
 	context: FunctionContext): ValueInfo {
 	if (e.tag === "iden") {
 		const v = stack.resolve(e);
+		const destination = {
+			variable: stack.uniqueID("var"),
+			type: v.t,
+			location: e.location,
+		};
+		ops.push({
+			tag: "op-copy",
+			source: v.currentValue,
+			destination,
+		});
 		return {
 			values: [{
 				type: v.t,
-				variable: v.currentValue,
+				variable: destination.variable,
 				location: e.location,
 			}],
 			location: e.location,
@@ -1363,8 +1373,23 @@ function compileExpressionAtom(
 					returnLocation: e.location,
 				});
 			}
+
+			const destinations = [];
+			for (const source of context.ensuresReturnExpression.values) {
+				const destination = {
+					variable: stack.uniqueID("return"),
+					type: source.type,
+					location: e.location,
+				};
+				ops.push({
+					tag: "op-copy",
+					source: source.variable,
+					destination,
+				});
+				destinations.push(destination);
+			}
 			return {
-				values: context.ensuresReturnExpression.values,
+				values: destinations,
 				location: e.location,
 			};
 		} else {

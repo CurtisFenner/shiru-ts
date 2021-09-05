@@ -384,6 +384,10 @@ function* interpretOp(
 		}
 		frame.define(op.destination, value);
 		return null;
+	} else if (op.tag === "op-copy") {
+		const sourceValue = frame.load(op.source);
+		frame.define(op.destination, sourceValue);
+		return null;
 	} else if (op.tag === "op-static-call") {
 		const args = op.arguments.map(variable => frame.load(variable));
 
@@ -578,6 +582,10 @@ export function printOp(
 			const _: never = op;
 			throw new Error("printOp: unrecognized const type");
 		}
+		return;
+	} else if (op.tag === "op-copy") {
+		const lhs = printVariable(op.destination);
+		lines.push(indent + lhs + " = " + op.source + ";");
 		return;
 	} else if (op.tag === "op-foreign") {
 		const lhs = op.destinations.map(printVariable).join(", ");

@@ -107,6 +107,14 @@ export interface OpConstBoolean {
 	boolean: boolean,
 }
 
+/// `OpCopy` copies a value from one variable to a new variable.
+export interface OpCopy {
+	tag: "op-copy",
+
+	source: VariableID,
+	destination: VariableDefinition,
+}
+
 /// `OpBranch` chooses which branch to execute depending on the current value of
 /// a `condition` variable.
 /// It defines a set of variables, with values selected by the branches.
@@ -245,6 +253,7 @@ export interface OpForeign {
 };
 
 export type LeafOp = OpConst
+	| OpCopy
 	| OpNewRecord | OpField
 	| OpStaticCall | OpDynamicCall
 	| OpForeign

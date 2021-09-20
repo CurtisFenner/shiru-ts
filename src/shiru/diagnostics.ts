@@ -128,7 +128,11 @@ export class NonTypeEntityUsedAsTypeErr extends SemanticError {
 }
 
 export class TypeUsedAsConstraintErr extends SemanticError {
-	constructor(args: { name?: string, kind: "record" | "keyword", typeLocation: SourceLocation }) {
+	constructor(args: {
+		name?: string,
+		kind: "record" | "keyword" | "enum",
+		typeLocation: SourceLocation,
+	}) {
 		super([
 			args.name === undefined
 				? "A " + args.kind + " type "
@@ -163,7 +167,7 @@ export class MultiExpressionGroupedErr extends SemanticError {
 	constructor(args: {
 		location: SourceLocation,
 		valueCount: number,
-		grouping: "parens" | "field" | "field-init" | "method" | "if" | "op" | "contract",
+		grouping: "parens" | "field" | "field-init" | "method" | "if" | "op" | "contract" | "is",
 		op?: string,
 	}) {
 		const by = {
@@ -171,12 +175,13 @@ export class MultiExpressionGroupedErr extends SemanticError {
 			field: "a field access",
 			method: "a method access",
 			if: "an `if` condition",
+			is: "an `is` test",
 			op: "a `" + args.op + "` operation",
 			contract: "a `" + args.op + "` contract",
 			"field-init": "a field initialization",
 		};
 		super([
-			"An expression has " + args.valueCount + " values and so cannot be grouped",
+			"An expression has " + args.valueCount + " values and so cannot be grouped ",
 			"by " + by[args.grouping] + " at",
 			args.location,
 		]);
@@ -304,6 +309,19 @@ export class FieldAccessOnNonCompoundErr extends SemanticError {
 		super([
 			"The type `" + args.accessedType + "` is not a compound type so a field access is illegal at",
 			args.accessedLocation,
+		]);
+	}
+}
+
+export class VariantTestOnNonEnumErr extends SemanticError {
+	constructor(args: {
+		testedType: string,
+		testLocation: SourceLocation,
+	}) {
+		super([
+			"The type `" + args.testedType + "` is not an enum type, ",
+			"so the `is` test is illegal at",
+			args.testLocation,
 		]);
 	}
 }
@@ -489,14 +507,15 @@ export class NonCompoundInRecordLiteralErr extends SemanticError {
 	}
 }
 
-export class FieldRepeatedInRecordLiteralErr extends SemanticError {
+export class MemberRepeatedInCompoundLiteralErr extends SemanticError {
 	constructor(args: {
+		kind: "field" | "variant",
 		fieldName: string,
 		firstLocation: SourceLocation,
 		secondLocation: SourceLocation,
 	}) {
 		super([
-			"The field `" + args.fieldName + "` was initialized a second time at",
+			"The " + args.kind + " `" + args.fieldName + "` was initialized a second time at",
 			args.secondLocation,
 			"The first initialization was at",
 			args.firstLocation,
@@ -509,12 +528,28 @@ export class NoSuchFieldErr extends SemanticError {
 		recordType: string,
 		fieldName: string,
 		location: SourceLocation,
-		type: "access" | "initialization",
+		kind: "access" | "initialization",
 	}) {
 		super([
 			"The record type `" + args.recordType
 			+ "` does not have a field called `" + args.fieldName
-			+ "`, so the " + args.type + " is illegal at",
+			+ "`, so the " + args.kind + " is illegal at",
+			args.location,
+		]);
+	}
+}
+
+export class NoSuchVariantErr extends SemanticError {
+	constructor(args: {
+		kind: "is test" | "variant access" | "initialization",
+		enumType: string,
+		variantName: string,
+		location: SourceLocation,
+	}) {
+		super([
+			"The enum type `" + args.enumType + "` ",
+			"does not have a variant called `" + args.variantName + "`, ",
+			"so the " + args.kind + " is illegal at",
 			args.location,
 		]);
 	}
@@ -533,6 +568,37 @@ export class UninitializedFieldErr extends SemanticError {
 			args.initializerLocation,
 			"The field `" + args.missingFieldName + "` is defined at",
 			args.definedLocation,
+		]);
+	}
+}
+
+export class MultipleVariantsErr extends SemanticError {
+	constructor(args: {
+		enumType: string,
+		firstVariant: string,
+		firstLocation: SourceLocation,
+		secondVariant: string,
+		secondLocation: SourceLocation,
+	}) {
+		super([
+			"The initialization of enum type `" + args.enumType + "` ",
+			"includes a second variant `" + args.secondVariant + "` at",
+			args.secondLocation,
+			"The first variant `" + args.firstVariant + "` is included at",
+			args.firstLocation,
+		]);
+	}
+}
+
+export class EnumLiteralMissingVariantErr extends SemanticError {
+	constructor(args: {
+		enumType: string,
+		location: SourceLocation,
+	}) {
+		super([
+			"The initialization of enum type `" + args.enumType + "` ",
+			"is missing a variant at",
+			args.location,
 		]);
 	}
 }

@@ -239,6 +239,7 @@ const keywords = {
 	class: keywordParser("class"),
 	else: keywordParser("else"),
 	ensures: keywordParser("ensures"),
+	enum: keywordParser("enum"),
 	fn: keywordParser("fn"),
 	if: keywordParser("if"),
 	impl: keywordParser("impl"),
@@ -300,13 +301,25 @@ export interface Import {
 	imported: ImportOfObject | ImportOfPackage,
 }
 
-export type Definition = RecordDefinition | InterfaceDefinition | ImplDefinition;
+export type Definition =
+	RecordDefinition | EnumDefinition
+	| InterfaceDefinition | ImplDefinition;
 
 export interface RecordDefinition {
 	tag: "record-definition",
 	entityName: TypeIdenToken,
 	typeParameters: TypeParameters,
 	fields: Field[],
+	fns: Fn[],
+
+	location: SourceLocation,
+}
+
+export interface EnumDefinition {
+	tag: "enum-definition",
+	entityName: TypeIdenToken,
+	typeParameters: TypeParameters,
+	variants: Field[],
 	fns: Fn[],
 
 	location: SourceLocation,
@@ -489,18 +502,29 @@ export interface ExpressionAccessField {
 export interface ExpressionOperand {
 	atom: ExpressionAtom,
 	accesses: ExpressionAccess[],
+	suffixIs: ExpressionSuffixIs | null,
 
 	location: SourceLocation,
 }
 
 export interface ExpressionOperationLogical {
+	tag: "logical",
 	operator: BinaryLogicalToken,
 	right: ExpressionOperand,
+}
+
+export interface ExpressionSuffixIs {
+	tag: "is",
+	operator: KeywordToken,
+	variant: IdenToken,
+
+	location: SourceLocation,
 }
 
 export type ExpressionOperation = ExpressionOperationBinary | ExpressionOperationLogical;
 
 export interface ExpressionOperationBinary {
+	tag: "binary",
 	operator: OperatorToken,
 	right: ExpressionOperand,
 }
@@ -568,6 +592,7 @@ type ASTs = {
 	ElseClause: ElseClause,
 	ElseIfClause: ElseIfClause,
 	EnsuresClause: EnsuresClause,
+	EnumDefinition: EnumDefinition,
 	Expression: Expression,
 	ExpressionAccess: ExpressionAccess,
 	ExpressionAccessField: ExpressionAccessField,
@@ -582,6 +607,7 @@ type ASTs = {
 	ExpressionParenthesized: ExpressionParenthesized,
 	ExpressionRecordLiteral: ExpressionRecordLiteral,
 	ExpressionRecordFieldInit: ExpressionRecordFieldInit,
+	ExpressionSuffixIs: ExpressionSuffixIs,
 	ExpressionTypeCall: ExpressionTypeCall,
 	Field: Field,
 	Fn: Fn,
@@ -631,7 +657,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		arguments: grammar.TypeArguments.map(x => x.arguments).otherwise([]),
 	})),
 	Definition: choice(() => grammar,
-		"RecordDefinition", "ImplDefinition", "InterfaceDefinition"),
+		"RecordDefinition", "EnumDefinition", "ImplDefinition", "InterfaceDefinition"),
 	ElseClause: new RecordParser(() => ({
 		_else: keywords.else,
 		body: grammar.Block
@@ -649,6 +675,21 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_ensures: keywords.ensures,
 		expression: grammar.Expression
 			.required(parseProblem("Expected an expression after `ensures` at", atHead)),
+	})),
+	EnumDefinition: new StructParser(() => ({
+		_enum: keywords.enum,
+		tag: new ConstParser("enum-definition"),
+		entityName: tokens.typeIden
+			.required(parseProblem("Expected a type name after `enum` at", atHead)),
+		typeParameters: grammar.TypeParameters
+			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
+		_open: punctuation.curlyOpen
+			.required(parseProblem("Expected a `{` to begin enum body at", atHead)),
+		variants: new RepeatParser(grammar.Field),
+		fns: new RepeatParser(grammar.Fn),
+		_close: punctuation.curlyClose
+			.required(parseProblem("Expected a `}` at", atHead,
+				"to complete an enum definition beginning at", atReference("_open"))),
 	})),
 	Expression: new StructParser(() => ({
 		left: grammar.ExpressionOperand,
@@ -748,17 +789,25 @@ export const grammar: ParsersFor<Token, ASTs> = {
 	ExpressionOperand: new StructParser(() => ({
 		atom: grammar.ExpressionAtom,
 		accesses: new RepeatParser(grammar.ExpressionAccess),
+		suffixIs: grammar.ExpressionSuffixIs.otherwise(null),
 	})),
 	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary", "ExpressionOperationLogical"),
 	ExpressionOperationBinary: new RecordParser(() => ({
+		tag: new ConstParser("binary"),
 		operator: tokens.operator,
 		right: grammar.ExpressionOperand
 			.required(parseProblem("Expected an operand at", atHead,
 				"after the binary operator at", atReference("operator")))
 	})),
 	ExpressionOperationLogical: new RecordParser(() => ({
+		tag: new ConstParser("logical"),
 		operator: tokens.logicalOperator,
 		right: grammar.ExpressionOperand,
+	})),
+	ExpressionSuffixIs: new StructParser(() => ({
+		tag: new ConstParser("is"),
+		operator: keywords.is,
+		variant: tokens.iden,
 	})),
 	ExpressionParenthesized: new StructParser(() => ({
 		_open: punctuation.roundOpen,

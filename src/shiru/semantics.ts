@@ -65,6 +65,20 @@ interface RecordEntityDef {
 	fns: Record<string, FnBinding>,
 }
 
+interface EnumEntityDef {
+	tag: "enum",
+	ast: grammar.EnumDefinition,
+	sourceID: string,
+	bindingLocation: ir.SourceLocation,
+
+	typeScope: TypeScopeI<ir.TypeCompound>,
+	variants: Record<string, FieldBinding>,
+
+	implsByInterface: DefaultMap<ir.InterfaceID, ImplEntityDef[]>,
+
+	fns: Record<string, FnBinding>,
+}
+
 interface InterfaceEntityDef {
 	tag: "interface",
 	ast: grammar.InterfaceDefinition,
@@ -85,7 +99,7 @@ interface ImplEntityDef {
 	constraint: ir.ConstraintParameter,
 }
 
-type NamedEntityDef = RecordEntityDef | InterfaceEntityDef;
+type NamedEntityDef = RecordEntityDef | EnumEntityDef | InterfaceEntityDef;
 type EntityDef = NamedEntityDef | ImplEntityDef;
 
 interface EntityBinding {
@@ -107,7 +121,7 @@ class ProgramContext {
 
 	/// `entitiesByCanonical` identifies information of the entity with the
 	/// given "canonical" name.of the entity.
-	entitiesByCanonical: Record<string, NamedEntityDef> = {};
+	private entitiesByCanonical: Record<string, NamedEntityDef> = {};
 
 	foreignSignatures: Record<string, ir.FunctionSignature> = {};
 
@@ -127,6 +141,36 @@ class ProgramContext {
 		sourceContext: Readonly<SourceContext>,
 		scope: TypeScope,
 	}[] = [];
+
+	*namedEntities(): Generator<[string, NamedEntityDef]> {
+		for (const key in this.entitiesByCanonical) {
+			yield [key, this.entitiesByCanonical[key as any]];
+		}
+	}
+
+	getDataEntity(id: ir.RecordID | ir.EnumID): RecordEntityDef | EnumEntityDef {
+		const entity = this.entitiesByCanonical[id as string];
+		if (entity === undefined || entity.tag !== "enum" && entity.tag !== "record") {
+			throw new Error("getDataEntity: bad id");
+		}
+		return entity;
+	}
+
+	getNamedEntity(canonicalName: string): NamedEntityDef | null {
+		const entity = this.entitiesByCanonical[canonicalName];
+		if (entity === undefined) {
+			return null;
+		}
+		return entity;
+	}
+
+	defineEntity(canonicalName: string, entity: NamedEntityDef) {
+		if (canonicalName in this.entitiesByCanonical) {
+			throw new Error("ProgramContext.defineEntity: entity already exists");
+		}
+
+		this.entitiesByCanonical[canonicalName] = entity;
+	}
 
 	getRecord(recordID: ir.RecordID): RecordEntityDef {
 		const entity = this.entitiesByCanonical[recordID];
@@ -170,13 +214,13 @@ function collectInterfaceRecordEntity(
 	pack: Record<string, string>,
 	packageName: string,
 	sourceID: string,
-	definition: grammar.InterfaceDefinition | grammar.RecordDefinition,
+	definition: grammar.InterfaceDefinition | grammar.RecordDefinition | grammar.EnumDefinition,
 ) {
 	const entityName = definition.entityName.name;
 	const bindingLocation = definition.entityName.location;
 	if (pack[entityName] !== undefined) {
 		const firstCanonical = pack[entityName];
-		const firstBinding = programContext.entitiesByCanonical[firstCanonical];
+		const firstBinding = programContext.getNamedEntity(firstCanonical)!;
 		throw new diagnostics.EntityRedefinedErr({
 			name: `${packageName}.${entityName}`,
 			firstBinding: firstBinding.bindingLocation,
@@ -189,7 +233,7 @@ function collectInterfaceRecordEntity(
 	if (definition.tag === "record-definition") {
 		const thisType: ir.Type = {
 			tag: "type-compound",
-			record: canonicalName as ir.RecordID,
+			base: canonicalName as ir.RecordID,
 			type_arguments: definition.typeParameters.parameters.map(t => ({
 				tag: "type-variable",
 				id: t.name as ir.TypeVariableID,
@@ -212,6 +256,35 @@ function collectInterfaceRecordEntity(
 
 			// These are filled in by `collectMembers`.
 			fields: {},
+			fns: {},
+			implsByInterface: new DefaultMap<ir.InterfaceID, ImplEntityDef[]>(() => []),
+		};
+	} else if (definition.tag === "enum-definition") {
+		const thisType: ir.Type = {
+			tag: "type-compound",
+			base: canonicalName as ir.RecordID,
+			type_arguments: definition.typeParameters.parameters.map(t => ({
+				tag: "type-variable",
+				id: t.name as ir.TypeVariableID,
+			})),
+		};
+
+		entity = {
+			tag: "enum",
+			ast: definition,
+			bindingLocation,
+			sourceID,
+
+			typeScope: {
+				thisType,
+
+				constraints: [],
+				typeVariables: new Map(),
+				typeVariableList: [],
+			},
+
+			// These are filled in by `collectMembers`.
+			variants: {},
 			fns: {},
 			implsByInterface: new DefaultMap<ir.InterfaceID, ImplEntityDef[]>(() => []),
 		};
@@ -240,7 +313,7 @@ function collectInterfaceRecordEntity(
 		};
 	}
 
-	programContext.entitiesByCanonical[canonicalName] = entity;
+	programContext.defineEntity(canonicalName, entity);
 	pack[entityName] = canonicalName;
 }
 
@@ -287,10 +360,12 @@ interface TypeArgumentConstraint {
 
 type TypeScope = TypeScopeI<ir.Type | null>;
 
+/// RETURNS the canonicalized version of the given entity name within the given
+/// source context.
 function resolveEntity(
 	t: grammar.TypeNamed,
 	sourceContext: Readonly<SourceContext>
-) {
+): string {
 	if (t.packageQualification !== null) {
 		const namespaceQualifier = t.packageQualification.package.name;
 		const namespace = sourceContext.namespaces[namespaceQualifier];
@@ -347,11 +422,11 @@ function compileConstraint(
 
 	// Resolve the entity.
 	const canonicalName = resolveEntity(c, sourceContext);
-	const interfaceEntity = programContext.entitiesByCanonical[canonicalName];
+	const interfaceEntity = programContext.getNamedEntity(canonicalName)!;
 	if (interfaceEntity.tag !== "interface") {
 		throw new diagnostics.TypeUsedAsConstraintErr({
 			name: canonicalName,
-			kind: "record",
+			kind: interfaceEntity.tag,
 			typeLocation: c.location,
 		});
 	}
@@ -429,9 +504,9 @@ function checkConstraintSatisfied(
 	if (methodSubject === undefined) {
 		throw new Error("ICE: Constraint requires at least one subject.");
 	} else if (methodSubject.tag === "type-compound") {
-		const recordEntity = programContext.getRecord(methodSubject.record);
+		const baseEntity = programContext.getDataEntity(methodSubject.base);
 
-		const implCandidates = recordEntity.implsByInterface.get(requiredConstraint.interface);
+		const implCandidates = baseEntity.implsByInterface.get(requiredConstraint.interface);
 		for (const impl of implCandidates) {
 			// Check whether `impl.constraint` may be instantiated by replacing
 			// `impl.typeScope`'s variables to become `requiredConstraint`.
@@ -515,8 +590,8 @@ function compileType(
 	} else if (t.tag === "named") {
 		// Resolve the entity.
 		const canonicalName = resolveEntity(t, sourceContext);
-		const entity = sourceContext.programContext.entitiesByCanonical[canonicalName];
-		if (entity.tag !== "record") {
+		const entity = sourceContext.programContext.getNamedEntity(canonicalName)!;
+		if (entity.tag === "interface") {
 			throw new diagnostics.NonTypeEntityUsedAsTypeErr({
 				entity: canonicalName,
 				entityTag: entity.tag,
@@ -559,7 +634,7 @@ function compileType(
 
 		return {
 			tag: "type-compound",
-			record: canonicalName as ir.RecordID,
+			base: canonicalName as ir.RecordID | ir.EnumID,
 			type_arguments: typeArguments,
 		};
 	} else if (t.tag === "type-var") {
@@ -637,7 +712,7 @@ function resolveImport(
 function resolveSourceContext(
 	sourceID: string,
 	source: grammar.Source,
-	programContext: Readonly<ProgramContext>,
+	programContext: ProgramContext,
 ) {
 	const packageName = source.package.packageName.name;
 	const pack = programContext.canonicalByQualifiedName[packageName];
@@ -660,7 +735,7 @@ function resolveSourceContext(
 	// Bring all entities defined within this package into scope.
 	for (let entityName in pack) {
 		const canonicalName = pack[entityName];
-		const binding = programContext.entitiesByCanonical[canonicalName];
+		const binding = programContext.getNamedEntity(canonicalName)!;
 		sourceContext.entityAliases[entityName] = {
 			canonicalName,
 			bindingLocation: binding.bindingLocation,
@@ -711,9 +786,15 @@ function collectTypeScope(
 /// Collects enough information to determine which types satisfy which
 /// interfaces, so that types collected in `collectMembers` can be ensured to be
 /// valid.
-function resolveAvailableTypes(programContext: ProgramContext, entityName: string) {
-	const entity = programContext.entitiesByCanonical[entityName];
+function resolveAvailableTypes(
+	programContext: ProgramContext,
+	entity: NamedEntityDef,
+) {
 	if (entity.tag === "record") {
+		collectTypeScope(programContext.sourceContexts[entity.sourceID],
+			entity.typeScope, entity.ast.typeParameters);
+		return;
+	} else if (entity.tag === "enum") {
 		collectTypeScope(programContext.sourceContexts[entity.sourceID],
 			entity.typeScope, entity.ast.typeParameters);
 		return;
@@ -725,6 +806,40 @@ function resolveAvailableTypes(programContext: ProgramContext, entityName: strin
 
 	const _: never = entity;
 	throw new Error("collectTypeScopesAndConstraints: unhandled tag `" + entity["tag"] + "`");
+}
+
+function resolveMemberFn(
+	canonicalName: ir.FunctionID,
+	fn: grammar.Fn,
+	entityTypeScope: TypeScopeI<ir.TypeCompound>,
+	sourceContext: SourceContext,
+): FnBinding {
+
+	const parameterTypes = fn.signature.parameters.list.map(p => ({
+		t: compileType(p.t, entityTypeScope, sourceContext, "check"),
+		nameLocation: p.name.location,
+		typeLocation: p.t.location,
+	}));
+
+	const returnTypes = fn.signature.returns.map(r => ({
+		t: compileType(r, entityTypeScope, sourceContext, "check"),
+		nameLocation: r.location,
+		typeLocation: r.location,
+	}));
+
+	return {
+		tag: "fn-binding",
+		id: canonicalName,
+
+		nameLocation: fn.signature.name.location,
+		parameters: parameterTypes,
+		parametersLocation: fn.signature.parameters.location,
+		returns: returnTypes,
+		ast: fn,
+
+		entityTypeVariables: entityTypeScope.typeVariableList,
+		signatureTypeVariables: [],
+	};
 }
 
 function resolveRecordMemberSignatures(
@@ -757,6 +872,7 @@ function resolveRecordMemberSignatures(
 	// Collect the defined methods.
 	for (let fn of entity.ast.fns) {
 		const fnName = fn.signature.name.name;
+
 		const existingField = entity.fields[fnName];
 		if (existingField !== undefined) {
 			throw new diagnostics.MemberRedefinedErr({
@@ -765,6 +881,7 @@ function resolveRecordMemberSignatures(
 				secondBinding: fn.signature.name.location,
 			});
 		}
+
 		const existingFn = entity.fns[fnName];
 		if (existingFn !== undefined) {
 			throw new diagnostics.MemberRedefinedErr({
@@ -774,31 +891,62 @@ function resolveRecordMemberSignatures(
 			});
 		}
 
-		const parameterTypes = fn.signature.parameters.list.map(p => ({
-			t: compileType(p.t, entity.typeScope, sourceContext, "check"),
-			nameLocation: p.name.location,
-			typeLocation: p.t.location,
-		}));
+		const canonicalName = canonicalFunctionName(entityName, fnName);
+		entity.fns[fnName] = resolveMemberFn(canonicalName, fn, entity.typeScope, sourceContext);
+	}
+}
 
-		const returnTypes = fn.signature.returns.map(r => ({
-			t: compileType(r, entity.typeScope, sourceContext, "check"),
-			nameLocation: r.location,
-			typeLocation: r.location,
-		}));
+function resolveEnumMemberSignatures(
+	entity: EnumEntityDef,
+	sourceContext: SourceContext,
+	entityName: string,
+) {
+	// Collect the defined variants.
+	for (const variant of entity.ast.variants) {
+		const variantName = variant.name.name;
+		const existingVariant = entity.variants[variantName];
+		if (existingVariant !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: variantName,
+				firstBinding: existingVariant.nameLocation,
+				secondBinding: variant.name.location,
+			});
+		}
 
-		entity.fns[fnName] = {
-			tag: "fn-binding",
-			id: canonicalFunctionName(entityName, fnName),
+		const variantType = compileType(variant.t,
+			entity.typeScope, sourceContext, "check");
 
-			nameLocation: fn.signature.name.location,
-			parameters: parameterTypes,
-			parametersLocation: fn.signature.parameters.location,
-			returns: returnTypes,
-			ast: fn,
-
-			entityTypeVariables: entity.typeScope.typeVariableList,
-			signatureTypeVariables: [],
+		entity.variants[variantName] = {
+			nameLocation: variant.name.location,
+			t: variantType,
+			typeLocation: variant.t.location,
 		};
+	}
+
+	// Collect the defined methods.
+	for (const fn of entity.ast.fns) {
+		const fnName = fn.signature.name.name;
+
+		const existingVariant = entity.variants[fnName];
+		if (existingVariant !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName,
+				firstBinding: existingVariant.nameLocation,
+				secondBinding: fn.signature.name.location,
+			});
+		}
+
+		const existingFn = entity.fns[fnName];
+		if (existingFn !== undefined) {
+			throw new diagnostics.MemberRedefinedErr({
+				memberName: fnName,
+				firstBinding: existingFn.nameLocation,
+				secondBinding: fn.signature.name.location,
+			});
+		}
+
+		const canonicalName = canonicalFunctionName(entityName, fnName);
+		entity.fns[fnName] = resolveMemberFn(canonicalName, fn, entity.typeScope, sourceContext);
 	}
 }
 
@@ -851,11 +999,17 @@ function resolveInterfaceMemberSignatures(
 /// `collectTypeScopesAndConstraints` prior to invoking `collectMembers`.
 /// NOTE that this does NOT include compiling "requires" and "ensures" clauses,
 /// which are compiled alongside function bodies in a later pass.
-function resolveMemberSignatures(programContext: ProgramContext, entityName: string) {
-	const entity = programContext.entitiesByCanonical[entityName];
+function resolveMemberSignatures(
+	programContext: ProgramContext,
+	entityName: string,
+	entity: NamedEntityDef,
+) {
 	const sourceContext = programContext.sourceContexts[entity.sourceID];
 	if (entity.tag === "record") {
 		resolveRecordMemberSignatures(entity, sourceContext, entityName);
+		return;
+	} else if (entity.tag === "enum") {
+		resolveEnumMemberSignatures(entity, sourceContext, entityName);
 		return;
 	} else if (entity.tag === "interface") {
 		resolveInterfaceMemberSignatures(entity, sourceContext);
@@ -1140,8 +1294,8 @@ function compileTypeCallExpression(
 		});
 	}
 
-	const record = context.sourceContext.programContext.getRecord(baseType.record);
-	const fn = record.fns[e.methodName.name];
+	const base = context.sourceContext.programContext.getDataEntity(baseType.base);
+	const fn = base.fns[e.methodName.name];
 	if (fn === undefined) {
 		throw new diagnostics.NoSuchFnErr({
 			baseType: displayType(baseType),
@@ -1205,7 +1359,99 @@ function compileConstraintCallExpression(
 	return compileCall(ops, stack, args, fn, typeArgumentMapping, e.location, constraint);
 }
 
+function compileEnumLiteral(
+	baseEntity: EnumEntityDef,
+	baseType: ir.TypeCompound,
+	initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }>,
+	ops: ir.Op[],
+	stack: VariableStack,
+	location: ir.SourceLocation,
+): ValueInfo {
+	const variants: Record<string, ir.VariableID> = {};
+	let first = null;
+	for (let provided in initializations) {
+		const initialization = initializations[provided];
+		if (first !== null) {
+			throw new diagnostics.MultipleVariantsErr({
+				enumType: displayType(baseType),
+				firstVariant: first.name,
+				firstLocation: first.location,
+				secondVariant: provided,
+				secondLocation: initialization.fieldLocation,
+			});
+		}
+		first = { name: provided, location: initialization.fieldLocation };
+
+		variants[provided] = initialization.values[0].variable;
+	}
+
+	if (first === null) {
+		throw new diagnostics.EnumLiteralMissingVariantErr({
+			enumType: displayType(baseType),
+			location,
+		});
+	}
+
+	const destination = {
+		variable: stack.uniqueID("enum" + baseType.base),
+		type: baseType,
+		location,
+	};
+
+	ops.push({
+		tag: "op-new-enum",
+		enum: baseType.base as ir.EnumID,
+		destination,
+		variant: first.name,
+		variantValue: variants[first.name],
+	});
+
+	return {
+		values: [destination],
+		location,
+	};
+}
+
 function compileRecordLiteral(
+	baseEntity: RecordEntityDef,
+	baseType: ir.TypeCompound,
+	initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }>,
+	ops: ir.Op[],
+	stack: VariableStack,
+	location: ir.SourceLocation,
+): ValueInfo {
+	const fields: Record<string, ir.VariableID> = {};
+	for (let required in baseEntity.fields) {
+		if (initializations[required] === undefined) {
+			throw new diagnostics.UninitializedFieldErr({
+				recordType: displayType(baseType),
+				missingFieldName: required,
+				definedLocation: baseEntity.fields[required].nameLocation,
+				initializerLocation: location,
+			});
+		}
+		fields[required] = initializations[required].values[0].variable;
+	}
+
+	const destination = {
+		variable: stack.uniqueID("record" + baseType.base),
+		type: baseType,
+		location,
+	};
+
+	ops.push({
+		tag: "op-new-record",
+		record: baseType.base as ir.RecordID,
+		destination: destination,
+		fields,
+	});
+	return {
+		values: [destination],
+		location,
+	};
+}
+
+function compileCompoundLiteral(
 	e: grammar.ExpressionRecordLiteral,
 	ops: ir.Op[],
 	stack: VariableStack,
@@ -1219,28 +1465,41 @@ function compileRecordLiteral(
 			location: e.t.location,
 		});
 	}
-	const programContext = context.sourceContext.programContext;
-	const recordEntity = programContext.getRecord(t.record);
 
-	const instantiation = ir.typeArgumentsMap(recordEntity.typeScope.typeVariableList, t.type_arguments);
+	const programContext = context.sourceContext.programContext;
+	const baseEntity = programContext.getDataEntity(t.base);
+
+	const instantiation = ir.typeArgumentsMap(baseEntity.typeScope.typeVariableList, t.type_arguments);
 	const initializations: Record<string, ValueInfo & { fieldLocation: ir.SourceLocation }> = {};
 	for (let initAST of e.initializations) {
 		const fieldName = initAST.fieldName.name;
 		if (initializations[fieldName] !== undefined) {
-			throw new diagnostics.FieldRepeatedInRecordLiteralErr({
+			throw new diagnostics.MemberRepeatedInCompoundLiteralErr({
+				kind: baseEntity.tag === "enum" ? "variant" : "field",
 				fieldName,
-				firstLocation: initializations[fieldName].location,
+				firstLocation: initializations[fieldName].fieldLocation,
 				secondLocation: initAST.fieldName.location,
 			});
 		}
-		const fieldDefinition = recordEntity.fields[fieldName];
+		const fieldDefinition = baseEntity.tag === "record"
+			? baseEntity.fields[fieldName]
+			: baseEntity.variants[fieldName];
 		if (fieldDefinition === undefined) {
-			throw new diagnostics.NoSuchFieldErr({
-				recordType: displayType(t),
-				fieldName,
-				location: initAST.fieldName.location,
-				type: "initialization",
-			});
+			if (baseEntity.tag === "record") {
+				throw new diagnostics.NoSuchFieldErr({
+					kind: "initialization",
+					recordType: displayType(t),
+					fieldName,
+					location: initAST.fieldName.location,
+				});
+			} else {
+				throw new diagnostics.NoSuchVariantErr({
+					kind: "initialization",
+					enumType: displayType(t),
+					variantName: fieldName,
+					location: initAST.fieldName.location,
+				});
+			}
 		}
 
 		const value = compileExpression(initAST.value, ops, stack, typeScope, context);
@@ -1269,35 +1528,13 @@ function compileRecordLiteral(
 		};
 	}
 
-	const fields: Record<string, ir.VariableID> = {};
-	for (let required in recordEntity.fields) {
-		if (initializations[required] === undefined) {
-			throw new diagnostics.UninitializedFieldErr({
-				recordType: displayType(t),
-				missingFieldName: required,
-				definedLocation: recordEntity.fields[required].nameLocation,
-				initializerLocation: e.location,
-			});
-		}
-		fields[required] = initializations[required].values[0].variable;
+	if (baseEntity.tag === "record") {
+		return compileRecordLiteral(
+			baseEntity, t, initializations, ops, stack, e.location);
+	} else {
+		return compileEnumLiteral(
+			baseEntity, t, initializations, ops, stack, e.location);
 	}
-
-	const destination = {
-		variable: stack.uniqueID("record" + t.record),
-		type: t,
-		location: e.location,
-	};
-
-	ops.push({
-		tag: "op-new-record",
-		record: t.record,
-		destination: destination,
-		fields,
-	});
-	return {
-		values: [destination],
-		location: e.location,
-	};
 }
 
 function compileExpressionAtom(
@@ -1406,7 +1643,7 @@ function compileExpressionAtom(
 			throw new Error("compileExpressionAtom: keyword `" + e["keyword"] + "`");
 		}
 	} else if (e.tag === "record-literal") {
-		return compileRecordLiteral(e, ops, stack, typeScope, context);
+		return compileCompoundLiteral(e, ops, stack, typeScope, context);
 	} else if (e.tag === "string-literal") {
 		const destination = {
 			variable: stack.uniqueID("string"),
@@ -1424,6 +1661,129 @@ function compileExpressionAtom(
 
 	const _: never = e;
 	throw new Error("compileExpressionAtom: Unhandled tag `" + e["tag"] + "`");
+}
+
+function compileFieldAccess(
+	base: ir.VariableDefinition,
+	access: grammar.ExpressionAccessField,
+	baseLocation: ir.SourceLocation,
+	ops: ir.Op[],
+	stack: VariableStack,
+	context: FunctionContext,
+) {
+	if (base.type.tag !== "type-compound") {
+		throw new diagnostics.FieldAccessOnNonCompoundErr({
+			accessedType: displayType(base.type),
+			accessedLocation: access.fieldName.location,
+		});
+	}
+
+	const programContext = context.sourceContext.programContext;
+	const baseEntity = programContext.getDataEntity(base.type.base);
+
+	const instantiation = ir.typeArgumentsMap(baseEntity.typeScope.typeVariableList, base.type.type_arguments);
+
+
+	const fieldDeclaration = baseEntity.tag === "enum"
+		? baseEntity.variants[access.fieldName.name]
+		: baseEntity.fields[access.fieldName.name];
+	if (fieldDeclaration === undefined) {
+		if (baseEntity.tag === "enum") {
+			throw new diagnostics.NoSuchVariantErr({
+				enumType: displayType(base.type),
+				variantName: access.fieldName.name,
+				location: access.fieldName.location,
+				kind: "variant access",
+			});
+		} else {
+			throw new diagnostics.NoSuchFieldErr({
+				recordType: displayType(base.type),
+				fieldName: access.fieldName.name,
+				location: access.fieldName.location,
+				kind: "access",
+			});
+		}
+	}
+
+	const fieldType = ir.typeSubstitute(fieldDeclaration.t, instantiation);
+	const location = ir.locationSpan(baseLocation, access.fieldName.location);
+	const destination = {
+		variable: stack.uniqueID("field"),
+		type: fieldType,
+		location,
+	};
+
+	if (baseEntity.tag === "enum") {
+		ops.push({
+			tag: "op-variant",
+			object: base.variable,
+			variant: access.fieldName.name,
+			destination,
+			diagnostic_location: access.fieldName.location,
+		});
+	} else {
+		ops.push({
+			tag: "op-field",
+			object: base.variable,
+			field: access.fieldName.name,
+			destination,
+		});
+	}
+
+	return {
+		values: [destination],
+		location,
+	};
+}
+
+function compileSuffixIs(
+	base: ir.VariableDefinition,
+	suffixIs: grammar.ExpressionSuffixIs,
+	baseLocation: ir.SourceLocation,
+	ops: ir.Op[],
+	stack: VariableStack,
+	context: FunctionContext,
+): ValueInfo {
+	if (base.type.tag !== "type-compound") {
+		throw new diagnostics.VariantTestOnNonEnumErr({
+			testedType: displayType(base.type),
+			testLocation: suffixIs.location,
+		});
+	}
+
+	const programContext = context.sourceContext.programContext;
+	const baseEntity = programContext.getDataEntity(base.type.base);
+	if (baseEntity.tag !== "enum") {
+		throw new diagnostics.VariantTestOnNonEnumErr({
+			testedType: displayType(base.type),
+			testLocation: suffixIs.location,
+		});
+	}
+
+	const variantDefinition = baseEntity.variants[suffixIs.variant.name];
+	if (variantDefinition === undefined) {
+		throw new diagnostics.NoSuchVariantErr({
+			kind: "is test",
+			enumType: displayType(base.type),
+			variantName: suffixIs.variant.name,
+			location: suffixIs.variant.location,
+		});
+	}
+
+	const location = ir.locationSpan(baseLocation, suffixIs.location);
+	const destination = {
+		variable: stack.uniqueID("istest"),
+		type: ir.T_BOOLEAN,
+		location,
+	};
+	ops.push({
+		tag: "op-is-variant",
+		base: base.variable,
+		variant: suffixIs.variant.name,
+		destination,
+	});
+
+	return { values: [destination], location };
 }
 
 function compileOperand(
@@ -1444,44 +1804,7 @@ function compileOperand(
 		const base = value.values[0];
 
 		if (access.tag === "field") {
-			if (base.type.tag !== "type-compound") {
-				throw new diagnostics.FieldAccessOnNonCompoundErr({
-					accessedType: displayType(base.type),
-					accessedLocation: access.fieldName.location,
-				});
-			}
-
-			const programContext = context.sourceContext.programContext;
-			const record = programContext.getRecord(base.type.record);
-
-			const instantiation = ir.typeArgumentsMap(record.typeScope.typeVariableList, base.type.type_arguments);
-			const field = record.fields[access.fieldName.name];
-			if (field === undefined) {
-				throw new diagnostics.NoSuchFieldErr({
-					recordType: displayType(base.type),
-					fieldName: access.fieldName.name,
-					location: access.fieldName.location,
-					type: "access",
-				});
-			}
-
-			const fieldType = ir.typeSubstitute(field.t, instantiation);
-			const location = ir.locationSpan(value.location, access.fieldName.location);
-			const destination = {
-				variable: stack.uniqueID("field"),
-				type: fieldType,
-				location,
-			};
-			ops.push({
-				tag: "op-field",
-				object: base.variable,
-				field: access.fieldName.name,
-				destination,
-			});
-			value = {
-				values: [destination],
-				location: location,
-			};
+			value = compileFieldAccess(base, access, value.location, ops, stack, context);
 		} else if (access.tag === "method") {
 			if (base.type.tag !== "type-compound") {
 				// TODO: Support method calls on type parameters.
@@ -1492,8 +1815,8 @@ function compileOperand(
 			}
 
 			const programContext = context.sourceContext.programContext;
-			const record = programContext.getRecord(base.type.record);
-			const fn = record.fns[access.methodName.name];
+			const baseEntity = programContext.getDataEntity(base.type.base);
+			const fn = baseEntity.fns[access.methodName.name];
 			if (fn === undefined) {
 				throw new diagnostics.NoSuchFnErr({
 					baseType: displayType(base.type),
@@ -1522,6 +1845,19 @@ function compileOperand(
 			const _: never = access;
 			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
 		}
+	}
+
+	if (e.suffixIs) {
+		if (value.values.length !== 1) {
+			throw new diagnostics.MultiExpressionGroupedErr({
+				location: value.location,
+				valueCount: value.values.length,
+				grouping: "is",
+			});
+		}
+		const base = value.values[0];
+
+		value = compileSuffixIs(base, e.suffixIs, value.location, ops, stack, context);
 	}
 
 	return value;
@@ -1554,6 +1890,12 @@ function resolveOperator(
 		}
 	}
 
+	if (ir.equalTypes(ir.T_BOOLEAN, value.type)) {
+		if (opStr === "==") {
+			return "Boolean==" as ir.FunctionID;
+		}
+	}
+
 	throw new diagnostics.TypeDoesNotProvideOperatorErr({
 		lhsType: displayType(value.type),
 		operator: opStr,
@@ -1563,28 +1905,26 @@ function resolveOperator(
 
 const operatorPrecedence = {
 	precedences: {
-		"implies": 0,
-		"and": 0,
-		"or": 0,
-		"==": 1,
-		"<": 1,
-		">": 1,
-		"<=": 1,
-		">=": 1,
-		"!=": 1,
-		"_default": 2,
+		"implies": 10,
+		"and": 10,
+		"or": 10,
+		"==": 20,
+		"<": 20,
+		">": 20,
+		"<=": 20,
+		">=": 20,
+		"!=": 20,
+		"_default": 30,
 	} as Record<string, number>,
 	associativities: {
 		implies: "right",
 		and: "left",
 		or: "left",
 		"<": "left",
+		"<=": { group: "<" },
 		">": "left",
-	} as Record<string, "left" | "right" | "none">,
-	associateGroups: {
-		"<=": "<",
-		">=": ">",
-	} as Record<string, string>,
+		">=": { group: ">=" },
+	} as Record<string, "left" | "right" | { group: string }>,
 };
 
 interface OperatorTreeLeaf {
@@ -1625,12 +1965,15 @@ type OperatorTree = OperatorTreeLeaf | OperatorTreeBranch;
 
 function checkTreeCompatible(subtree: OperatorTree, parent: OperatorTreeJoin) {
 	if (subtree.tag === "leaf") {
+		// An operand is valid as a child of any operation.
 		return;
 	} else if (subtree.join.precedence < parent.precedence) {
-		throw new Error("unreachable");
+		throw new Error("checkTreeCompatible: unreachable");
 	} else if (subtree.join.precedence > parent.precedence) {
+		// A child with strictly greater precedence is valid.
 		return;
 	} else if (subtree.join.associates !== parent.associates) {
+		// A child with equal precedence but different associativity is invalid.
 		throw new diagnostics.OperationRequiresParenthesizationErr({
 			op1: {
 				str: subtree.join.opToken.tag === "keyword"
@@ -1683,8 +2026,13 @@ function applyOrderOfOperations(
 			precedence = operatorPrecedence.precedences._default;
 		}
 
-		const associativity = operatorPrecedence.associativities[opStr] || "none";
-		const associates = operatorPrecedence.associateGroups[opStr] || opStr;
+		let associativity: { group: string } | "left" | "right" | "none" = { group: opStr };
+		let associates: string = opStr;
+		while (typeof associativity !== "string") {
+			associates = associativity.group;
+			associativity = operatorPrecedence.associativities[associativity.group] || "none";
+		}
+
 		joins.push({
 			index: i,
 			opToken: operator,
@@ -1976,19 +2324,17 @@ function compileExpression(
 	typeScope: TypeScope,
 	context: FunctionContext,
 ): ValueInfo {
-
 	const operands = [e.left, ...e.operations.map(x => x.right)];
 	const operators = e.operations.map(x => x.operator);
 	const tree = applyOrderOfOperations(operators, operands);
 	return compileExpressionTree(tree, ops, stack, typeScope, context);
-
 }
 
 /// `displayType` formats the given IR `Type` as a string of (fully qualified)
 /// Shiru code.
 export function displayType(t: ir.Type): string {
 	if (t.tag === "type-compound") {
-		const base = t.record;
+		const base = t.base;
 		const args = t.type_arguments.map(displayType);
 		if (args.length === 0) {
 			return base;
@@ -2582,8 +2928,37 @@ function compileRecordEntity(
 			compileImpl(program, impls[i], interfaceID, entityName, i + "", programContext);
 		}
 	}
+}
 
-	// TODO: Implement vtable factories.
+function compileEnumEntity(
+	program: ir.Program,
+	entity: EnumEntityDef,
+	entityName: string,
+	programContext: ProgramContext,
+): void {
+	program.enums[entityName] = {
+		type_parameters: entity.typeScope.typeVariableList,
+		variants: {},
+	};
+
+	for (const variantName in entity.variants) {
+		program.enums[entityName].variants[variantName] = entity.variants[variantName].t;
+	}
+
+	// Compile member functions.
+	for (const f in entity.fns) {
+		const def = entity.fns[f];
+		const fName = def.id;
+		compileMemberFunction(program, def, fName,
+			programContext.sourceContexts[entity.sourceID], entity.typeScope);
+	}
+
+	// Compile impls.
+	for (const [interfaceID, impls] of entity.implsByInterface) {
+		for (let i = 0; i < impls.length; i++) {
+			compileImpl(program, impls[i], interfaceID, entityName, i + "", programContext);
+		}
+	}
 }
 
 /// `compileEntity` compiles the indicated entity into records, functions,
@@ -2592,11 +2967,14 @@ function compileRecordEntity(
 /// implementation of this entity.
 function compileEntity(
 	program: ir.Program,
-	programContext: Readonly<ProgramContext>,
-	entityName: string) {
-	const entity = programContext.entitiesByCanonical[entityName];
+	programContext: ProgramContext,
+	entityName: string,
+	entity: NamedEntityDef,
+): void {
 	if (entity.tag === "record") {
 		return compileRecordEntity(program, entity, entityName, programContext);
+	} else if (entity.tag === "enum") {
+		return compileEnumEntity(program, entity, entityName, programContext);
 	} else if (entity.tag === "interface") {
 		return compileInterfaceEntity(program, entity, entityName, programContext);
 	}
@@ -2618,6 +2996,29 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				{
 					variable: "right" as ir.VariableID,
 					type: ir.T_INT,
+					location: ir.NONE,
+				},
+			],
+			return_types: [ir.T_BOOLEAN],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [],
+			semantics: {
+				eq: true,
+			},
+		},
+		"Boolean==": {
+			// Equality
+			parameters: [
+				{
+					variable: "left" as ir.VariableID,
+					type: ir.T_BOOLEAN,
+					location: ir.NONE,
+				},
+				{
+					variable: "right" as ir.VariableID,
+					type: ir.T_BOOLEAN,
 					location: ir.NONE,
 				},
 			],
@@ -2694,12 +3095,12 @@ function getBasicForeign(): Record<string, ir.FunctionSignature> {
 }
 
 function associateImplWithBase(
-	record: RecordEntityDef,
+	record: RecordEntityDef | EnumEntityDef,
 	constraint: ir.ConstraintParameter,
 	sourceID: string,
 	typeScope: TypeScopeI<null>,
 	implAST: grammar.ImplDefinition,
-) {
+): void {
 
 	const headLocation = ir.locationSpan(implAST.impl.location, implAST.constraint.location);
 
@@ -2754,8 +3155,8 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	}
 
 	// Resolve type scopes and constraints.
-	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		resolveAvailableTypes(programContext, canonicalEntityName);
+	for (let [_, entity] of programContext.namedEntities()) {
+		resolveAvailableTypes(programContext, entity);
 	}
 
 	// Resolve all impl blocks.
@@ -2774,12 +3175,11 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 			if (baseType.tag !== "type-compound") {
 				throw new Error("compileSources: ICE");
 			}
-			const record = programContext.getRecord(baseType.record);
-
+			const baseEntity = programContext.getDataEntity(baseType.base);
 			const constraint = compileConstraint(implAST.constraint, baseType, sourceContext, typeScope, "skip");
 
 			// Associate the impl with its base record type.
-			associateImplWithBase(record, constraint, sourceID, typeScope, implAST);
+			associateImplWithBase(baseEntity, constraint, sourceID, typeScope, implAST);
 		}
 	}
 
@@ -2797,20 +3197,21 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 
 	// Resolve members of entities. Type arguments must be validated based on
 	// collected constraints.
-	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		resolveMemberSignatures(programContext, canonicalEntityName);
+	for (const [canonicalEntityName, entity] of programContext.namedEntities()) {
+		resolveMemberSignatures(programContext, canonicalEntityName, entity);
 	}
 
 	const program: ir.Program = {
 		functions: {},
 		interfaces: {},
 		records: {},
+		enums: {},
 		foreign: programContext.foreignSignatures,
 		globalVTableFactories: {},
 	};
 
-	for (let canonicalEntityName in programContext.entitiesByCanonical) {
-		compileEntity(program, programContext, canonicalEntityName);
+	for (let [canonicalEntityName, entity] of programContext.namedEntities()) {
+		compileEntity(program, programContext, canonicalEntityName, entity);
 	}
 	return program;
 }

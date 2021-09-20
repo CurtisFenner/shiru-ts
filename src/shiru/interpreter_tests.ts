@@ -10,7 +10,7 @@ export const UNKNOWN_LOCATION: ir.SourceLocation = { fileID: "unknown", offset: 
 export function typeCompound(name: string, ...args: ir.Type[]): ir.Type {
 	return {
 		tag: "type-compound",
-		record: name as ir.RecordID,
+		base: name as ir.RecordID,
 		type_arguments: args,
 	};
 }
@@ -190,6 +190,7 @@ export const tests = {
 		const program: ir.Program = {
 			globalVTableFactories: {},
 			records: {},
+			enums: {},
 			interfaces: {},
 			functions: {
 				"main": {
@@ -356,6 +357,7 @@ export const tests = {
 					fields: {},
 				},
 			},
+			enums: {},
 			foreign: {},
 		};
 
@@ -470,6 +472,7 @@ export const tests = {
 					fields: {},
 				},
 			},
+			enums: {},
 			foreign: {},
 		};
 
@@ -628,6 +631,7 @@ export const tests = {
 					fields: {},
 				},
 			},
+			enums: {},
 			foreign: foreign,
 		};
 
@@ -827,6 +831,7 @@ export const tests = {
 					fields: {},
 				},
 			},
+			enums: {},
 			functions: {
 				"produceInt": {
 					signature: {
@@ -1034,6 +1039,52 @@ export const tests = {
 					s: { sort: "int", int: BigInt(17) },
 				},
 			},
+		]);
+	},
+	"basic-enum-construct-and-extract"() {
+		const source = `
+		package example;
+
+		enum Either {
+			var bool: Boolean;
+			var int: Int;
+
+		}
+
+		record Main {
+			fn main(): Either, Boolean, Boolean, Int {
+				var obj: Either = Either{int = 3};
+				return obj, obj is int, obj is bool, obj.int;
+			}
+		}
+		`;
+
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+
+		const inputs: Value[] = [];
+		const result = interpret("example.Main.main" as ir.FunctionID, inputs, program, {});
+
+		assert(result, "is equal to", [
+			{
+				sort: "enum",
+				field: {
+					int: { sort: "int", int: BigInt(3) },
+				},
+			},
+			{
+				sort: "boolean",
+				boolean: true,
+			},
+			{
+				sort: "boolean",
+				boolean: false,
+			},
+			{
+				sort: "int",
+				int: BigInt(3),
+			}
 		]);
 	},
 };

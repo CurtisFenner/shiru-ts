@@ -55,8 +55,8 @@ export const T_UNIT: TypePrimitive = { tag: "type-primitive", primitive: "Unit" 
 export interface TypeCompound {
 	tag: "type-compound",
 
-	/// `record` references a `RecordDefinition` in a `Program`.
-	record: RecordID,
+	/// `base` references a `RecordDefinition` in a `Program`.
+	base: RecordID | EnumID,
 
 	type_arguments: Type[],
 };
@@ -73,6 +73,7 @@ export type Type = TypePrimitive | TypeCompound | TypeVariable;
 export type FunctionID = string & { __brand: "function-id" };
 export type VariableID = string & { __brand: "variable-id" };
 export type RecordID = string & { __brand: "record-id" };
+export type EnumID = string & { __brand: "enum-id" };
 export type InterfaceID = string & { __brand: "interface-id" };
 export type TypeVariableID = string & { __brand: "type-variable-id" };
 
@@ -161,6 +162,35 @@ export interface OpNewRecord {
 	destination: VariableDefinition,
 };
 
+/// `OpNewEnum` defines a new variable with a newly created instance of a
+/// specified enum.
+export interface OpNewEnum {
+	tag: "op-new-enum",
+	enum: EnumID,
+
+	/// The type of the variant value must be the same as the type of the enum's
+	/// variant (with appropriate instantiation of any `parameter`s in the enum
+	/// type)
+	variant: string,
+	variantValue: VariableID,
+
+	/// The destination must have a type of the specified enum.
+	destination: VariableDefinition,
+};
+
+export interface OpIsVariant {
+	tag: "op-is-variant",
+
+	/// The base must have enum type.
+	base: VariableID,
+
+	/// The variant must be a variant of the base's type.
+	variant: string,
+
+	/// The test result must have Boolean type.
+	destination: VariableDefinition,
+};
+
 /// `OpField` defines a new `destination` variable with the field extracted from
 /// an indicated record variable.
 export interface OpField {
@@ -177,6 +207,28 @@ export interface OpField {
 	/// the `field` within the `object` variable (with appropriate instantiation
 	/// of any `parameter`s in the record type).
 	destination: VariableDefinition,
+};
+
+/// `OpVariant` defines a new `destination` variable with the variant extracted
+/// from an indicated enum variable.
+export interface OpVariant {
+	tag: "op-variant",
+
+	/// The `object` variable must be a enum type.
+	object: VariableID,
+
+	/// The `variant` must be one of the keys in the `fields` map of the
+	/// `EnumDefinition` corresponding to the enum
+	/// type of this `object`.
+	variant: string,
+
+	/// The type of the `destination` variable must be the same as the type of
+	/// the `variant` within the `object` variable (with appropriate
+	/// instantiation of any `parameter`s in the enum type).
+	destination: VariableDefinition,
+
+	/// The location of the access.
+	diagnostic_location: SourceLocation,
 };
 
 export interface OpStaticCall {
@@ -258,7 +310,7 @@ export interface OpForeign {
 
 export type LeafOp = OpConst
 	| OpCopy
-	| OpNewRecord | OpField
+	| OpNewRecord | OpNewEnum | OpField | OpVariant | OpIsVariant
 	| OpStaticCall | OpDynamicCall
 	| OpForeign
 	| OpReturn
@@ -353,6 +405,15 @@ export interface RecordDefinition {
 	},
 };
 
+export interface EnumDefinition {
+	type_parameters: TypeVariableID[],
+
+	/// The variants defined by this enum.
+	variants: {
+		[variant: string]: Type,
+	},
+}
+
 export interface VTableFactory {
 	// The number of type arguments that the v-table factory takes.
 	// These are instantiated in `interface_arguments`.
@@ -388,6 +449,7 @@ export interface Program {
 	functions: Record<string, IRFunction>,
 	interfaces: Record<string, IRInterface>,
 	records: Record<string, RecordDefinition>,
+	enums: Record<string, EnumDefinition>,
 
 	foreign: Record<string, FunctionSignature>,
 
@@ -403,7 +465,7 @@ export function equalTypes(pattern: Type, passed: Type): boolean {
 		// TODO: Switch to unification?
 		return passed.tag === "type-variable" && passed.id === pattern.id;
 	} else if (pattern.tag === "type-compound" && passed.tag === "type-compound") {
-		if (pattern.record !== passed.record) {
+		if (pattern.base !== passed.base) {
 			return false;
 		}
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -494,7 +556,7 @@ function unifyTypePairHelper(
 	if (left.tag === "type-compound") {
 		if (right.tag !== "type-compound") {
 			return null;
-		} else if (left.record !== right.record) {
+		} else if (left.base !== right.base) {
 			return null;
 		}
 		return unifyTypeArrayHelper(left.type_arguments, right.type_arguments, assignments);
@@ -580,7 +642,7 @@ export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 	if (t.tag === "type-compound") {
 		return {
 			tag: t.tag,
-			record: t.record,
+			base: t.base,
 			type_arguments: t.type_arguments.map(a => typeSubstitute(a, map)),
 		};
 	} else if (t.tag === "type-primitive") {
@@ -612,7 +674,7 @@ export function typeRecursiveSubstitute(t: Type, map: Map<TypeVariableID, Type |
 	} else if (t.tag === "type-compound") {
 		return {
 			tag: t.tag,
-			record: t.record,
+			base: t.base,
 			type_arguments: t.type_arguments.map(a => typeRecursiveSubstitute(a, map)),
 		};
 	} else if (t.tag === "type-primitive") {

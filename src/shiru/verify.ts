@@ -219,7 +219,7 @@ class FieldMap {
 class ConstructorMap {
 	private map = new DefaultMap<ir.RecordID, TypeArgumentsDefaultMap<uf.FnID>>(
 		r => new TypeArgumentsDefaultMap(ts => {
-			const t: ir.Type = { tag: "type-compound", record: r, type_arguments: ts };
+			const t: ir.Type = { tag: "type-compound", base: r, type_arguments: ts };
 			return this.smt.createFunction(t, {});
 		}),
 	);
@@ -475,28 +475,35 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		return;
 	} else if (op.tag === "op-field") {
 		const object = state.getValue(op.object);
-		const baseType = object.type as ir.TypeCompound;
-		const f = state.fieldMap.get(baseType.record, baseType.type_arguments, op.field);
+		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
+		const f = state.fieldMap.get(baseType.base, baseType.type_arguments, op.field);
 		const fieldValue = state.smt.createApplication(f, [object.value]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
+	} else if (op.tag === "op-is-variant") {
+		throw new Error("traverse: TODO: op-is-variant");
+	} else if (op.tag === "op-variant") {
+		throw new Error("traverse: TODO: op-variant");
 	} else if (op.tag === "op-new-record") {
 		const fieldNames = Object.keys(op.fields).sort();
 		const fields = [];
 		for (let field of fieldNames) {
 			fields.push(state.getValue(op.fields[field]).value);
 		}
-		const recordType = op.destination.type as ir.TypeCompound;
-		const constructor = state.constructorMap.get(recordType.record, recordType.type_arguments);
+		const recordType = op.destination.type as ir.TypeCompound & { base: ir.RecordID };
+		const constructor = state.constructorMap.get(recordType.base, recordType.type_arguments);
 		const recordValue = state.smt.createApplication(constructor, fields);
 		state.defineVariable(op.destination, recordValue);
 		for (let i = 0; i < fields.length; i++) {
-			const getField = state.fieldMap.get(recordType.record, recordType.type_arguments, fieldNames[i]);
+			const getField = state.fieldMap.get(recordType.base, recordType.type_arguments, fieldNames[i]);
 			state.smt.addConstraint([
 				state.eq(fields[i], state.smt.createApplication(getField, [recordValue])),
 			]);
 		}
 		return;
+	} else if (op.tag === "op-new-enum") {
+		const enumType = op.destination.type as ir.TypeCompound & { base: ir.EnumID };
+		throw new Error("traverse: TODO: op-new-enum");
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, new Map(), op.body, state, context);
 	} else if (op.tag === "op-return") {
@@ -590,7 +597,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			throw new Error("TODO");
 		}
 
-		throw new Error("TODO");
+		throw new Error("traverse: TODO: op-dynamic-call");
 		return;
 	} else if (op.tag === "op-unreachable") {
 		// TODO: Better classify verification failures.

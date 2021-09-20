@@ -206,6 +206,20 @@ export const tests = {
 
 		semantics.compileSources({ ast });
 	},
+	"no-such-interface"() {
+		const source = `
+		package example;
+		record X[#T | #T is NoSuchInt] {}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"Entity `NoSuchInt` has not been defined, but it was referenced at",
+				{ fileID: "test-file", offset: 42, length: 9 },
+			],
+		});
+	},
 	"no-such-type-variable"() {
 		const source = `
 		package example;
@@ -614,6 +628,90 @@ export const tests = {
 			],
 		});
 	},
+	"redefine-var-in-record"() {
+		const source = `
+		package example;
+
+		record R {
+			var field: Int;
+			var field: Int;
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `field` was defined for a second time at",
+				{ fileID: "test-file", offset: 60, length: 5 },
+				"The first definition of `field` was at",
+				{ fileID: "test-file", offset: 41, length: 5 },
+			],
+		});
+	},
+	"redefine-var-in-enum"() {
+		const source = `
+		package example;
+
+		enum E {
+			var variant: Int;
+			var variant: Int;
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `variant` was defined for a second time at",
+				{ fileID: "test-file", offset: 60, length: 7 },
+				"The first definition of `variant` was at",
+				{ fileID: "test-file", offset: 39, length: 7 },
+			],
+		});
+	},
+	"redefine-var-as-fn-in-record"() {
+		const source = `
+		package example;
+
+		record R {
+			var member: Int;
+			fn member(): Int {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `member` was defined for a second time at",
+				{ fileID: "test-file", offset: 60, length: 6 },
+				"The first definition of `member` was at",
+				{ fileID: "test-file", offset: 41, length: 6 },
+			],
+		});
+	},
+	"redefine-var-as-fn-in-enum"() {
+		const source = `
+		package example;
+
+		enum E {
+			var member: Int;
+			fn member(): Int {
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `member` was defined for a second time at",
+				{ fileID: "test-file", offset: 58, length: 6 },
+				"The first definition of `member` was at",
+				{ fileID: "test-file", offset: 39, length: 6 },
+			],
+		});
+	},
 	"redefine-fn-in-record"() {
 		const source = `
 		package example;
@@ -631,6 +729,26 @@ export const tests = {
 				{ fileID: "test-file", offset: 71, length: 3 },
 				"The first definition of `get` was at",
 				{ fileID: "test-file", offset: 40, length: 3 },
+			],
+		});
+	},
+	"redefine-fn-in-enum"() {
+		const source = `
+		package example;
+
+		enum E {
+			fn get(): Int { return 1; }
+			fn get(): Int { return 1; }
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `get` was defined for a second time at",
+				{ fileID: "test-file", offset: 69, length: 3 },
+				"The first definition of `get` was at",
+				{ fileID: "test-file", offset: 38, length: 3 },
 			],
 		});
 	},
@@ -709,6 +827,172 @@ export const tests = {
 				{ fileID: "test-file", offset: 110, length: 2 },
 				"However, `example.R is example.I` needs 1, as defined at",
 				{ fileID: "test-file", offset: 48, length: 8 },
+			],
+		});
+	},
+	"record-literal-with-duplicated-field"() {
+		const source = `
+		package example;
+
+		record R {
+			var f: Int;
+		}
+		
+		record Main {
+			fn main(): R {
+				return R{
+					f = 1,
+					f = 1,
+				};
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The field `f` was initialized a second time at",
+				{ fileID: "test-file", offset: 121, length: 1 },
+				"The first initialization was at",
+				{ fileID: "test-file", offset: 109, length: 1 },
+			],
+		});
+	},
+	"enum-literal-with-duplicated-variant"() {
+		const source = `
+		package example;
+
+		enum E {
+			var f: Int;
+		}
+		
+		record Main {
+			fn main(): E {
+				return E{
+					f = 1,
+					f = 1,
+				};
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The variant `f` was initialized a second time at",
+				{ fileID: "test-file", offset: 119, length: 1 },
+				"The first initialization was at",
+				{ fileID: "test-file", offset: 107, length: 1 },
+			],
+		});
+	},
+	"enum-literal-with-multiple-variants"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Int;
+		}
+		
+		record Main {
+			fn main(): E {
+				return E{
+					a = 1,
+					b = 1,
+				};
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The initialization of enum type `example.E` ",
+				"includes a second variant `b` at",
+				{ fileID: "test-file", offset: 134, length: 1 },
+				"The first variant `a` is included at",
+				{ fileID: "test-file", offset: 122, length: 1 },
+			],
+		});
+	},
+	"enum-literal-with-non-existent-variant"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Int;
+		}
+		
+		record Main {
+			fn main(): E {
+				return E{
+					c = 1,
+				};
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The enum type `example.E` ",
+				"does not have a variant called `c`, ",
+				"so the initialization is illegal at",
+				{ fileID: "test-file", offset: 122, length: 1 },
+			],
+		});
+	},
+	"is-test-on-record"() {
+		const source = `
+		package example;
+
+		record R {
+			var f: Int;
+		}
+		
+		record Main {
+			fn main(): Boolean {
+				return R{f = 1} is f;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The type `example.R` is not an enum type, ",
+				"so the `is` test is illegal at",
+				{ fileID: "test-file", offset: 116, length: 4 },
+			],
+		});
+	},
+	"is-test-on-multi-value"() {
+		const source = `
+		package example;
+
+		enum E {
+			var f: Int;
+		}
+		
+		record Main {
+			fn two(): E, E {
+				return E{f = 1}, E{f = 1};
+			}
+
+			fn main(): Boolean {
+				return Main.two() is f;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"An expression has 2 values and so cannot be grouped ",
+				"by an `is` test at",
+				{ fileID: "test-file", offset: 162, length: 10 },
 			],
 		});
 	},

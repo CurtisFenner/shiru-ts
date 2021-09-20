@@ -6,7 +6,7 @@ export const tests = {
 		// `R[T, T]`
 		const left: Type = {
 			tag: "type-compound",
-			record: "R" as RecordID,
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
@@ -22,7 +22,7 @@ export const tests = {
 		// `R[X, Y]`
 		const right: Type = {
 			tag: "type-compound",
-			record: "R" as RecordID,
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
@@ -43,7 +43,7 @@ export const tests = {
 		// `R[X, T]`
 		const left: Type = {
 			tag: "type-compound",
-			record: "R" as RecordID,
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
@@ -59,7 +59,7 @@ export const tests = {
 		// `R[T, Y]`
 		const right: Type = {
 			tag: "type-compound",
-			record: "R" as RecordID,
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
@@ -84,7 +84,7 @@ export const tests = {
 		// `R[X, Y]`.
 		assert(leftFull, "is equal to", {
 			tag: "type-compound",
-			record: "R",
+			base: "R",
 			type_arguments: [
 				{
 					tag: "type-variable",
@@ -98,7 +98,7 @@ export const tests = {
 		});
 		assert(rightFull, "is equal to", {
 			tag: "type-compound",
-			record: "R",
+			base: "R",
 			type_arguments: [
 				{
 					tag: "type-variable",

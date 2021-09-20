@@ -1,21 +1,28 @@
 import * as ir from "./ir";
 import { ErrorElement } from "./lexer";
 
-export type Value = RecordValue | BooleanValue | BytesValue | IntValue;
+export type Value = RecordValue | EnumValue | BooleanValue | BytesValue | IntValue;
+
 export type RecordValue = {
 	sort: "record",
-	fields: {
-		[field: string]: Value,
-	},
+	fields: Record<string, Value>,
 };
+
+export type EnumValue = {
+	sort: "enum",
+	field: Record<string, Value>,
+}
+
 export type BooleanValue = {
 	sort: "boolean",
 	boolean: boolean,
 };
+
 export type BytesValue = {
 	sort: "bytes",
 	bytes: string,
 };
+
 export type IntValue = {
 	sort: "int",
 	int: bigint,
@@ -146,12 +153,12 @@ function matchTypeSingle(
 			return pattern.id === subject.id;
 		}
 	} else if (pattern.tag === "type-compound" && subject.tag === "type-compound") {
-		if (pattern.record !== subject.record) {
+		if (pattern.base !== subject.base) {
 			return false;
 		}
 
 		if (pattern.type_arguments.length !== subject.type_arguments.length) {
-			throw new Error(`Arity of type \`${pattern.record}\` is inconsistent.`);
+			throw new Error(`Arity of type \`${pattern.base}\` is inconsistent.`);
 		}
 
 		for (let i = 0; i < pattern.type_arguments.length; i++) {
@@ -470,6 +477,14 @@ function* interpretOp(
 		}
 		frame.define(op.destination, recordValue);
 		return null;
+	} else if (op.tag === "op-new-enum") {
+		const enumValue: EnumValue = {
+			sort: "enum",
+			field: {},
+		};
+		enumValue.field[op.variant] = frame.load(op.variantValue);
+		frame.define(op.destination, enumValue);
+		return null;
 	} else if (op.tag === "op-field") {
 		const recordValue = frame.load(op.object);
 		if (recordValue.sort !== "record") {
@@ -477,11 +492,33 @@ function* interpretOp(
 		}
 		frame.define(op.destination, recordValue.fields[op.field]);
 		return null;
+	} else if (op.tag === "op-variant") {
+		const compoundValue = frame.load(op.object);
+		if (compoundValue.sort !== "enum") {
+			throw new Error("bad value sort for variant access");
+		}
+		const variant = compoundValue.field[op.variant];
+		if (variant === undefined) {
+			throw new RuntimeErr([
+				"Retrieve uninitialized variant at",
+				op.diagnostic_location || " (unknown location)",
+			]);
+		}
+		frame.define(op.destination, variant);
+		return null;
 	} else if (op.tag === "op-unreachable") {
 		throw new RuntimeErr([
 			"Hit unreachable op at",
 			op.diagnostic_location || " (unknown location)",
 		]);
+	} else if (op.tag === "op-is-variant") {
+		const base = frame.load(op.base);
+		if (base.sort !== "enum") {
+			throw new Error("bad value sort for is-variant");
+		}
+		const contains = op.variant in base.field;
+		frame.define(op.destination, { sort: "boolean", boolean: contains });
+		return null;
 	}
 
 	const _: never = op;
@@ -495,7 +532,7 @@ export class RuntimeErr {
 function showType(t: ir.Type): string {
 	if (t.tag === "type-compound") {
 		const generics = "[" + t.type_arguments.map(x => showType(x)).join(", ") + "]";
-		return t.record + generics;
+		return t.base + generics;
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
 	} else {
@@ -630,6 +667,21 @@ export function printOp(
 		const recordType = showType(op.destination.type);
 		const recordLiteral = recordType + "{" + args.join(", ") + "}";
 		lines.push(indent + lhs + " = " + recordLiteral + ";");
+		return;
+	} else if (op.tag === "op-new-enum") {
+		const lhs = printVariable(op.destination);
+		const enumType = showType(op.destination.type);
+		const arg = op.variant + " = " + op.variantValue;
+		const enumLiteral = enumType + "{" + arg + "}";
+		lines.push(indent + lhs + " = " + enumLiteral + ";");
+		return;
+	} else if (op.tag === "op-is-variant") {
+		const lhs = printVariable(op.destination);
+		lines.push(indent + lhs + " = " + op.base + " is " + op.variant + ";");
+		return;
+	} else if (op.tag === "op-variant") {
+		const lhs = printVariable(op.destination);
+		lines.push(indent + lhs + " = " + op.object + "." + op.variant + ";");
 		return;
 	}
 

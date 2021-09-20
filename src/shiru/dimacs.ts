@@ -66,7 +66,7 @@ if (require.main === module) {
 		do {
 			try {
 				read = readSync(process.stdin.fd, buffer, 0, buffer.length, null);
-			} catch (e) {
+			} catch (e: any) {
 				// https://github.com/nodejs/node/issues/35997
 				if (e.code === "EOF") {
 					read = 0;

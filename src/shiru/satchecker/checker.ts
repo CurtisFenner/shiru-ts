@@ -16,7 +16,7 @@ export function minisat(dimacs: string): "UNSATISFIABLE" | "SATISFIABLE" {
 	let stdout: string;
 	try {
 		stdout = runSync("minisat -verb=0", dimacs);
-	} catch (e) {
+	} catch (e: any) {
 		// minisat returns an exit code for satisfiable or not, but instead we're parsing STDOUT to be more resilient.
 		stdout = e.stdout.toString("utf8");
 		if (typeof stdout !== "string") {

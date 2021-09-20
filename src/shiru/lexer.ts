@@ -104,6 +104,7 @@ export const KEYWORDS = {
 	"else": true,
 	"elseif": true,
 	"ensures": true,
+	"enum": true,
 	"false": true,
 	"fn": true,
 	"forall": true,

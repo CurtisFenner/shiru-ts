@@ -8,6 +8,7 @@ export const tests = {
 	"empty-verification"() {
 		const program: ir.Program = {
 			records: {},
+			enums: {},
 			functions: {},
 			interfaces: {},
 			foreign: {},

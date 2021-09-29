@@ -1,6 +1,7 @@
 import { DefaultMap } from "./data";
 import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
+import { displayType } from "./semantics";
 import * as uf from "./uf";
 
 export function verifyProgram(
@@ -122,7 +123,8 @@ interface VerificationContext {
 export type FailedVerification = FailedPreconditionVerification
 	| FailedAssertVerification
 	| FailedReturnVerification
-	| FailedPostconditionValidation;
+	| FailedPostconditionValidation
+	| FailedVariantVerification;
 
 export interface FailedPreconditionVerification {
 	tag: "failed-precondition",
@@ -144,6 +146,13 @@ export interface FailedAssertVerification {
 export interface FailedReturnVerification {
 	tag: "failed-return",
 	blockEndLocation?: ir.SourceLocation,
+}
+
+export interface FailedVariantVerification {
+	tag: "failed-variant",
+	variant: string,
+	enumType: string,
+	accessLocation: ir.SourceLocation,
 }
 
 interface SignatureSet {
@@ -231,6 +240,63 @@ class ConstructorMap {
 	}
 }
 
+interface EnumVariantFns {
+	extractTag: uf.FnID,
+	constructors: Record<string, uf.FnID>,
+	destructors: Record<string, uf.FnID>,
+	tagValues: Record<string, uf.ValueID>,
+	variantList: string[],
+};
+
+class VariantMap {
+	private map = new DefaultMap<ir.EnumID, TypeArgumentsDefaultMap<EnumVariantFns>>(
+		e => new TypeArgumentsDefaultMap(ts => {
+			const enumType: ir.Type = {
+				tag: "type-compound",
+				base: e,
+				type_arguments: ts,
+			};
+
+			const variantList = [];
+
+			const entity = this.program.enums[e];
+			const typeParameterMap = ir.typeArgumentsMap(entity.type_parameters, ts);
+			const constructors: Record<string, uf.FnID> = {};
+			const destructors: Record<string, uf.FnID> = {};
+			const tagValues: Record<string, uf.ValueID> = {};
+			for (const variant in entity.variants) {
+				variantList.push(variant);
+				const variantType = ir.typeSubstitute(entity.variants[variant], typeParameterMap);
+				constructors[variant] = this.smt.createFunction(enumType, {});
+				destructors[variant] = this.smt.createFunction(variantType, {});
+
+				// Assign the tag value.
+				const tagValue = this.smt.createConstant(ir.T_INT, variantList.length);
+				tagValues[variant] = tagValue;
+			}
+
+			return {
+				extractTag: this.smt.createFunction(ir.T_INT, {}),
+				constructors,
+				destructors,
+				tagValues,
+				variantList,
+			};
+		}));
+
+	constructor(
+		private program: ir.Program,
+		private smt: uf.UFTheory,
+	) { }
+
+	get(
+		entity: ir.EnumID,
+		ts: ir.Type[],
+	): EnumVariantFns {
+		return this.map.get(entity).get(ts);
+	}
+}
+
 class VerificationState {
 	private program: ir.Program;
 	private foreignInterpreters: Record<string, uf.Semantics["interpreter"]>;
@@ -270,6 +336,7 @@ class VerificationState {
 	dynamicFunctions: DynamicFunctionMap;
 	constructorMap: ConstructorMap;
 	fieldMap: FieldMap;
+	variantMap: VariantMap;
 
 	recursivePreconditions: SignatureSet = {
 		blockedFunctions: {},
@@ -306,6 +373,7 @@ class VerificationState {
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.constructorMap = new ConstructorMap(this.program, this.smt);
 		this.fieldMap = new FieldMap(this.program, this.smt);
+		this.variantMap = new VariantMap(this.program, this.smt);
 
 		// SMT requires at least one constraint.
 		this.smt.addConstraint([
@@ -481,9 +549,58 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
-		throw new Error("traverse: TODO: op-is-variant");
+		const object = state.getValue(op.base);
+		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
+
+		const fns = state.variantMap.get(baseType.base, baseType.type_arguments);
+
+		const symbolicTag = state.smt.createApplication(fns.extractTag, [object.value]);
+
+		// Add a constraint that the tag takes on one of a small number of values.
+		const finiteAlternativesClause = [];
+		for (const variant in fns.tagValues) {
+			const tagConstant = fns.tagValues[variant];
+			finiteAlternativesClause.push(state.eq(symbolicTag, tagConstant));
+		}
+		state.smt.addConstraint(finiteAlternativesClause);
+
+		const testTagValue = fns.tagValues[op.variant];
+		state.defineVariable(op.destination, state.eq(symbolicTag, testTagValue));
+		return;
 	} else if (op.tag === "op-variant") {
-		throw new Error("traverse: TODO: op-variant");
+		const object = state.getValue(op.object);
+		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
+		const fns = state.variantMap.get(baseType.base, baseType.type_arguments);
+
+		const symbolicTag = state.smt.createApplication(fns.extractTag, [object.value]);
+		const requiredTag = fns.tagValues[op.variant];
+
+		if (fns.variantList.length > 1) {
+			// Check that the symbolic tag definitely matches this variant.
+			state.pushPathConstraint(
+				state.negate(state.eq(symbolicTag, requiredTag))
+			);
+			const reason: FailedVariantVerification = {
+				tag: "failed-variant",
+				enumType: baseType.base + "[???]",
+				variant: op.variant,
+				accessLocation: op.diagnostic_location,
+			};
+			const refutation = state.checkReachable(reason);
+			if (refutation !== "refuted") {
+				reason.enumType = displayType(baseType);
+				state.failedVerifications.push(reason);
+			}
+
+			state.markPathUnreachable();
+			state.popPathConstraint();
+		}
+
+		// Extract the field.
+		const f = fns.destructors[op.variant];
+		const variantValue = state.smt.createApplication(f, [object.value]);
+		state.defineVariable(op.destination, variantValue);
+		return;
 	} else if (op.tag === "op-new-record") {
 		const fieldNames = Object.keys(op.fields).sort();
 		const fields = [];
@@ -503,7 +620,21 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		return;
 	} else if (op.tag === "op-new-enum") {
 		const enumType = op.destination.type as ir.TypeCompound & { base: ir.EnumID };
-		throw new Error("traverse: TODO: op-new-enum");
+		const fns = state.variantMap.get(enumType.base, enumType.type_arguments);
+		const constructor = fns.constructors[op.variant];
+		const variantValue = state.getValue(op.variantValue).value;
+		const enumValue = state.smt.createApplication(constructor, [variantValue]);
+		state.defineVariable(op.destination, enumValue);
+
+		const tagConstant = fns.tagValues[op.variant];
+		const tag = state.smt.createApplication(fns.extractTag, [enumValue]);
+		state.smt.addConstraint([state.eq(tagConstant, tag)]);
+
+		const getVariant = fns.destructors[op.variant];
+		state.smt.addConstraint([
+			state.eq(variantValue, state.smt.createApplication(getVariant, [enumValue])),
+		]);
+		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, new Map(), op.body, state, context);
 	} else if (op.tag === "op-return") {

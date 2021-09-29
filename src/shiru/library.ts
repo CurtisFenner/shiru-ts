@@ -107,6 +107,15 @@ export function formatVerificationFailure(
 				v.postconditionLocation,
 			]
 		};
+	} else if (v.tag === "failed-variant") {
+		return {
+			message: [
+				"An object of enum type `" + v.enumType + "` ",
+				"has not been shown to have variant tag `" + v.variant + "`, ",
+				"so the variant access of `." + v.variant + "` is illegal at",
+				v.accessLocation,
+			],
+		};
 	} else {
 		const _: never = v;
 		throw new Error("unhandled `" + v["tag"] + "`");

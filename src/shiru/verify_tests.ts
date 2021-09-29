@@ -337,4 +337,113 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"ensures-enum-literal-variant"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Boolean;
+
+			fn makeInt(n: Int): E
+			ensures return is a
+			ensures return.a == n {
+				return E{a = n};
+			}
+		}
+		`;
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"accessing-variant-requires-variant-is-valid"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Int;
+
+			fn getB(e: E): Int {
+				return e.b;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-variant",
+				enumType: "example.E",
+				variant: "b",
+				accessLocation: { fileID: "test-file", offset: 100, length: 1 },
+			},
+		]);
+	},
+	"variant-tag-is-bounded"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Int;
+			
+			fn getB(e: E): E
+			ensures return is a or return is b {
+				return e;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"all-variants-handled-by-if-branches"() {
+		const source = `
+		package example;
+
+		enum E {
+			var a: Int;
+			var b: Int;
+			
+			fn getB(e: E): Int {
+				if e is a {
+					return 1;
+				} else if e is b {
+					return 2;
+				}
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"single-variant-enum-requires-no-is-test"() {
+
+		const source = `
+		package example;
+
+		enum E {
+			var only: Int;
+			
+			fn getB(e: E): Int {
+				// Since there is only one branch, this is legal:
+				return e.only;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

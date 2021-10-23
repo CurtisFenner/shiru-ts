@@ -427,7 +427,6 @@ export const tests = {
 		assert(failures, "is equal to", []);
 	},
 	"single-variant-enum-requires-no-is-test"() {
-
 		const source = `
 		package example;
 
@@ -437,6 +436,51 @@ export const tests = {
 			fn getB(e: E): Int {
 				// Since there is only one branch, this is legal:
 				return e.only;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"simple-cons-list-with-head-and-tails-methods"() {
+		const source = `
+		package example;
+
+		record Cons[#T] {
+			var head: #T;
+			var tail: List[#T];
+		}
+
+		enum List[#T] {
+			var cons: Cons[#T];
+			var nil: Unit;
+
+			fn head(self: List[#T]): #T
+			requires self is cons {
+				return self.cons.head;
+			}
+
+			fn tail(self: List[#T]): List[#T]
+			requires self is cons {
+				return self.cons.tail;
+			}
+
+			fn concat(left: List[#T], right: List[#T]): List[#T] {
+				if left is nil {
+					return right;
+				} else if right is nil {
+					return left;
+				}
+
+				return List[#T]{
+					cons = Cons[#T]{
+						head = left.head(),
+						tail = left.tail().concat(right),
+					},
+				};
 			}
 		}
 		`;

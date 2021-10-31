@@ -14,19 +14,18 @@ function swap<T>(array: T[], a: number, b: number) {
 	array[b] = t;
 }
 
-/// SATResult represents the result of sat-solving.
-/// `null`: An answer has not yet been determined.
+/// `SATResult` represents the result of sat-solving.
 /// `"unsatisfiable"`: This instance has no satisfying assignment.
 /// `Literal[]`: A partial assignment that satisfies this instance.
-export type SATResult = DefiniteSATResult | null;
-export type DefiniteSATResult = "unsatisfiable" | Literal[];
+export type SATResult = "unsatisfiable" | Literal[];
 
 
-/// UnitLiteralQueue is a helper data structure to maintain a queue of unit
+/// `UnitLiteralQueue` is a helper data structure to maintain a queue of unit
 /// literals.
 class UnitLiteralQueue {
 	private unitLiterals: Map<number, [Literal, ClauseID]> = new Map();
 
+	/// Adds a literal, with a given antecedent, to this queue.
 	/// RETURNS a `ClauseID` when this proposed unit literal is in conflict with
 	/// another unit literal in this mapping.
 	pushOrFindConflict(literal: Literal, antecedent: ClauseID): ClauseID | null {
@@ -59,39 +58,56 @@ class UnitLiteralQueue {
 	}
 }
 
-/// SATSolver solves the satisfiability problem on Boolean formulas in
+/// `SATSolver` solves the satisfiability problem on Boolean formulas in
 /// conjunctive-normal-form (an "and of ors").
 export class SATSolver {
 	private clauses: number[][] = [];
 
 	/// `watchedPositive[n]` is the `ClauseID`s that are "watching" the literal
-	/// `+n`. Satisfied clauses watch two arbitrary literals within them.
-	/// Unsatisfied clauses watch two unfalsified literals within them.
-	/// A watched literal is always one of the first two literals in the clause
-	/// array.
+	/// `+n`.
+	/// A satisfied clauses watches two arbitrary literals within the clause.
+	/// An unsatisfied clauses watches two unfalsified literals within the
+	/// clause.
+	/// Each clause array is continually re-ordered so that a watched literal is
+	/// always one of the first two literals in the clause.
 	private watchedPositive: ClauseID[][] = [];
 
-	/// `watchedPositive[n]`: see `watchedPositive`.
+	/// `watchedNegative[n]`: see `watchedPositive`.
 	private watchedNegative: ClauseID[][] = [];
 
+	/// `assignments[n]` is the assignment of term `n`.
+	/// `0`: the term is unassigned.
+	/// `1`: the term is assigned "true".
+	/// `-1`: the term is assigned "false".
 	private assignments: (-1 | 0 | 1)[] = [];
-	private assignmentStack: number[] = [];
 
-	/// assignmentOrder[t] is the index of `t` or `-t` in `assignmentStack`, or
-	/// `-1` for unassigned variables.
+	/// `assignmentStack` is a stack of literals that have been assigned.
+	private assignmentStack: Literal[] = [];
+
+	/// `assignmentStackPosition[t]` is the index of where to find an assignment
+	/// to term `t` in `assignmentStack`, or `-1` for unassigned variables.
 	private assignmentStackPosition: number[] = [];
 
 	/// `decisionLevel` is one more than the number of "free" assignments that
 	/// have been made.
 	private decisionLevel: number = 0;
+
+	/// `termDecisionLevel[t]` is the decision level at the time term `t` was
+	/// given an assignment.
+	/// (It is not-defined for unassigned terms)
 	private termDecisionLevel: number[] = [];
 
 	/// `antecedentClause[n]` is a `ClauseID` which became a unit-clause
 	/// "forcing" the assignment of this term (the "antecedent" clause).
-	/// For an unassigned term `n`, `antecedentClause[n]` is undefined.
+	/// For an unassigned term `n`, `antecedentClause[n]` is not-defined.
 	/// For a term assigned "freely" (rather than as a result of BCP), the value
 	/// is `-1`.
 	private antecedentClause: (ClauseID | -1)[] = [];
+
+	/// Initializes the internal data-structures for terms 1, 2, ..., `term`
+	/// (if not already initialized).
+	/// Terms must be initialized before being used in clauses passed to
+	/// `addClause`.
 	initTerms(term: number) {
 		for (let i = this.assignments.length; i <= term; i++) {
 			this.assignments[i] = 0;
@@ -102,12 +118,13 @@ export class SATSolver {
 		}
 	}
 
+	/// RETURNS the current assignment stack.
 	getAssignment() {
 		return this.assignmentStack.slice(0);
 	}
 
 	/// solve solves this instance.
-	solve(): DefiniteSATResult {
+	solve(): SATResult {
 		if (this.decisionLevel > 0) {
 			throw new Error("SATSolver.solve() requires decision level must be at 0");
 		} else if (this.assignments.length === 0) {
@@ -136,12 +153,16 @@ export class SATSolver {
 			return "unsatisfiable";
 		}
 
+		// Define an initial ordering for the terms. A consistent ordering of
+		// terms means larger benefits from learned clauses.
 		let ordering = [];
 		for (let i = 1; i < this.assignments.length; i++) {
 			ordering[i - 1] = i;
 		}
 
 		// Set up state for cVSIDS variable ordering heuristic.
+		// (See "Understanding VSIDS Branching Heuristics in Conﬂict-Driven
+		// Clause-Learning SAT Solvers")
 		let termWeights: number[] = [];
 		for (let i = 0; i < this.assignmentStackPosition.length; i++) {
 			termWeights.push(0);
@@ -167,15 +188,15 @@ export class SATSolver {
 		// Start the main CDCL loop.
 		// Repeat assignments until an assigment has been made to every term.
 		let cursor = 0;
-		while (this.assignmentStack.length < this.assignments.length - 1) {
-			let decisionTerm = ordering[cursor];
+		const termCount = this.assignments.length - 1;
+		while (this.assignmentStack.length < termCount) {
+			const decisionTerm = ordering[cursor];
 			cursor += 1;
 			cursor %= ordering.length;
 
 			if (this.assignments[decisionTerm] !== 0) {
 				// This variable has already been assigned.
 				continue;
-
 			}
 
 			if (unitLiterals.size() !== 0) {
@@ -186,7 +207,7 @@ export class SATSolver {
 			this.decisionLevel += 1;
 			const expectNull = unitLiterals.pushOrFindConflict(+decisionTerm, -1);
 			if (expectNull !== null) {
-				throw new Error("bad state");
+				throw new Error("invariant violation: expected no conflict when no unit literals were found");
 			}
 
 			// Propagate unit consequences of that free decision.
@@ -282,6 +303,10 @@ export class SATSolver {
 		return this.getAssignment();
 	}
 
+	/// Adds a clause to this CNF-SAT instance.
+	/// The array `clause` is interpreted as a conjunction ("and") of its
+	/// contained literals.
+	/// A clause is satisfied when at least one of its literals is satisfied.
 	addClause(clause: Literal[]): ClauseID {
 		let hasUnassigned = false;
 		for (let literal of clause) {
@@ -299,7 +324,7 @@ export class SATSolver {
 		this.clauses.push(clause);
 
 		// Push unassigned literals to the front of the clause, with more
-		// recently assigned literals after that.
+		// recently assigned literals after that, to reduce unnecessary watches.
 		clause.sort((literalA: Literal, literalB: Literal) => {
 			const termA = literalA > 0 ? literalA : -literalA;
 			const termB = literalB > 0 ? literalB : -literalB;
@@ -391,6 +416,9 @@ export class SATSolver {
 		}
 	}
 
+	/// Assigns the literals in the `unitLiterals` queue, and then performs
+	/// boolean-constraint-propagation, resulting in more assignments
+	/// to newly created unit clauses.
 	/// RETURNS a conflict when boolean-constraint-propagation results in a
 	/// conflict: see `UnitLiteralQueue.pushOrFindConflict`.
 	/// RETURNS `null` when the queue was completely drained without
@@ -452,14 +480,15 @@ export class SATSolver {
 				} else if (a === 0) {
 					unfalsfiedCount += 1;
 					// N.B.: since watched literals are pushed to the front of
-					// the watchingClause array, if there are any unwatched unfalsified
-					// literals, they will be the result of this loop.
+					// the watchingClause array, if there are any unwatched
+					// unfalsified literals, they will be the result of this
+					// loop.
 					latestUnfalsfiedLiteralIndex = i;
 				}
 			}
 
 			// Either find a new literal to watch,
-			// or recognize that this watchingClause is now a unit clause.
+			// or recognize that this `watchingClause` is now a unit clause.
 			const destination = watchingClause[0] === -assignedLiteral ? 0 : 1;
 
 			// As an optimization, try to prevent more useless wake-ups by
@@ -543,11 +572,14 @@ export class SATSolver {
 			negativeLiteralAntecedent: ClauseID,
 		},
 	): Literal[] {
-		// This method is called when a "conflict" is detected: an assignment
-		// has already been made of "not literal", but the clause `cause` is a
-		// unit-clause of just `literal`.
+		// This method is called when a "conflict" is detected:
+		// boolean-constraint-propagation results in a unit clause "literal"
+		// and "not literal".
+		// `literalAntecedent` indicates the clause within which "literal" is a
+		// unit clause; `negativeLiteralAntecedent` indicates the same for
+		// "not literal".
 
-		// This method has to "diagnose" the conflict, producing a new clause
+		// This method must "diagnose" the conflict, producing a new clause
 		// which rejects previous "decisions".
 
 		// The simplest diagnosis is to reject the entire set of decision
@@ -559,7 +591,7 @@ export class SATSolver {
 		// The `antecedentClause` mapping can be used to generate an
 		// "implication graph". The vertices of the graph are literals.
 		// For non-decision variables, an edge exists for the negation of each
-		// other literal in the vertex's antecedent clause.
+		// other literal in the vertex's selected antecedent clause.
 
 		// This implication graph structure indicates that a vertex is _implied_
 		// by the conjunction of all predecessor vertices. A vertex with no

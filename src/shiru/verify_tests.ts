@@ -167,8 +167,8 @@ export const tests = {
 		package example;
 
 		record Main {
-			fn main(x: Int): Int 
-			requires x == 1 
+			fn main(x: Int): Int
+			requires x == 1
 			ensures return == 3 {
 				return x + 2;
 			}
@@ -269,7 +269,7 @@ export const tests = {
 					return 0;
 				}
 				return R.dec(n - 1);
-			} 
+			}
 		}
 		`;
 

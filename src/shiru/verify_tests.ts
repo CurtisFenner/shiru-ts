@@ -490,4 +490,115 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"fn-behavior-depends-on-type-argument"() {
+		const source = `
+		package example;
+
+		record Gen[#T] {
+			fn depends(): Int {
+				// N.B.: The solver does not (yet?) know about parametricity,
+				// so it cannot realize that this function must have the same
+				// behavior regardless of the type argument #T.
+				return 1;
+			}
+		}
+
+		record Main {
+			fn main(): Boolean {
+				if Gen[Int].depends() == 1 implies Gen[Int].depends() == 1 {
+				} else {
+					unreachable;
+				}
+
+				if Gen[Int].depends() == 1 implies Gen[Boolean].depends() == 1 {
+				} else {
+					// This does not follow because Shiru's verifier does not assume
+					// that functions are parametric; Int and Boolean could have
+					// different behavior.
+					unreachable;
+				}
+
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-assert",
+				assertLocation: { fileID: "test-file", offset: 665, length: 12 },
+			},
+		]);
+	},
+	"type-argument-not-opaque-in-requires"() {
+		const source = `
+		package example;
+
+		record Gen[#T] {
+			fn depends(): Int {
+				// N.B.: The solver does not (yet?) know about parametricity,
+				// so it cannot realize that this function must have the same
+				// behavior regardless of the type argument #T.
+				return 1;
+			}
+		}
+
+		record Inspector[#T] {
+			fn inspect(a: Int): Boolean
+			requires Gen[#T].depends() == a {
+				return false;
+			}
+		}
+
+		record Main {
+			fn main(): Boolean {
+				return Inspector[Int].inspect(Gen[Int].depends());
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"type-argument-not-opaque-in-ensures"() {
+		const source = `
+		package example;
+
+		record Gen[#T] {
+			fn depends(): Int {
+				// N.B.: The solver does not (yet?) know about parametricity,
+				// so it cannot realize that this function must have the same
+				// behavior regardless of the type argument #T.
+				return 1;
+			}
+		}
+
+		record Inspector[#T] {
+			fn produce(): Int
+			ensures return == Gen[#T].depends() {
+				return Gen[#T].depends();
+			}
+		}
+
+		record Main {
+			fn main(): Boolean {
+				if Inspector[Int].produce() == Gen[Int].depends() {
+				} else {
+					unreachable;
+				}
+				return false;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

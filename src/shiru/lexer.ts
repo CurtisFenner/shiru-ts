@@ -88,6 +88,7 @@ export const RESERVED = {
 };
 
 export const TYPE_KEYWORDS = {
+	"Any": true,
 	"Unit": true,
 	"Boolean": true,
 	"Int": true,
@@ -97,6 +98,7 @@ export const TYPE_KEYWORDS = {
 
 export const KEYWORDS = {
 	"and": true,
+	"any": true,
 	"assert": true,
 	"case": true,
 	"class": true,

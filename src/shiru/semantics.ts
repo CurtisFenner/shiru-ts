@@ -535,6 +535,8 @@ function checkConstraintSatisfied(
 		// No implementation was found in the type scope.
 	} else if (methodSubject.tag === "type-primitive") {
 		// TODO: Defer to the "built in" set of constraints (Eq, etc).
+	} else if (methodSubject.tag === "type-any") {
+		// TODO: Emit a custom message indicating that a cast is required.
 	} else {
 		const _: never = methodSubject;
 		throw new Error("checkConstraintSatisfied: Unhandled methodSubject tag `" + methodSubject["tag"] + "`");
@@ -581,6 +583,8 @@ function compileType(
 				tag: "type-primitive",
 				primitive: "Bytes",
 			};
+		} else if (t.keyword === "Any") {
+			return ir.T_ANY;
 		} else {
 			return {
 				tag: "type-primitive",
@@ -2346,6 +2350,8 @@ export function displayType(t: ir.Type): string {
 		return t.primitive;
 	} else if (t.tag == "type-variable") {
 		return "#" + t.id;
+	} else if (t.tag === "type-any") {
+		return "Any";
 	} else {
 		const _: never = t;
 		throw new Error("displayType: unhandled tag `" + t["tag"] + "`");

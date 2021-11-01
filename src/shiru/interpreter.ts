@@ -535,9 +535,14 @@ function showType(t: ir.Type): string {
 		return t.base + generics;
 	} else if (t.tag === "type-primitive") {
 		return t.primitive;
-	} else {
+	} else if (t.tag === "type-variable") {
 		return "#" + t.id;
+	} else if (t.tag === "type-any") {
+		return "Any";
 	}
+
+	const _: never = t;
+	throw new Error("showType: unknown tag `" + t["tag"] + "`");
 }
 
 export function printProgram(program: ir.Program, lines: string[]) {

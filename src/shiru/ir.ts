@@ -49,6 +49,7 @@ export const T_INT: TypePrimitive = { tag: "type-primitive", primitive: "Int" };
 export const T_BOOLEAN: TypePrimitive = { tag: "type-primitive", primitive: "Boolean" };
 export const T_BYTES: TypePrimitive = { tag: "type-primitive", primitive: "Bytes" };
 export const T_UNIT: TypePrimitive = { tag: "type-primitive", primitive: "Unit" };
+export const T_ANY: TypeAny = { tag: "type-any" };
 
 /// `TypeCompound` represents the type which is an instance of a given entity
 /// type.
@@ -68,7 +69,11 @@ export interface TypeVariable {
 	id: TypeVariableID,
 };
 
-export type Type = TypePrimitive | TypeCompound | TypeVariable;
+export interface TypeAny {
+	tag: "type-any",
+};
+
+export type Type = TypePrimitive | TypeCompound | TypeVariable | TypeAny;
 
 export type FunctionID = string & { __brand: "function-id" };
 export type VariableID = string & { __brand: "variable-id" };
@@ -504,6 +509,8 @@ function typeContainsVariable(
 			return typeContainsVariable(assigned, v, assignments);
 		}
 		return false;
+	} else if (t.tag === "type-any") {
+		return false;
 	}
 
 	const _: never = t;
@@ -570,6 +577,11 @@ function unifyTypePairHelper(
 			return null;
 		}
 		return left.id !== right.id ? null : assignments;
+	} else if (left.tag === "type-any") {
+		if (right.tag !== "type-any") {
+			return null;
+		}
+		return assignments;
 	}
 
 	const _: never = left;
@@ -653,6 +665,8 @@ export function typeSubstitute(t: Type, map: Map<TypeVariableID, Type>): Type {
 			return existing;
 		}
 		return t;
+	} else if (t.tag === "type-any") {
+		return t;
 	}
 
 	const _: never = t;
@@ -678,6 +692,8 @@ export function typeRecursiveSubstitute(t: Type, map: Map<TypeVariableID, Type |
 			type_arguments: t.type_arguments.map(a => typeRecursiveSubstitute(a, map)),
 		};
 	} else if (t.tag === "type-primitive") {
+		return t;
+	} else if (t.tag === "type-any") {
 		return t;
 	}
 

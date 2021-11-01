@@ -18,7 +18,7 @@ export function verifyProgram(
 	for (let v in program.globalVTableFactories) {
 		// 2a) has weaker preconditions
 		// 2b) has stronger postconditions
-		throw new Error("TODO");
+		problems.push(...verifyImpl(program, v));
 	}
 
 	return problems;
@@ -46,6 +46,15 @@ function verifyFunction(
 	const state = new VerificationState(program, foreignInterpeters);
 
 	const f = program.functions[fName];
+
+	// Create the initial type scope, which maps each type parameter to an
+	// unknown symbolic type ID constant.
+	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < f.signature.type_parameters.length; i++) {
+		const typeParameter = f.signature.type_parameters[i];
+		typeScope.set(typeParameter, state.smt.createVariable(ir.T_ANY));
+	}
+	state.pushTypeScope(typeScope);
 
 	// Initialize the function's arguments.
 	const contextParameters = [];
@@ -110,6 +119,18 @@ function verifyFunction(
 	// The IR type-checker verifies that functions must end with a op-return or
 	// op-unreachable.
 	return state.failedVerifications;
+}
+
+function verifyImpl(
+	program: ir.Program,
+	implName: string,
+): FailedVerification[] {
+	const state = new VerificationState(program, foreignInterpeters);
+
+	const impl = program.globalVTableFactories[implName];
+	const specification = program.interfaces[impl.provides.interface];
+
+	throw new Error("TODO: implement verifyImpl");
 }
 
 interface VerificationContext {
@@ -206,37 +227,55 @@ class DynamicFunctionMap {
 	}
 }
 
-class FieldMap {
-	private map = new DefaultMap<ir.RecordID, TypeArgumentsDefaultMap<Record<string, uf.FnID>>>(
-		r => new TypeArgumentsDefaultMap(ts => {
-			const recordIR = this.program.records[r];
-			const map = ir.typeArgumentsMap(recordIR.type_parameters, ts);
-			const fields: Record<string, uf.FnID> = {}
-			for (const k in recordIR.fields) {
-				fields[k] = this.smt.createFunction(ir.typeSubstitute(recordIR.fields[k], map), {});
-			}
-			return fields;
-		}));
+interface RecordFns {
+	constructor: uf.FnID,
+	fields: Record<string, uf.FnID>,
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
-
-	get(record: ir.RecordID, ts: ir.Type[], field: string): uf.FnID {
-		return this.map.get(record).get(ts)[field];
-	}
+	// A function that takes in type arguments (as type IDs) and returns the
+	// type ID for the "type application".
+	typeID: uf.FnID,
 }
 
-class ConstructorMap {
-	private map = new DefaultMap<ir.RecordID, TypeArgumentsDefaultMap<uf.FnID>>(
-		r => new TypeArgumentsDefaultMap(ts => {
-			const t: ir.Type = { tag: "type-compound", base: r, type_arguments: ts };
-			return this.smt.createFunction(t, {});
-		}),
-	);
+class RecordMap {
+	private map = new DefaultMap<ir.RecordID, RecordFns>(r => {
+		const record = this.program.records[r];
+		const fields: Record<string, uf.FnID> = {};
+		for (const k in record.fields) {
+			fields[k] = this.smt.createFunction(record.fields[k], {});
+		}
+
+		const recordType: ir.TypeCompound = {
+			tag: "type-compound",
+			base: r,
+			type_arguments: record.type_parameters.map(x => ({ tag: "type-any" })),
+		};
+		return {
+			constructor: this.smt.createFunction(recordType, {}),
+			fields,
+			typeID: this.smt.createFunction(ir.T_INT, {}),
+		};
+	});
 
 	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
 
-	get(record: ir.RecordID, ts: ir.Type[]): uf.FnID {
-		return this.map.get(record).get(ts);
+	construct(recordID: ir.RecordID, initialization: Record<string, uf.ValueID>): uf.ValueID {
+		const info = this.map.get(recordID);
+		const f = info.constructor;
+		const args = [];
+		for (const field in info.fields) {
+			args.push(initialization[field]);
+		}
+		return this.smt.createApplication(f, args);
+	}
+
+	extractField(recordID: ir.RecordID, field: string, obj: uf.ValueID): uf.ValueID {
+		const f = this.map.get(recordID).fields[field];
+		return this.smt.createApplication(f, [obj]);
+	}
+
+	typeID(recordID: ir.RecordID, typeArgumentTypeIDs: uf.ValueID[]): uf.ValueID {
+		const info = this.map.get(recordID);
+		return this.smt.createApplication(info.typeID, typeArgumentTypeIDs);
 	}
 }
 
@@ -245,55 +284,99 @@ interface EnumVariantFns {
 	constructors: Record<string, uf.FnID>,
 	destructors: Record<string, uf.FnID>,
 	tagValues: Record<string, uf.ValueID>,
-	variantList: string[],
+
+	// A function that takes in type arguments (as type IDs) and returns the
+	// type ID for the "type application".
+	typeID: uf.FnID,
 };
 
-class VariantMap {
-	private map = new DefaultMap<ir.EnumID, TypeArgumentsDefaultMap<EnumVariantFns>>(
-		e => new TypeArgumentsDefaultMap(ts => {
-			const enumType: ir.Type = {
-				tag: "type-compound",
-				base: e,
-				type_arguments: ts,
-			};
+class EnumMap {
+	private map = new DefaultMap<ir.EnumID, EnumVariantFns>(enumID => {
 
-			const variantList = [];
+		const constructors: Record<string, uf.FnID> = {};
+		const destructors: Record<string, uf.FnID> = {};
+		const tagValues: Record<string, uf.ValueID> = {};
 
-			const entity = this.program.enums[e];
-			const typeParameterMap = ir.typeArgumentsMap(entity.type_parameters, ts);
-			const constructors: Record<string, uf.FnID> = {};
-			const destructors: Record<string, uf.FnID> = {};
-			const tagValues: Record<string, uf.ValueID> = {};
-			for (const variant in entity.variants) {
-				variantList.push(variant);
-				const variantType = ir.typeSubstitute(entity.variants[variant], typeParameterMap);
-				constructors[variant] = this.smt.createFunction(enumType, {});
-				destructors[variant] = this.smt.createFunction(variantType, {});
+		const enumEntity = this.program.enums[enumID];
 
-				// Assign the tag value.
-				const tagValue = this.smt.createConstant(ir.T_INT, variantList.length);
-				tagValues[variant] = tagValue;
-			}
+		const instantiation = new Map<ir.TypeVariableID, ir.Type>();
+		const enumType: ir.TypeCompound = {
+			tag: "type-compound",
+			base: enumID,
+			type_arguments: [],
+		};
+		for (const parameter of enumEntity.type_parameters) {
+			instantiation.set(parameter, ir.T_ANY);
+			enumType.type_arguments.push(ir.T_ANY);
+		}
 
-			return {
-				extractTag: this.smt.createFunction(ir.T_INT, {}),
-				constructors,
-				destructors,
-				tagValues,
-				variantList,
-			};
-		}));
+		let tagIndex = 0;
+		for (const variant in enumEntity.variants) {
+			const variantType = ir.typeSubstitute(enumEntity.variants[variant], instantiation);
+			constructors[variant] = this.smt.createFunction(enumType, {});
+			destructors[variant] = this.smt.createFunction(variantType, {});
+			tagValues[variant] = this.smt.createConstant(ir.T_INT, tagIndex);
+			tagIndex += 1;
+		}
+
+		return {
+			extractTag: this.smt.createFunction(ir.T_INT, {}),
+			constructors,
+			destructors,
+			tagValues,
+			typeID: this.smt.createFunction(ir.T_INT, {}),
+		};
+	});
 
 	constructor(
 		private program: ir.Program,
 		private smt: uf.UFTheory,
 	) { }
 
-	get(
-		entity: ir.EnumID,
-		ts: ir.Type[],
-	): EnumVariantFns {
-		return this.map.get(entity).get(ts);
+	hasTag(
+		enumID: ir.EnumID,
+		enumValue: uf.ValueID,
+		variant: string,
+		eq: { eq(a: uf.ValueID, b: uf.ValueID): uf.ValueID },
+	) {
+		const info = this.map.get(enumID);
+		const symbolicTag = this.smt.createApplication(info.extractTag, [enumValue]);
+		const testTag = info.tagValues[variant];
+
+		// Add a constraint that the tag takes on one of a small number of values.
+		const finiteAlternativesClause = [];
+		for (const variant in info.tagValues) {
+			const tagConstant = info.tagValues[variant];
+			finiteAlternativesClause.push(eq.eq(symbolicTag, tagConstant));
+		}
+
+		return {
+			testResult: eq.eq(symbolicTag, testTag),
+			finiteAlternativesClause,
+		};
+	}
+
+	construct(
+		enumID: ir.EnumID,
+		variantValue: uf.ValueID,
+		variant: string,
+	): uf.ValueID {
+		const info = this.map.get(enumID);
+		return this.smt.createApplication(info.constructors[variant], [variantValue]);
+	}
+
+	destruct(
+		enumID: ir.EnumID,
+		enumValue: uf.ValueID,
+		variant: string,
+	): uf.ValueID {
+		const info = this.map.get(enumID);
+		return this.smt.createApplication(info.destructors[variant], [enumValue]);
+	}
+
+	typeID(enumID: ir.EnumID, typeArgumentTypeIDs: uf.ValueID[]): uf.ValueID {
+		const info = this.map.get(enumID);
+		return this.smt.createApplication(info.typeID, typeArgumentTypeIDs);
 	}
 }
 
@@ -305,18 +388,26 @@ class VerificationState {
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true });
 
-	functions = new DefaultMap<ir.FunctionID, TypeArgumentsDefaultMap<uf.FnID[]>>(fID => new TypeArgumentsDefaultMap(ts => {
-		const fn = this.program.functions[fID];
+	/// Generates a SMT function for each return of each Shiru fn.
+	/// The first parameters are the type arguments (type id).
+	functions: DefaultMap<ir.FunctionID, uf.FnID[]> = new DefaultMap(fnID => {
+		const fn = this.program.functions[fnID];
 		if (fn === undefined) {
-			throw new Error("VerificationState.functions.get: undefined `" + fID + "`");
+			throw new Error("VerificationState.functions.get: undefined `" + fnID + "`");
 		}
-		const map = ir.typeArgumentsMap(fn.signature.type_parameters, ts);
+		const instantiation = new Map<ir.TypeVariableID, ir.Type>();
+		for (let i = 0; i < fn.signature.type_parameters.length; i++) {
+			instantiation.set(fn.signature.type_parameters[i], ir.T_ANY);
+		}
+
 		const out = [];
 		for (const r of fn.signature.return_types) {
-			out.push(this.smt.createFunction(ir.typeSubstitute(r, map), { eq: fn.signature.semantics?.eq }));
+			// Use a more generic "Any" type.
+			const resultType = ir.typeSubstitute(r, instantiation);
+			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }));
 		}
 		return out;
-	}));
+	});
 
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
 		const fn = this.program.foreign[op];
@@ -334,9 +425,8 @@ class VerificationState {
 	});
 
 	dynamicFunctions: DynamicFunctionMap;
-	constructorMap: ConstructorMap;
-	fieldMap: FieldMap;
-	variantMap: VariantMap;
+	recordMap: RecordMap;
+	enumMap: EnumMap;
 
 	recursivePreconditions: SignatureSet = {
 		blockedFunctions: {},
@@ -348,13 +438,69 @@ class VerificationState {
 		blockedInterfaces: {},
 	};
 
-	/// `scopes` is a stack of variable mappings. SSA variables aren't
+	/// `varScopes` is a stack of variable mappings. SSA variables aren't
 	/// reassigned, but can be shadowed (including within the same block).
-	private scopes: VerificationScope[] = [
+	private varScopes: VerificationScope[] = [
 		{
 			variables: new Map(),
 		}
 	];
+
+	/// `typeScopes` is a stack of type parameter --> TypeID values.
+	private typeScopes: Map<ir.TypeVariableID, uf.ValueID>[] = [];
+
+	pushTypeScope(scope: Map<ir.TypeVariableID, uf.ValueID>) {
+		this.typeScopes.push(scope);
+	}
+
+	popTypeScope() {
+		this.typeScopes.pop();
+	}
+
+	private unitTypeID = this.smt.createConstant(ir.T_INT, 21);
+	private booleanTypeID = this.smt.createConstant(ir.T_INT, 22);
+	private intTypeID = this.smt.createConstant(ir.T_INT, 23);
+	private bytesTypeID = this.smt.createConstant(ir.T_INT, 24);
+	private anyTypeID = this.smt.createConstant(ir.T_INT, 25);
+
+	getTypeID(t: ir.Type): uf.ValueID {
+		if (t.tag === "type-any") {
+			return this.anyTypeID;
+		} else if (t.tag === "type-primitive") {
+			if (t.primitive === "Unit") {
+				return this.unitTypeID;
+			} else if (t.primitive === "Boolean") {
+				return this.booleanTypeID;
+			} else if (t.primitive === "Int") {
+				return this.intTypeID;
+			} else if (t.primitive === "Bytes") {
+				return this.bytesTypeID;
+			} else {
+				const _: never = t.primitive;
+				throw new Error("getTypeID: unhandled primitive `" + t["primitive"] + "`");
+			}
+		} else if (t.tag === "type-variable") {
+			for (let i = this.typeScopes.length - 1; i >= 0; i--) {
+				const scope = this.typeScopes[i];
+				const mapping = scope.get(t.id);
+				if (mapping !== undefined) {
+					return mapping;
+				}
+			}
+			throw new Error("getTypeID: unmapped type-variable `" + t.id + "`");
+		} else if (t.tag === "type-compound") {
+			const args = t.type_arguments.map(x => this.getTypeID(x));
+			const base = t.base;
+			if (this.program.records[base] !== undefined) {
+				return this.recordMap.typeID(base as ir.RecordID, args);
+			} else {
+				return this.enumMap.typeID(base as ir.EnumID, args);
+			}
+		} else {
+			const _: never = t;
+			throw new Error("getTypeID: unhandled type tag `" + t["tag"] + "`");
+		}
+	}
 
 	/// `pathConstraints` is the stack of conditional constraints that must be
 	/// true to reach a position in the program.
@@ -371,9 +517,8 @@ class VerificationState {
 		this.program = program;
 		this.foreignInterpreters = foreignInterpeters;
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
-		this.constructorMap = new ConstructorMap(this.program, this.smt);
-		this.fieldMap = new FieldMap(this.program, this.smt);
-		this.variantMap = new VariantMap(this.program, this.smt);
+		this.recordMap = new RecordMap(this.program, this.smt);
+		this.enumMap = new EnumMap(this.program, this.smt);
 
 		// SMT requires at least one constraint.
 		this.smt.addConstraint([
@@ -390,13 +535,13 @@ class VerificationState {
 	}
 
 	pushDefinitionScope() {
-		this.scopes.push({
+		this.varScopes.push({
 			variables: new Map(),
 		});
 	}
 
 	popDefinitionScope() {
-		this.scopes.pop();
+		this.varScopes.pop();
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
@@ -429,7 +574,7 @@ class VerificationState {
 	}
 
 	defineVariable(variable: ir.VariableDefinition, value: uf.ValueID) {
-		const scope = this.scopes[this.scopes.length - 1];
+		const scope = this.varScopes[this.varScopes.length - 1];
 		scope.variables.set(variable.variable, {
 			type: variable.type,
 			value: value,
@@ -437,8 +582,8 @@ class VerificationState {
 	}
 
 	getValue(variable: ir.VariableID) {
-		for (let i = this.scopes.length - 1; i >= 0; i--) {
-			const scope = this.scopes[i];
+		for (let i = this.varScopes.length - 1; i >= 0; i--) {
+			const scope = this.varScopes[i];
 			const value = scope.variables.get(variable);
 			if (value !== undefined) {
 				return value;
@@ -544,96 +689,67 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-field") {
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
-		const f = state.fieldMap.get(baseType.base, baseType.type_arguments, op.field);
-		const fieldValue = state.smt.createApplication(f, [object.value]);
+		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
 		const object = state.getValue(op.base);
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
-		const fns = state.variantMap.get(baseType.base, baseType.type_arguments);
-
-		const symbolicTag = state.smt.createApplication(fns.extractTag, [object.value]);
-
-		// Add a constraint that the tag takes on one of a small number of values.
-		const finiteAlternativesClause = [];
-		for (const variant in fns.tagValues) {
-			const tagConstant = fns.tagValues[variant];
-			finiteAlternativesClause.push(state.eq(symbolicTag, tagConstant));
-		}
-		state.smt.addConstraint(finiteAlternativesClause);
-
-		const testTagValue = fns.tagValues[op.variant];
-		state.defineVariable(op.destination, state.eq(symbolicTag, testTagValue));
+		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
+		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
+		state.defineVariable(op.destination, tagInfo.testResult);
 		return;
 	} else if (op.tag === "op-variant") {
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
-		const fns = state.variantMap.get(baseType.base, baseType.type_arguments);
 
-		const symbolicTag = state.smt.createApplication(fns.extractTag, [object.value]);
-		const requiredTag = fns.tagValues[op.variant];
+		// Check that the symbolic tag definitely matches this variant.
+		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
+		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
 
-		if (fns.variantList.length > 1) {
-			// Check that the symbolic tag definitely matches this variant.
-			state.pushPathConstraint(
-				state.negate(state.eq(symbolicTag, requiredTag))
-			);
-			const reason: FailedVariantVerification = {
-				tag: "failed-variant",
-				enumType: baseType.base + "[???]",
-				variant: op.variant,
-				accessLocation: op.diagnostic_location,
-			};
-			const refutation = state.checkReachable(reason);
-			if (refutation !== "refuted") {
-				reason.enumType = displayType(baseType);
-				state.failedVerifications.push(reason);
-			}
-
-			state.markPathUnreachable();
-			state.popPathConstraint();
+		state.pushPathConstraint(
+			state.negate(tagInfo.testResult)
+		);
+		const reason: FailedVariantVerification = {
+			tag: "failed-variant",
+			enumType: baseType.base + "[???]",
+			variant: op.variant,
+			accessLocation: op.diagnostic_location,
+		};
+		const refutation = state.checkReachable(reason);
+		if (refutation !== "refuted") {
+			reason.enumType = displayType(baseType);
+			state.failedVerifications.push(reason);
 		}
 
+		state.markPathUnreachable();
+		state.popPathConstraint();
+
 		// Extract the field.
-		const f = fns.destructors[op.variant];
-		const variantValue = state.smt.createApplication(f, [object.value]);
+		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
-		const fieldNames = Object.keys(op.fields).sort();
-		const fields = [];
-		for (let field of fieldNames) {
-			fields.push(state.getValue(op.fields[field]).value);
+		const fields: Record<string, uf.ValueID> = {}
+		for (const field in op.fields) {
+			fields[field] = state.getValue(op.fields[field]).value;
 		}
 		const recordType = op.destination.type as ir.TypeCompound & { base: ir.RecordID };
-		const constructor = state.constructorMap.get(recordType.base, recordType.type_arguments);
-		const recordValue = state.smt.createApplication(constructor, fields);
+		const recordValue = state.recordMap.construct(recordType.base, fields);
 		state.defineVariable(op.destination, recordValue);
-		for (let i = 0; i < fields.length; i++) {
-			const getField = state.fieldMap.get(recordType.base, recordType.type_arguments, fieldNames[i]);
-			state.smt.addConstraint([
-				state.eq(fields[i], state.smt.createApplication(getField, [recordValue])),
-			]);
-		}
 		return;
 	} else if (op.tag === "op-new-enum") {
 		const enumType = op.destination.type as ir.TypeCompound & { base: ir.EnumID };
-		const fns = state.variantMap.get(enumType.base, enumType.type_arguments);
-		const constructor = fns.constructors[op.variant];
 		const variantValue = state.getValue(op.variantValue).value;
-		const enumValue = state.smt.createApplication(constructor, [variantValue]);
+		const enumValue = state.enumMap.construct(enumType.base, variantValue, op.variant);
 		state.defineVariable(op.destination, enumValue);
 
-		const tagConstant = fns.tagValues[op.variant];
-		const tag = state.smt.createApplication(fns.extractTag, [enumValue]);
-		state.smt.addConstraint([state.eq(tagConstant, tag)]);
+		const tagInfo = state.enumMap.hasTag(enumType.base, enumValue, op.variant, state);
+		state.smt.addConstraint([tagInfo.testResult]);
 
-		const getVariant = fns.destructors[op.variant];
-		state.smt.addConstraint([
-			state.eq(variantValue, state.smt.createApplication(getVariant, [enumValue])),
-		]);
+		const destruction = state.enumMap.destruct(enumType.base, enumValue, op.variant);
+		state.smt.addConstraint([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, new Map(), op.body, state, context);
@@ -770,6 +886,18 @@ function traverseStaticCall(
 		args.push(state.getValue(op.arguments[i]).value);
 	}
 
+	const subscope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < op.type_arguments.length; i++) {
+		const typeParameter = signature.type_parameters[i];
+		const typeArgument = op.type_arguments[i];
+		subscope.set(typeParameter, state.getTypeID(typeArgument));
+		args.push(state.getTypeID(typeArgument));
+	}
+
+	// When contracts refer to a type parameter like `#T`, its symbolic type ID
+	// will be retrieved from this map:
+	state.pushTypeScope(subscope);
+
 	if (state.recursivePreconditions.blockedFunctions[fn] !== undefined) {
 		throw new diagnostics.RecursivePreconditionErr({
 			callsite: op.diagnostic_callsite,
@@ -812,7 +940,7 @@ function traverseStaticCall(
 		delete state.recursivePreconditions.blockedFunctions[fn];
 	}
 
-	const smtFns = state.functions.get(fn).get(op.type_arguments);
+	const smtFns = state.functions.get(fn);
 	for (let i = 0; i < op.destinations.length; i++) {
 		const result = state.smt.createApplication(smtFns[i], args);
 		state.defineVariable(op.destinations[i], result);
@@ -844,4 +972,6 @@ function traverseStaticCall(
 			delete state.recursivePostconditions.blockedFunctions[fn];
 		}
 	}
+
+	state.popTypeScope();
 }

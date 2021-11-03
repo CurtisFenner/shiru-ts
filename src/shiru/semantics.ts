@@ -2429,6 +2429,33 @@ function compileVarSt(
 	}
 }
 
+function compileAssertSt(
+	statement: grammar.AssertSt,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+) {
+	// TODO: Introduce proof context.
+	const conditionTuple = compileExpression(statement.expression, ops, stack, typeScope, context);
+	const asserted = expectOneBooleanForContract(conditionTuple, typeScope, context, "assert");
+	ops.push({
+		tag: "op-branch",
+		condition: asserted.variable,
+		trueBranch: { ops: [] },
+		falseBranch: {
+			ops: [
+				{
+					tag: "op-unreachable",
+					diagnostic_kind: "contract",
+					diagnostic_location: statement.location,
+				},
+			],
+		},
+		destinations: [],
+	});
+}
+
 function compileReturnSt(
 	statement: grammar.ReturnSt,
 	ops: ir.Op[],
@@ -2566,6 +2593,9 @@ function compileStatement(
 		return;
 	} else if (statement.tag === "if") {
 		compileIfSt(statement, ops, stack, typeScope, context);
+		return;
+	} else if (statement.tag === "assert") {
+		compileAssertSt(statement, ops, stack, typeScope, context);
 		return;
 	} else if (statement.tag === "unreachable") {
 		ops.push({

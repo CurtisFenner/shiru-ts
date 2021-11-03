@@ -505,18 +505,12 @@ export const tests = {
 
 		record Main {
 			fn main(): Boolean {
-				if Gen[Int].depends() == 1 implies Gen[Int].depends() == 1 {
-				} else {
-					unreachable;
-				}
+				assert Gen[Int].depends() == 1 implies Gen[Int].depends() == 1;
 
-				if Gen[Int].depends() == 1 implies Gen[Boolean].depends() == 1 {
-				} else {
-					// This does not follow because Shiru's verifier does not assume
-					// that functions are parametric; Int and Boolean could have
-					// different behavior.
-					unreachable;
-				}
+				// This does not follow because Shiru's verifier does not assume
+				// that functions are parametric; Int and Boolean could have
+				// different behavior.
+				assert Gen[Int].depends() == 1 implies Gen[Boolean].depends() == 1;
 
 				return true;
 			}
@@ -529,7 +523,7 @@ export const tests = {
 		assert(failures, "is equal to", [
 			{
 				tag: "failed-assert",
-				assertLocation: { fileID: "test-file", offset: 665, length: 12 },
+				assertLocation: { fileID: "test-file", offset: 545, length: 67 },
 			},
 		]);
 	},
@@ -587,10 +581,7 @@ export const tests = {
 
 		record Main {
 			fn main(): Boolean {
-				if Inspector[Int].produce() == Gen[Int].depends() {
-				} else {
-					unreachable;
-				}
+				assert Inspector[Int].produce() == Gen[Int].depends();
 				return false;
 			}
 		}

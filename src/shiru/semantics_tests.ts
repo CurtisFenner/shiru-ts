@@ -996,4 +996,51 @@ export const tests = {
 			],
 		});
 	},
+	"attempt-assert-non-integer"() {
+		const source = `
+		package example;
+		
+		record Main {
+			fn main(): Boolean {
+				assert 10;
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"A contract expression with type `Int` at",
+				{ fileID: "test-file", offset: 74, length: 2 },
+				"cannot be converted to the type `Boolean` as required of ",
+				"`assert` conditions.",
+			],
+		});
+	},
+	"attempt-assert-tuple"() {
+		const source = `
+		package example;
+		
+		record Main {
+			fn twoBooleans(): Boolean, Boolean {
+				return true, true;
+			}
+
+			fn main(): Boolean {
+				assert Main.twoBooleans();
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"An expression has 2 values and so cannot be grouped ",
+				"by a `assert` operation at",
+				{ fileID: "test-file", offset: 143, length: 18 },
+			],
+		});
+	},
 };

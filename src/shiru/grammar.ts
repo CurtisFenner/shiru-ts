@@ -236,6 +236,7 @@ const tokens = {
 };
 
 const keywords = {
+	assert: keywordParser("assert"),
 	class: keywordParser("class"),
 	else: keywordParser("else"),
 	ensures: keywordParser("ensures"),
@@ -454,10 +455,17 @@ export interface ElseClause {
 	body: Block,
 }
 
-export type Statement = VarSt | ReturnSt | IfSt | UnreachableSt;
+export type Statement = VarSt | ReturnSt | IfSt | AssertSt | UnreachableSt;
 
 export interface UnreachableSt {
 	tag: "unreachable",
+
+	location: SourceLocation,
+}
+
+export interface AssertSt {
+	tag: "assert",
+	expression: Expression,
 
 	location: SourceLocation,
 }
@@ -587,6 +595,7 @@ export type ExpressionAtom = ExpressionParenthesized
 	| ExpressionConstraintCall;
 
 type ASTs = {
+	AssertSt: AssertSt,
 	Block: Block,
 	Definition: Definition,
 	ElseClause: ElseClause,
@@ -640,6 +649,15 @@ type ASTs = {
 };
 
 export const grammar: ParsersFor<Token, ASTs> = {
+	AssertSt: new StructParser(() => ({
+		_assert: keywords.assert,
+		tag: new ConstParser("assert"),
+		expression: grammar.Expression
+			.required(parseProblem("Expected an expression at", atHead,
+				"after `assert`")),
+		_semicolon: punctuation.semicolon
+			.required(parseProblem("Expected a `;` after assert condition at", atHead)),
+	})),
 	Block: new RecordParser(() => ({
 		_open: punctuation.curlyOpen,
 		statements: new RepeatParser(grammar.Statement),
@@ -970,7 +988,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_eof: eofParser
 			.required(parseProblem("Expected another definition at", atHead)),
 	})),
-	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt", "UnreachableSt"),
+	Statement: choice(() => grammar, "VarSt", "ReturnSt", "IfSt", "AssertSt", "UnreachableSt"),
 	Type: new ChoiceParser<Token, Type>(() => [grammar.TypeNamed, tokens.typeKeyword, tokens.typeVarIden]),
 	TypeArguments: new RecordParser(() => ({
 		_open: punctuation.squareOpen,

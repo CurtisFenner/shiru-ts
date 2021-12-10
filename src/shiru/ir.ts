@@ -145,11 +145,11 @@ export interface BranchPhi {
 
 	/// `trueSource` is the local variable within the `trueBranch` block which
 	/// contains this value of this variable if the `true` branch was taken.
-	trueSource: VariableID | "undef",
+	trueSource: { tag: "variable", variable: VariableID } | "undef",
 
 	/// `falseSource` is the local variable within the `falseBranch` block which
 	/// contains the vlaue of this variable if the `false` branch was taken.
-	falseSource: VariableID | "undef",
+	falseSource: { tag: "variable", variable: VariableID } | "undef",
 }
 
 /// `OpNewRecord` defines a new variable with a newly created instance of a
@@ -368,6 +368,9 @@ export interface FunctionSignature {
 	/// The type-parameters bound by this signature.
 	/// For a IRInterface signature, this does NOT include the type-parameters
 	/// of the interface.
+	/// For an impl function, these correspond to
+	/// <`for_any` of containing impl>.concat(<type_parameters of interface signature>)
+	/// but the names may be different.
 	type_parameters: TypeVariableID[],
 
 	/// A v-table is passed at runtime for each constraint in

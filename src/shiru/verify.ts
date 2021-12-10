@@ -9,19 +9,120 @@ export function verifyProgram(
 ): FailedVerification[] {
 	const problems = [];
 
-	// 1) Verify each function body,
-	for (let f in program.functions) {
-		problems.push(...verifyFunction(program, f));
+	// Index impls by their interface signatures.
+	const interfaceSignaturesByImplFn = indexInterfaceSignaturesByImplFn(program);
+
+	// Verify each interface signature.
+	for (const i in program.interfaces) {
+		problems.push(...verifyInterface(program, i, interfaceSignaturesByImplFn));
 	}
 
-	// 2) Verify that each interface implementation
-	for (let v in program.globalVTableFactories) {
-		// 2a) has weaker preconditions
-		// 2b) has stronger postconditions
-		problems.push(...verifyImpl(program, v));
+	// Verify each function body.
+	for (let f in program.functions) {
+		problems.push(...verifyFunction(program, f, interfaceSignaturesByImplFn));
 	}
 
 	return problems;
+}
+
+function verifyInterface(
+	program: ir.Program,
+	interfaceName: string,
+	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
+): FailedVerification[] {
+	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
+	const trait = program.interfaces[interfaceName];
+
+	// Create the type scope for the interface's subjects.
+	const interfaceTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < trait.type_parameters.length; i++) {
+		const typeVariable = trait.type_parameters[i];
+		const typeID = state.smt.createVariable(ir.T_ANY);
+		interfaceTypeScope.set(typeVariable, typeID);
+	}
+	state.pushTypeScope(interfaceTypeScope);
+
+	// Validate that the interface's contracts are well-formed, in that
+	// they explicitly guarantee their internal preconditions.
+	for (const member in trait.signatures) {
+		const signature = trait.signatures[member];
+
+		// Create the type scope for this member's type parameters.
+		const signatureTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+		for (let i = 0; i < signature.type_parameters.length; i++) {
+			const typeVariable = signature.type_parameters[i];
+			const typeID = state.smt.createVariable(ir.T_ANY);
+			signatureTypeScope.set(typeVariable, typeID);
+		}
+
+		state.pushTypeScope(signatureTypeScope);
+		const functionScope = state.pushVariableScope(true);
+
+		// Create symbolic values for the arguments.
+		for (const parameter of signature.parameters) {
+			state.defineVariable(parameter, state.smt.createVariable(parameter.type));
+		}
+
+		// Verify that preconditions explicitly state their own preconditions,
+		// and assume that they hold for postconditions.
+		for (const precondition of signature.preconditions) {
+			traverseBlock(program, new Map(), precondition.block, state, {
+				// Return ops within a precondition don't have their own
+				// postconditions.
+				verifyAtReturn: [],
+			}, () => {
+				state.assumeGuaranteedInPath(precondition.precondition);
+			});
+		}
+
+		// Create symbolic values for the returns.
+		const symbolicReturned = [];
+		for (const r of signature.return_types) {
+			symbolicReturned.push(state.smt.createVariable(r));
+		}
+
+		for (const postcondition of signature.postconditions) {
+			const local = new Map<ir.VariableDefinition, uf.ValueID>();
+			for (let i = 0; i < symbolicReturned.length; i++) {
+				local.set(postcondition.returnedValues[i], symbolicReturned[i]);
+			}
+			traverseBlock(program, local, postcondition.block, state, {
+				// Return ops within a postcondition don't have their own
+				// postconditions.
+				verifyAtReturn: [],
+			}, () => {
+				state.assumeGuaranteedInPath(postcondition.postcondition);
+			});
+		}
+
+		state.popVariableScope(functionScope);
+		state.popTypeScope();
+	}
+
+	state.popTypeScope();
+
+	return state.failedVerifications;
+}
+
+interface IndexedImpl {
+	implID: string,
+	memberID: string,
+}
+
+function indexInterfaceSignaturesByImplFn(
+	program: ir.Program,
+): DefaultMap<ir.FunctionID, IndexedImpl[]> {
+	const map = new DefaultMap<ir.FunctionID, IndexedImpl[]>(_ => []);
+
+	// Add each implementation to the map.
+	for (const implID in program.globalVTableFactories) {
+		const impl = program.globalVTableFactories[implID];
+		for (const memberID in impl.entries) {
+			const implMember = impl.entries[memberID];
+			map.get(implMember.implementation).push({ implID, memberID });
+		}
+	}
+	return map;
 }
 
 const foreignInterpeters = {
@@ -39,106 +140,303 @@ const foreignInterpeters = {
 	},
 };
 
+function assumeStaticPreconditions(
+	program: ir.Program,
+	signature: ir.FunctionSignature,
+	valueArguments: uf.ValueID[],
+	typeArguments: uf.ValueID[],
+	state: VerificationState,
+): void {
+	if (signature.type_parameters.length !== typeArguments.length) {
+		throw new Error("ICE: type argument count mismatch");
+	} else if (signature.parameters.length !== valueArguments.length) {
+		throw new Error("ICE: value argument count mismatch");
+	}
+
+	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < signature.type_parameters.length; i++) {
+		typeScope.set(signature.type_parameters[i], typeArguments[i]);
+	}
+
+	const valueScope = new Map<ir.VariableDefinition, uf.ValueID>();
+	for (let i = 0; i < signature.parameters.length; i++) {
+		valueScope.set(signature.parameters[i], valueArguments[i]);
+	}
+
+	const hidingTypeScope = state.pushHidingTypeScope();
+	state.pushTypeScope(typeScope);
+	const variableScope = state.pushVariableScope(true);
+
+	for (let i = 0; i < signature.preconditions.length; i++) {
+		const precondition = signature.preconditions[i];
+		traverseBlock(program, valueScope, precondition.block, state, {
+			// Return ops within a precondition block do not have their own
+			// postconditions.
+			verifyAtReturn: [],
+		}, () => {
+			state.assumeGuaranteedInPath(precondition.precondition);
+		});
+	}
+
+	state.popVariableScope(variableScope);
+	state.popTypeScope();
+	state.popHidingTypeScope(hidingTypeScope);
+}
+
+/// implFnTypeArguments: The arguments to the impl fn. These are the impl's
+/// "for_any" type parameters, followed by the interface-signature's type
+/// parameters.
+function assumeConstraintPreconditions(
+	program: ir.Program,
+	valueArguments: uf.ValueID[],
+	implFnTypeArguments: uf.ValueID[],
+	implementing: IndexedImpl,
+	state: VerificationState,
+): void {
+	const impl = program.globalVTableFactories[implementing.implID];
+	const interfaceEntity = program.interfaces[impl.provides.interface];
+	const interfaceSignature = interfaceEntity.signatures[implementing.memberID];
+
+	if (implFnTypeArguments.length !== impl.for_any.length + interfaceSignature.type_parameters.length) {
+		throw new Error("ICE: mismatching implFnTypeArguments.length");
+	}
+
+	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < interfaceEntity.type_parameters.length; i++) {
+		const typeParameter = interfaceEntity.type_parameters[i];
+		const typeArgument = state.getTypeID(impl.provides.subjects[i]);
+		typeScope.set(typeParameter, typeArgument);
+	}
+	for (let i = 0; i < interfaceSignature.type_parameters.length; i++) {
+		const typeParameter = interfaceSignature.type_parameters[i];
+		const typeArgument = implFnTypeArguments[impl.for_any.length + i];
+		typeScope.set(typeParameter, typeArgument);
+	}
+
+	const variableScope = new Map<ir.VariableDefinition, uf.ValueID>();
+	for (let i = 0; i < valueArguments.length; i++) {
+		variableScope.set(interfaceSignature.parameters[i], valueArguments[i]);
+	}
+
+	const hidingTypeScope = state.pushHidingTypeScope();
+	state.pushTypeScope(typeScope);
+	const hidingVariableScope = state.pushVariableScope(true);
+
+	for (const precondition of interfaceSignature.preconditions) {
+		traverseBlock(program, variableScope, precondition.block, state, {
+			verifyAtReturn: [],
+		}, () => {
+			state.assumeGuaranteedInPath(precondition.precondition);
+		});
+	}
+
+	state.popVariableScope(hidingVariableScope);
+	state.popTypeScope();
+	state.popHidingTypeScope(hidingTypeScope);
+}
+
+function generateToVerifyFromConstraint(
+	program: ir.Program,
+	valueArguments: uf.ValueID[],
+	implFnTypeArguments: uf.ValueID[],
+	implementing: IndexedImpl,
+	state: VerificationState,
+): VerifyAtReturn[] {
+	const impl = program.globalVTableFactories[implementing.implID];
+	const interfaceEntity = program.interfaces[impl.provides.interface];
+	const interfaceSignature = interfaceEntity.signatures[implementing.memberID];
+
+	if (implFnTypeArguments.length !== impl.for_any.length + interfaceSignature.type_parameters.length) {
+		throw new Error("ICE: mismatching implFnTypeArguments.length");
+	}
+
+	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < interfaceEntity.type_parameters.length; i++) {
+		const typeParameter = interfaceEntity.type_parameters[i];
+		const typeArgument = state.getTypeID(impl.provides.subjects[i]);
+		typeScope.set(typeParameter, typeArgument);
+	}
+	for (let i = 0; i < interfaceSignature.type_parameters.length; i++) {
+		const typeParameter = interfaceSignature.type_parameters[i];
+		const typeArgument = implFnTypeArguments[impl.for_any.length + i];
+		typeScope.set(typeParameter, typeArgument);
+	}
+
+	const out: VerifyAtReturn[] = [];
+	for (const postcondition of interfaceSignature.postconditions) {
+		const variableScope = new Map<ir.VariableDefinition, VerifyAtReturnSource>();
+		for (let i = 0; i < valueArguments.length; i++) {
+			variableScope.set(interfaceSignature.parameters[i], { tag: "symbolic", symbolic: valueArguments[i] });
+		}
+		for (let i = 0; i < postcondition.returnedValues.length; i++) {
+			variableScope.set(postcondition.returnedValues[i], { tag: "returned", returnedIndex: i });
+		}
+
+		out.push({
+			postcondition,
+			variableScope,
+			typeIDScope: typeScope,
+		});
+	}
+	return out;
+}
+
+function generateToVerifyFromStatic(
+	signature: ir.FunctionSignature,
+	valueArguments: uf.ValueID[],
+	typeArguments: uf.ValueID[],
+): VerifyAtReturn[] {
+	if (signature.type_parameters.length !== typeArguments.length) {
+		throw new Error("ICE: type argument count mismatch");
+	} else if (signature.parameters.length !== valueArguments.length) {
+		throw new Error("ICE: value argument count mismatch");
+	}
+
+	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	for (let i = 0; i < signature.type_parameters.length; i++) {
+		typeScope.set(signature.type_parameters[i], typeArguments[i]);
+	}
+
+	const out: VerifyAtReturn[] = [];
+	for (const postcondition of signature.postconditions) {
+		// Setup verify-at-return for this postcondition.
+		const variableScope = new Map<ir.VariableDefinition, VerifyAtReturnSource>();
+		for (let i = 0; i < signature.parameters.length; i++) {
+			variableScope.set(signature.parameters[i], { tag: "symbolic", symbolic: valueArguments[i] });
+		}
+		for (let i = 0; i < postcondition.returnedValues.length; i++) {
+			variableScope.set(postcondition.returnedValues[i], { tag: "returned", returnedIndex: i });
+		}
+		out.push({
+			postcondition,
+			variableScope,
+			typeIDScope: typeScope,
+		});
+	}
+	return out;
+}
+
+function verifyPostconditionWellFormedness(
+	program: ir.Program,
+	signature: ir.FunctionSignature,
+	state: VerificationState,
+	verifyAtReturns: VerifyAtReturn[],
+): void {
+	state.smt.pushScope();
+	let symbolicReturned = [];
+	for (const r of signature.return_types) {
+		symbolicReturned.push(state.smt.createVariable(r));
+	}
+	for (const verifyAtReturn of verifyAtReturns) {
+		const valueArgs = new Map<ir.VariableDefinition, uf.ValueID>();
+		for (const [k, v] of verifyAtReturn.variableScope) {
+			if (v.tag === "returned") {
+				valueArgs.set(k, symbolicReturned[v.returnedIndex]);
+			} else {
+				valueArgs.set(k, v.symbolic);
+			}
+		}
+		assumePostcondition(program, valueArgs, verifyAtReturn.typeIDScope, verifyAtReturn.postcondition, state);
+	}
+	state.smt.popScope();
+}
+
+/// interfaceSignaturesByImplFn: Explains which interface signatures each fn
+/// implements. Any preconditions from the indicated interfaces should be
+/// automatically assumed, and any postconditions should be automatically
+/// checked.
 function verifyFunction(
 	program: ir.Program,
 	fName: string,
+	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
 ): FailedVerification[] {
-	const state = new VerificationState(program, foreignInterpeters);
+	const interfaceSignatures = interfaceSignaturesByImplFn.get(fName as ir.FunctionID);
+	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
 
 	const f = program.functions[fName];
 
 	// Create the initial type scope, which maps each type parameter to an
 	// unknown symbolic type ID constant.
 	const typeScope = new Map<ir.TypeVariableID, uf.ValueID>();
+	const typeArguments = [];
 	for (let i = 0; i < f.signature.type_parameters.length; i++) {
 		const typeParameter = f.signature.type_parameters[i];
-		typeScope.set(typeParameter, state.smt.createVariable(ir.T_ANY));
+		const typeArgument = state.smt.createVariable(ir.T_ANY);
+		typeArguments.push(typeArgument);
+		typeScope.set(typeParameter, typeArgument);
 	}
 	state.pushTypeScope(typeScope);
 
 	// Initialize the function's arguments.
-	const contextParameters = [];
+	const symbolicArguments = [];
 	for (let i = 0; i < f.signature.parameters.length; i++) {
 		const parameter = f.signature.parameters[i];
 
 		// Create a symbolic constant for the initial value of the parameter.
 		const symbolic = state.smt.createVariable(parameter.type);
 		state.defineVariable(parameter, symbolic);
-		contextParameters.push({
-			definition: parameter,
-			symbolic,
-		});
+		symbolicArguments.push(symbolic);
 	}
 
 	// Execute and validate the function's preconditions.
-	for (let i = 0; i < f.signature.preconditions.length; i++) {
-		const precondition = f.signature.preconditions[i];
-		traverseBlock(program, new Map(), precondition.block, state, {
-			// Return statements do not return a value.
-			returnsPostConditions: [],
-			parameters: contextParameters,
-		}, () => {
-			const bool = state.getValue(precondition.precondition).value;
-			state.pushPathConstraint(state.negate(bool));
-			state.markPathUnreachable();
-			state.popPathConstraint();
-		});
+	assumeStaticPreconditions(program, f.signature, symbolicArguments, typeArguments, state);
+
+	const verifyAtReturns: VerifyAtReturn[] = [];
+
+	// Collect postconditions from an impl fn.
+	for (const interfaceSignatureReference of interfaceSignatures) {
+		if (f.signature.preconditions.length !== 0) {
+			throw new Error("impl function `" + fName + "` must not impose explicit preconditions");
+		}
+
+		assumeConstraintPreconditions(program, symbolicArguments, typeArguments, interfaceSignatureReference, state);
+		verifyAtReturns.push(...generateToVerifyFromConstraint(program, symbolicArguments, typeArguments, interfaceSignatureReference, state));
 	}
 
-	// Validate that the function's postconditions explicitly guarantee their
-	// requirements.
-	state.smt.pushScope();
-	let symbolicReturned = [];
-	for (const r of f.signature.return_types) {
-		symbolicReturned.push(state.smt.createVariable(r));
-	}
-	for (const postcondition of f.signature.postconditions) {
-		const local = new Map<ir.VariableDefinition, uf.ValueID>();
-		for (let i = 0; i < symbolicReturned.length; i++) {
-			local.set(postcondition.returnedValues[i], symbolicReturned[i]);
-		}
-		traverseBlock(program, local, postcondition.block, state, {
-			returnsPostConditions: [],
-			parameters: contextParameters,
-		}, () => {
-			const bool = state.getValue(postcondition.postcondition).value;
-			state.pushPathConstraint(state.negate(bool));
-			state.markPathUnreachable();
-			state.popPathConstraint();
-		});
-	}
-	state.smt.popScope();
+	// Collect explicit postconditions from a fn.
+	verifyAtReturns.push(...generateToVerifyFromStatic(f.signature, symbolicArguments, typeArguments));
+
+	// Validate that the function's postconditions are well-formed, in that they
+	// explicitly guarantee their internal preconditions.
+	verifyPostconditionWellFormedness(program, f.signature, state, verifyAtReturns);
 
 	// Check the function's body (including that each return op guarantees the
 	// ensured postconditions).
 	traverseBlock(program, new Map(), f.body, state, {
-		returnsPostConditions: f.signature.postconditions,
-		parameters: contextParameters,
+		verifyAtReturn: verifyAtReturns,
 	});
 
-	// The IR type-checker verifies that functions must end with a op-return or
-	// op-unreachable.
+	const lastOp = f.body.ops[f.body.ops.length - 1];
+	if (!ir.opTerminates(lastOp)) {
+		throw new Error("ICE: verifyFunction invoked on a function which does not obviously terminate");
+	}
+
 	return state.failedVerifications;
 }
 
-function verifyImpl(
-	program: ir.Program,
-	implName: string,
-): FailedVerification[] {
-	const state = new VerificationState(program, foreignInterpeters);
+/// Describes what value to bind to a parameter of a postcondition block.
+// "symbolic" values are used to supply the original arguments to the
+// postcondition; these can be stored as a "closure".
+// "returned" values are used to supply the operands of the op-return to the
+// postcondition.
+type VerifyAtReturnSource =
+	{ tag: "symbolic", symbolic: uf.ValueID }
+	| { tag: "returned", returnedIndex: number };
 
-	const impl = program.globalVTableFactories[implName];
-	const specification = program.interfaces[impl.provides.interface];
+interface VerifyAtReturn {
+	postcondition: ir.Postcondition,
 
-	throw new Error("TODO: implement verifyImpl");
+	// The full (hiding) scope to use when executing the postcondition body.
+	variableScope: Map<ir.VariableDefinition, VerifyAtReturnSource>,
+
+	// The full (hiding) scope to use when determining the type-ID of a type
+	// parameter that appears within the postcondition body.
+	typeIDScope: Map<ir.TypeVariableID, uf.ValueID>,
 }
 
 interface VerificationContext {
 	/// The post-conditions to verify at a ReturnStatement.
-	returnsPostConditions: ir.Postcondition[],
-
-	/// The number of function parameters.
-	parameters: { definition: ir.VariableDefinition, symbolic: uf.ValueID }[],
+	verifyAtReturn: VerifyAtReturn[],
 }
 
 export type FailedVerification = FailedPreconditionVerification
@@ -182,48 +480,35 @@ interface SignatureSet {
 }
 
 interface VerificationScope {
+	token: symbol,
+	variableHiding: boolean,
 	variables: Map<ir.VariableID, { type: ir.Type, value: uf.ValueID }>,
 }
 
-// TODO: Optimize this to not do linear scans.
-class TypeArgumentsDefaultMap<V> {
-	private entries: { key: ir.Type[], value: V }[] = [];
-
-	constructor(private f: (key: ir.Type[]) => V) { }
-
-	get(key: ir.Type[]) {
-		for (const entry of this.entries) {
-			let all = true;
-			for (let i = 0; i < key.length; i++) {
-				if (!ir.equalTypes(key[i], entry.key[i])) {
-					all = false;
-					break;
-				}
-			}
-			if (all) {
-				return entry.value;
-			}
-		}
-		const value = this.f(key);
-		this.entries.push({ key: key.slice(0), value });
-		return value;
-	}
-}
-
 class DynamicFunctionMap {
-	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, TypeArgumentsDefaultMap<uf.FnID[]>>>(
-		i => new DefaultMap(s => new TypeArgumentsDefaultMap(ts => {
+	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, uf.FnID[]>>(
+		i => new DefaultMap(s => {
 			const interfaceIR = this.program.interfaces[i];
 			const signature = interfaceIR.signatures[s];
-			const map = ir.typeArgumentsMap(interfaceIR.type_parameters.concat(signature.type_parameters), ts);
+
+			const typeParameters = interfaceIR.type_parameters.concat(signature.type_parameters);
+			const anys = [];
+			for (let i = 0; i < typeParameters.length; i++) {
+				anys.push(ir.T_ANY);
+			}
+			const map = ir.typeArgumentsMap(typeParameters, anys);
 			const rs = signature.return_types.map(r => ir.typeSubstitute(r, map));
 			return rs.map(r => this.smt.createFunction(r, { eq: signature.semantics?.eq }));
-		})));
+		}));
 
 	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
 
-	get(interfaceID: ir.InterfaceID, signatureID: ir.FunctionID, typeArguments: ir.Type[]) {
-		return this.map.get(interfaceID).get(signatureID).get(typeArguments);
+	/// Retrieves the single function identity across all implementations of the
+	/// interface.
+	/// Invocations of the function in the SMT engine take
+	/// value arguments ++ interface type arguments ++ signature type arguments.
+	get(interfaceID: ir.InterfaceID, signatureID: ir.FunctionID) {
+		return this.map.get(interfaceID).get(signatureID);
 	}
 }
 
@@ -440,21 +725,43 @@ class VerificationState {
 
 	/// `varScopes` is a stack of variable mappings. SSA variables aren't
 	/// reassigned, but can be shadowed (including within the same block).
-	private varScopes: VerificationScope[] = [
+	private varScopes: Array<VerificationScope> = [
 		{
+			token: Symbol("root-scope"),
+			variableHiding: true,
 			variables: new Map(),
 		}
 	];
 
 	/// `typeScopes` is a stack of type parameter --> TypeID values.
-	private typeScopes: Map<ir.TypeVariableID, uf.ValueID>[] = [];
+	private typeScopes: Array<Map<ir.TypeVariableID, uf.ValueID> | symbol> = [];
+
+	/// Pushing a hiding scope hides all previous associations, allowing errors
+	/// to be noticed more easily.
+	pushHidingTypeScope(): symbol {
+		const token = Symbol("hiding-type-scope");
+		this.typeScopes.push(token);
+		return token;
+	}
 
 	pushTypeScope(scope: Map<ir.TypeVariableID, uf.ValueID>) {
 		this.typeScopes.push(scope);
 	}
 
 	popTypeScope() {
-		this.typeScopes.pop();
+		const top = this.typeScopes.pop();
+		if (top === undefined) {
+			throw new Error("popTypeScope: no scope open");
+		} else if (!(top instanceof Map)) {
+			throw new Error("popTypeScope: hiding scope open; expected call to popHidingTypeScope().");
+		}
+	}
+
+	popHidingTypeScope(expected: symbol) {
+		const top = this.typeScopes.pop();
+		if (top !== expected) {
+			throw new Error("popHidingTypeScope: did not find expected hiding type scope");
+		}
 	}
 
 	private unitTypeID = this.smt.createConstant(ir.T_INT, 21);
@@ -463,6 +770,7 @@ class VerificationState {
 	private bytesTypeID = this.smt.createConstant(ir.T_INT, 24);
 	private anyTypeID = this.smt.createConstant(ir.T_INT, 25);
 
+	/// `getTypeID` generates a symbolic constant representing the given type.
 	getTypeID(t: ir.Type): uf.ValueID {
 		if (t.tag === "type-any") {
 			return this.anyTypeID;
@@ -476,12 +784,15 @@ class VerificationState {
 			} else if (t.primitive === "Bytes") {
 				return this.bytesTypeID;
 			} else {
-				const _: never = t.primitive;
-				throw new Error("getTypeID: unhandled primitive `" + t["primitive"] + "`");
+				const un: never = t.primitive;
+				throw new Error("getTypeID: unhandled primitive `" + un + "`");
 			}
 		} else if (t.tag === "type-variable") {
 			for (let i = this.typeScopes.length - 1; i >= 0; i--) {
 				const scope = this.typeScopes[i];
+				if (typeof scope === "symbol") {
+					throw new Error("getTypeID: unmapped type-variable within hiding scope: `" + t.id + "`");
+				}
 				const mapping = scope.get(t.id);
 				if (mapping !== undefined) {
 					return mapping;
@@ -497,8 +808,8 @@ class VerificationState {
 				return this.enumMap.typeID(base as ir.EnumID, args);
 			}
 		} else {
-			const _: never = t;
-			throw new Error("getTypeID: unhandled type tag `" + t["tag"] + "`");
+			const un: never = t;
+			throw new Error("getTypeID: unhandled type tag `" + un["tag"] + "`");
 		}
 	}
 
@@ -510,15 +821,19 @@ class VerificationState {
 	// Multiple failures can be returned.
 	failedVerifications: FailedVerification[] = [];
 
+	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
+
 	constructor(
 		program: ir.Program,
 		foreignInterpeters: Record<string, uf.Semantics["interpreter"]>,
+		interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
 	) {
 		this.program = program;
 		this.foreignInterpreters = foreignInterpeters;
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.recordMap = new RecordMap(this.program, this.smt);
 		this.enumMap = new EnumMap(this.program, this.smt);
+		this.interfaceSignaturesByImplFn = interfaceSignaturesByImplFn;
 
 		// SMT requires at least one constraint.
 		this.smt.addConstraint([
@@ -534,14 +849,29 @@ class VerificationState {
 		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
-	pushDefinitionScope() {
+	pushVariableScope(variableHiding: boolean): symbol {
+		const token = Symbol("variable-scope");
 		this.varScopes.push({
+			token,
+			variableHiding,
 			variables: new Map(),
 		});
+		return token;
 	}
 
-	popDefinitionScope() {
-		this.varScopes.pop();
+	popVariableScope(expected: symbol): void {
+		const top = this.varScopes.pop();
+		if (!top || top.token !== expected) {
+			throw new Error("popVariableScope: did not find expected scope");
+		}
+	}
+
+	/// Modifies this state so that it assumes the given condition is always
+	/// true when at this path in the program.
+	assumeGuaranteedInPath(condition: ir.VariableID): void {
+		this.pushPathConstraint(this.negate(this.getValue(condition).value));
+		this.markPathUnreachable();
+		this.popPathConstraint();
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
@@ -550,6 +880,20 @@ class VerificationState {
 
 	popPathConstraint() {
 		this.pathConstraints.pop();
+	}
+
+	/// Determines whether or not the given condition is possibly false given
+	/// the current path constraints.
+	/// Returns `"refuted"` when it is not possible for the condition to be
+	/// false.
+	checkPossiblyFalseInPath(
+		condition: ir.VariableID,
+		reason: FailedVerification,
+	): uf.UFCounterexample | "refuted" {
+		this.pushPathConstraint(this.negate(this.getValue(condition).value));
+		const reply = this.checkReachable(reason);
+		this.popPathConstraint();
+		return reply;
 	}
 
 	/// `checkReachable` checks whether or not the conjunction of current path
@@ -566,13 +910,15 @@ class VerificationState {
 	}
 
 	/// `markPathUnreachable` ensures that the conjunction of the current path
-	/// constraints is not considered satisfiable in subsequent invocations of
+	/// constraints is considered not satisfiable in subsequent invocations of
 	/// the `smt` solver.
 	markPathUnreachable() {
 		const pathUnreachable = this.pathConstraints.map(e => this.negate(e));
 		this.smt.addConstraint(pathUnreachable);
 	}
 
+	/// `defineVariable` associates the given symbolic value with the given
+	/// name for the remainder of the current innermost scope.
 	defineVariable(variable: ir.VariableDefinition, value: uf.ValueID) {
 		const scope = this.varScopes[this.varScopes.length - 1];
 		scope.variables.set(variable.variable, {
@@ -581,15 +927,19 @@ class VerificationState {
 		});
 	}
 
+	/// `getValue` retrieves the value associated with the given name from the
+	/// innermost scope that defines it.
 	getValue(variable: ir.VariableID) {
 		for (let i = this.varScopes.length - 1; i >= 0; i--) {
 			const scope = this.varScopes[i];
 			const value = scope.variables.get(variable);
 			if (value !== undefined) {
 				return value;
+			} else if (scope.variableHiding) {
+				throw new Error("getValue: variable `" + variable + "` is not defined within the containing hiding scope");
 			}
 		}
-		throw new Error("variable `" + variable + "` is not defined");
+		throw new Error("getValue: variable `" + variable + "` is not defined");
 	}
 }
 
@@ -602,7 +952,7 @@ function traverseBlock(
 	then?: () => unknown,
 ) {
 	// Blocks bound variable scopes, so variables must be cleared after.
-	state.pushDefinitionScope();
+	const variableScope = state.pushVariableScope(false);
 
 	for (const [k, v] of locals) {
 		state.defineVariable(k, v);
@@ -618,7 +968,7 @@ function traverseBlock(
 	}
 
 	// Clear variables defined within this block.
-	state.popDefinitionScope();
+	state.popVariableScope(variableScope);
 }
 
 // MUTATES the verification state parameter, to add additional clauses that are
@@ -640,7 +990,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				if (source === "undef") continue;
 				state.smt.addConstraint([
 					state.negate(symbolicCondition),
-					state.eq(phis[i], state.getValue(source).value),
+					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
 			}
 		})
@@ -654,7 +1004,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				if (source === "undef") continue;
 				state.smt.addConstraint([
 					symbolicCondition,
-					state.eq(phis[i], state.getValue(source).value),
+					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
 			}
 		});
@@ -754,36 +1104,14 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, new Map(), op.body, state, context);
 	} else if (op.tag === "op-return") {
-		if (context.returnsPostConditions.length !== 0) {
-			for (let postcondition of context.returnsPostConditions) {
-				// The original parameters might have been shadowed, so they
-				// need to be redeclared.
-				const locals = new Map<ir.VariableDefinition, uf.ValueID>();
-				for (const parameter of context.parameters) {
-					locals.set(parameter.definition, parameter.symbolic);
-				}
-				for (let i = 0; i < postcondition.returnedValues.length; i++) {
-					locals.set(postcondition.returnedValues[i], state.getValue(op.sources[i]).value);
-				}
-
-				traverseBlock(program, locals, postcondition.block, state, context, () => {
-					const reason: FailedVerification = {
-						tag: "failed-postcondition",
-						returnLocation: op.diagnostic_return_site,
-						postconditionLocation: postcondition.location,
-					};
-
-					// Check if it's possible for the indicated boolean to be
-					// false.
-					const bool = state.getValue(postcondition.postcondition).value;
-					state.pushPathConstraint(state.negate(bool));
-					const refutation = state.checkReachable(reason);
-					state.popPathConstraint();
-					if (refutation !== "refuted") {
-						state.failedVerifications.push(reason);
-					}
-				});
+		if (context.verifyAtReturn.length !== 0) {
+			// Check that the postconditions from the context are satisfied by
+			// this return.
+			const returnedValues = [];
+			for (let i = 0; i < op.sources.length; i++) {
+				returnedValues.push(state.getValue(op.sources[i]).value);
 			}
+			checkVerifyAtReturns(program, state, returnedValues, context.verifyAtReturn, op.diagnostic_return_site);
 		}
 
 		// Subsequently, this path is treated as unreachable, since the function
@@ -824,27 +1152,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		}
 		return;
 	} else if (op.tag === "op-static-call") {
-		traverseStaticCall(program, op, state, context);
+		traverseStaticCall(program, op, state);
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		const typeArguments = op.constraint.subjects.concat(op.signature_type_arguments);
-		const fs = state.dynamicFunctions.get(op.constraint.interface, op.signature_id as ir.FunctionID, typeArguments);
-		const constraint = program.interfaces[op.constraint.interface];
-		const signature = constraint.signatures[op.signature_id];
-
-		for (let precondition of signature.preconditions) {
-			throw new Error("TODO");
-		}
-
-		for (let postcondition of signature.postconditions) {
-			throw new Error("TODO");
-		}
-
-		if (signature.semantics?.eq === true) {
-			throw new Error("TODO");
-		}
-
-		throw new Error("traverse: TODO: op-dynamic-call");
+		traverseDynamicCall(program, op, state);
 		return;
 	} else if (op.tag === "op-unreachable") {
 		// TODO: Better classify verification failures.
@@ -872,31 +1183,137 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	throw new Error(`unhandled op ${op["tag"]}`);
 }
 
+/// checkPrecondition inspects the state and ensures that the precondition
+/// invoked with the given scope is satisfied.
+function checkPrecondition(
+	program: ir.Program,
+	valueArgs: Map<ir.VariableDefinition, uf.ValueID>,
+	typeArgs: Map<ir.TypeVariableID, uf.ValueID>,
+	precondition: ir.Precondition,
+	state: VerificationState,
+	reason: FailedVerification,
+): void {
+	// When contracts of `fn` refer to a type parameter like `#T`, its symbolic
+	// type ID will be retrieved from only the `typeArgs` map:
+	const hidingTypeScope = state.pushHidingTypeScope();
+	state.pushTypeScope(typeArgs);
+
+	traverseBlock(program, valueArgs, precondition.block, state, {
+		// Return ops within a precondition do not have their own
+		// postconditions.
+		verifyAtReturn: [],
+	}, () => {
+		if (state.checkPossiblyFalseInPath(precondition.precondition, reason) !== "refuted") {
+			state.failedVerifications.push(reason);
+		}
+	});
+
+	state.popTypeScope();
+	state.popHidingTypeScope(hidingTypeScope);
+}
+
+/// assumePostcondition modifies the state so that subsequent inspections can
+/// assume that this postcondition, invoked with the given scope, is satisfied.
+function assumePostcondition(
+	program: ir.Program,
+	valueArgs: Map<ir.VariableDefinition, uf.ValueID>,
+	typeArgs: Map<ir.TypeVariableID, uf.ValueID>,
+	postcondition: ir.Postcondition,
+	state: VerificationState,
+): void {
+	// When contracts of `fn` refer to a type parameter like `#T`, its symbolic
+	// type ID will be retrieved from only the `subscope` map:
+	const hidingTypeScope = state.pushHidingTypeScope();
+	state.pushTypeScope(typeArgs);
+	const postconditionScope = state.pushVariableScope(true);
+
+	traverseBlock(program, valueArgs, postcondition.block, state, {
+		// Return ops within a postcondition do not have their own postconditions.
+		verifyAtReturn: [],
+	}, () => {
+		state.assumeGuaranteedInPath(postcondition.postcondition);
+	});
+
+	state.popVariableScope(postconditionScope);
+	state.popTypeScope();
+	state.popHidingTypeScope(hidingTypeScope);
+}
+
+/// checkVerifyAtReturns inspects the current state to determine whether or not
+/// each postcondition is satisfied by the given returned values.
+function checkVerifyAtReturns(
+	program: ir.Program,
+	state: VerificationState,
+	returnedValues: uf.ValueID[],
+	verifyAtReturns: VerifyAtReturn[],
+	diagnosticReturnLocation: ir.SourceLocation,
+): void {
+	for (const verifyAtReturn of verifyAtReturns) {
+		// Bind the necessary inputs (parameters, returned values) for
+		// the postcondition.
+		const locals = new Map<ir.VariableDefinition, uf.ValueID>();
+		for (const [key, spec] of verifyAtReturn.variableScope) {
+			if (spec.tag === "returned") {
+				locals.set(key, returnedValues[spec.returnedIndex]);
+			} else {
+				const symbolicSource = spec.symbolic;
+				locals.set(key, symbolicSource);
+			}
+		}
+
+		const postconditionTypeScope = state.pushHidingTypeScope();
+		state.pushTypeScope(verifyAtReturn.typeIDScope);
+		const postconditionVariableScope = state.pushVariableScope(true);
+
+		traverseBlock(program, locals, verifyAtReturn.postcondition.block, state, {
+			// Return ops within a postcondition do not have their own
+			// postconditions.
+			verifyAtReturn: [],
+		}, () => {
+			const reason: FailedVerification = {
+				tag: "failed-postcondition",
+				returnLocation: diagnosticReturnLocation,
+				postconditionLocation: verifyAtReturn.postcondition.location,
+			};
+
+			// Check if it's possible for the indicated boolean to be
+			// false.
+			const refutation = state.checkPossiblyFalseInPath(verifyAtReturn.postcondition.postcondition, reason);
+			if (refutation !== "refuted") {
+				state.failedVerifications.push(reason);
+			}
+		});
+
+		state.popVariableScope(postconditionVariableScope);
+		state.popTypeScope();
+		state.popHidingTypeScope(postconditionTypeScope);
+	}
+}
+
 function traverseStaticCall(
 	program: ir.Program,
 	op: ir.OpStaticCall,
 	state: VerificationState,
-	context: VerificationContext,
-) {
+): void {
 	const fn = op.function;
 	const signature = program.functions[fn].signature;
-
-	const args = [];
-	for (let i = 0; i < op.arguments.length; i++) {
-		args.push(state.getValue(op.arguments[i]).value);
+	if (state.interfaceSignaturesByImplFn.get(fn).length !== 0) {
+		throw new Error("impl functions cannot be invoked directly by static calls");
 	}
 
-	const subscope = new Map<ir.TypeVariableID, uf.ValueID>();
+	const valueArgs = [];
+	for (let i = 0; i < op.arguments.length; i++) {
+		valueArgs.push(state.getValue(op.arguments[i]).value);
+	}
+
+	const typeArgs = [];
+	const typeArgsMap = new Map<ir.TypeVariableID, uf.ValueID>();
 	for (let i = 0; i < op.type_arguments.length; i++) {
 		const typeParameter = signature.type_parameters[i];
 		const typeArgument = op.type_arguments[i];
-		subscope.set(typeParameter, state.getTypeID(typeArgument));
-		args.push(state.getTypeID(typeArgument));
+		typeArgsMap.set(typeParameter, state.getTypeID(typeArgument));
+		typeArgs.push(state.getTypeID(typeArgument));
 	}
-
-	// When contracts refer to a type parameter like `#T`, its symbolic type ID
-	// will be retrieved from this map:
-	state.pushTypeScope(subscope);
 
 	if (state.recursivePreconditions.blockedFunctions[fn] !== undefined) {
 		throw new diagnostics.RecursivePreconditionErr({
@@ -906,72 +1323,95 @@ function traverseStaticCall(
 	} else {
 		state.recursivePreconditions.blockedFunctions[fn] = true;
 
+		const valueArgsMap = new Map<ir.VariableDefinition, uf.ValueID>();
+		for (let i = 0; i < valueArgs.length; i++) {
+			valueArgsMap.set(signature.parameters[i], valueArgs[i]);
+		}
+
 		for (const precondition of signature.preconditions) {
-			const recursiveContext: VerificationContext = {
-				returnsPostConditions: [],
-				parameters: [],
+			const reason: FailedVerification = {
+				tag: "failed-precondition",
+				callLocation: op.diagnostic_callsite,
+				preconditionLocation: precondition.location,
 			};
-			const locals = new Map<ir.VariableDefinition, uf.ValueID>();
-			for (let i = 0; i < op.arguments.length; i++) {
-				locals.set(signature.parameters[i], args[i]);
-				recursiveContext.parameters.push({
-					definition: signature.parameters[i],
-					symbolic: args[i],
-				});
-			}
 
-			traverseBlock(program, locals, precondition.block, state, recursiveContext, () => {
-				const reason: FailedVerification = {
-					tag: "failed-precondition",
-					callLocation: op.diagnostic_callsite,
-					preconditionLocation: precondition.location,
-				};
-
-				const bool = state.getValue(precondition.precondition).value;
-				state.pushPathConstraint(state.negate(bool));
-				const refutation = state.checkReachable(reason);
-				if (refutation !== "refuted") {
-					state.failedVerifications.push(reason);
-				}
-				state.popPathConstraint();
-			});
+			checkPrecondition(program, valueArgsMap, typeArgsMap, precondition, state, reason);
 		}
 
 		delete state.recursivePreconditions.blockedFunctions[fn];
 	}
 
 	const smtFns = state.functions.get(fn);
+	const results = [];
 	for (let i = 0; i < op.destinations.length; i++) {
-		const result = state.smt.createApplication(smtFns[i], args);
+		const result = state.smt.createApplication(smtFns[i], [...valueArgs, ...typeArgs]);
+		results.push(result);
 		state.defineVariable(op.destinations[i], result);
 	}
 
 	if (state.recursivePostconditions.blockedFunctions[fn] !== true) {
+		state.recursivePostconditions.blockedFunctions[fn] = true;
+
 		for (const postcondition of signature.postconditions) {
-			state.recursivePostconditions.blockedFunctions[fn] = true;
-			const locals = new Map<ir.VariableDefinition, uf.ValueID>();
+			const valueArgsMap = new Map<ir.VariableDefinition, uf.ValueID>();
 			for (let i = 0; i < op.arguments.length; i++) {
 				const variable = signature.parameters[i];
-				const value = state.getValue(op.arguments[i]).value;
-				locals.set(variable, value);
+				valueArgsMap.set(variable, valueArgs[i]);
 			}
 			for (let i = 0; i < op.destinations.length; i++) {
 				const variable = postcondition.returnedValues[i];
-				const value = state.getValue(op.destinations[i].variable).value;
-				locals.set(variable, value);
+				valueArgsMap.set(variable, results[i]);
 			}
 
-			// TODO: Do we need a different context?
-			traverseBlock(program, locals, postcondition.block, state, context, () => {
-				const bool = state.getValue(postcondition.postcondition).value;
-				state.pushPathConstraint(state.negate(bool));
-				state.markPathUnreachable();
-				state.popPathConstraint();
-			});
-
-			delete state.recursivePostconditions.blockedFunctions[fn];
+			assumePostcondition(program, valueArgsMap, typeArgsMap, postcondition, state);
 		}
+
+		delete state.recursivePostconditions.blockedFunctions[fn];
+	}
+}
+
+function traverseDynamicCall(
+	program: ir.Program,
+	op: ir.OpDynamicCall,
+	state: VerificationState,
+): void {
+	const constraint = program.interfaces[op.constraint.interface];
+	const signature = constraint.signatures[op.signature_id];
+
+	const typeArgsMap = new Map<ir.TypeVariableID, uf.ValueID>();
+	const typeArgsList = [];
+	for (let i = 0; i < op.constraint.subjects.length; i++) {
+		const t = op.constraint.subjects[i];
+		const id = state.getTypeID(t);
+		typeArgsMap.set(constraint.type_parameters[i], id);
+		typeArgsList.push(id);
+	}
+	for (let i = 0; i < op.signature_type_arguments.length; i++) {
+		const t = op.signature_type_arguments[i];
+		const id = state.getTypeID(t);
+		typeArgsMap.set(signature.type_parameters[i], id);
+		typeArgsList.push(id);
 	}
 
-	state.popTypeScope();
+	const valueArgs = op.arguments.map(v => state.getValue(v).value);
+
+	for (const precondition of signature.preconditions) {
+		throw new Error("TODO");
+	}
+
+	const smtFns = state.dynamicFunctions.get(op.constraint.interface, op.signature_id as ir.FunctionID);
+	const results = [];
+	for (let i = 0; i < op.destinations.length; i++) {
+		const result = state.smt.createApplication(smtFns[i], [...valueArgs, ...typeArgsList]);
+		results.push(result);
+		state.defineVariable(op.destinations[i], result);
+	}
+
+	for (const postcondition of signature.postconditions) {
+		throw new Error("TODO");
+	}
+
+	if (signature.semantics?.eq === true) {
+		throw new Error("TODO");
+	}
 }

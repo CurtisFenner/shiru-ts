@@ -677,3 +677,19 @@ export class ImplMissingInterfaceMember extends SemanticError {
 		]);
 	}
 }
+
+export class ImplMayNotHavePreconditionErr extends SemanticError {
+	constructor(args: {
+		impl: string,
+		memberName: string,
+		preconditionLocation: SourceLocation,
+	}) {
+		super([
+			"The member `" + args.memberName + "` of impl `",
+			args.impl + "` declares an additional precondition at",
+			args.preconditionLocation,
+			"However, impls may not state additional preconditions; ",
+			"preconditions on the interface are automatically applied.",
+		]);
+	}
+}

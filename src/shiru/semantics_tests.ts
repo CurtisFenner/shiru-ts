@@ -1043,4 +1043,53 @@ export const tests = {
 			],
 		});
 	},
+	"attempt-ensure-non-boolean-in-unused-interface"() {
+		const source = `
+		package example;
+		
+		interface I {
+			fn f(): Int
+			ensures 5;
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"A contract expression with type `Int` at",
+				{ fileID: "test-file", offset: 65, length: 1 },
+				"cannot be converted to the type `Boolean` as required of ",
+				"`ensures` conditions.",
+			],
+		});
+	},
+	"attempt-require-in-impl-fn"() {
+		const source = `
+		package example;
+
+		interface I {
+			fn f(a: Int): Int;
+		}
+
+		record R {}
+
+		impl R is I {
+			fn f(a: Int): Int
+			requires a == 1 {
+				return a;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"The member `f` of impl `",
+				"example.R is example.I` declares an additional precondition at",
+				{ fileID: "test-file", offset: 128, length: 6 },
+				"However, impls may not state additional preconditions; ",
+				"preconditions on the interface are automatically applied.",
+			],
+		});
+	},
 };

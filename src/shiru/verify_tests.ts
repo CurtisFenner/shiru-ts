@@ -592,4 +592,174 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"impl-must-ensure-interface-postcondition"() {
+		const source = `
+		package example;
+
+		record R {}
+
+		interface I {
+			fn f(): Boolean
+			ensures return;
+		}
+
+		impl R is I {
+			fn f(): Boolean {
+				return false;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-postcondition",
+				postconditionLocation: {
+					fileID: "test-file", offset: 82, length: 6,
+				},
+				returnLocation: {
+					fileID: "test-file", offset: 136, length: 13,
+				},
+			},
+		]);
+	},
+	"impl-may-assume-interface-precondition"() {
+		const source = `
+		package example;
+
+		record R {}
+
+		interface I {
+			fn f(a: Boolean): Boolean
+			requires a;
+		}
+
+		impl R is I {
+			fn f(b: Boolean): Boolean {
+				assert b;
+				return false;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"preconditions-of-calls-in-unimplemented-interface-requires-must-be-met"() {
+		const source = `
+		package example;
+
+		record R {
+			fn picky(n: Int): Boolean
+			requires n == 32 {
+				return true;
+			}
+		}
+
+		interface I {
+			fn i(k: Int): Int
+			requires R.picky(k);
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 161, length: 10 },
+				preconditionLocation: { fileID: "test-file", offset: 75, length: 7 },
+			},
+		]);
+	},
+	"preconditions-of-calls-in-unimplemented-interface-ensures-must-be-met"() {
+		const source = `
+		package example;
+
+		record R {
+			fn picky(n: Int): Boolean
+			requires n == 32 {
+				return true;
+			}
+		}
+
+		interface I {
+			fn i(): Int
+			ensures R.picky(return);
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 154, length: 15 },
+				preconditionLocation: { fileID: "test-file", offset: 75, length: 7 },
+			},
+		]);
+	},
+	"unimplemented-interface-may-assume-requires-in-ensures"() {
+		const source = `
+		package example;
+
+		record R {
+			fn picky(n: Int): Boolean
+			requires n == 32 {
+				return true;
+			}
+		}
+
+		interface I {
+			fn i(k: Int): Int
+			requires k == 32
+			ensures R.picky(k);
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"impl-may-assume-interface-using-type-arg-requires"() {
+		const source = `
+		package example;
+
+		record R {}
+
+		interface FavoriteInt {
+			fn favoriteInt(): Int;
+		}
+
+		interface I[#T | #T is FavoriteInt] {
+			fn f(a: Boolean): Boolean
+			requires (#T is FavoriteInt).favoriteInt() == 10;
+		}
+
+		impl R is FavoriteInt {
+			fn favoriteInt(): Int {
+				return 7;
+			}
+		}
+
+		impl R is I[R] {
+			fn f(b: Boolean): Boolean {
+				assert (R is FavoriteInt).favoriteInt() == 10;
+				return false;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
 };

@@ -2175,11 +2175,11 @@ function compileExpressionTree(
 		const trueOps: ir.Op[] = [];
 		const falseOps: ir.Op[] = [];
 
-		let trueSource: ir.VariableID;
-		let falseSource: ir.VariableID;
+		let trueSource: { tag: "variable", variable: ir.VariableID };
+		let falseSource: { tag: "variable", variable: ir.VariableID };
 
 		if (opStr === "or") {
-			trueSource = leftValue.variable;
+			trueSource = { tag: "variable", variable: leftValue.variable };
 
 			stack.openBlock();
 
@@ -2188,13 +2188,13 @@ function compileExpressionTree(
 				opStr: "or",
 				location: tree.join.opToken.location,
 			});
-			falseSource = rightValue.variable;
+			falseSource = { tag: "variable", variable: rightValue.variable };
 
 			for (const _ in stack.closeBlock()) {
 				throw new Error("ICE: unexpected local assignment in logical");
 			}
 		} else if (opStr === "and") {
-			falseSource = leftValue.variable;
+			falseSource = { tag: "variable", variable: leftValue.variable };
 
 			stack.openBlock();
 
@@ -2203,7 +2203,7 @@ function compileExpressionTree(
 				opStr: "and",
 				location: tree.join.opToken.location,
 			});
-			trueSource = rightValue.variable;
+			trueSource = { tag: "variable", variable: rightValue.variable };
 
 			for (const _ in stack.closeBlock()) {
 				throw new Error("ICE: unexpected local assignment in logical");
@@ -2220,7 +2220,7 @@ function compileExpressionTree(
 				boolean: true,
 				destination: trueConst,
 			});
-			falseSource = trueConst.variable;
+			falseSource = { tag: "variable", variable: trueConst.variable };
 
 			stack.openBlock();
 
@@ -2229,7 +2229,7 @@ function compileExpressionTree(
 				opStr: "implies",
 				location: tree.join.opToken.location,
 			});
-			trueSource = rightValue.variable;
+			trueSource = { tag: "variable", variable: rightValue.variable };
 
 			for (const _ in stack.closeBlock()) {
 				throw new Error("ICE: unexpected local assignment in logical");
@@ -2763,7 +2763,7 @@ function checkImplMemberConformance(
 	constraint: ir.ConstraintParameter,
 	signature: ir.FunctionSignature,
 	signatureAST: grammar.FnSignature,
-) {
+): void {
 	const corresponding = int.fns[fnName.name];
 
 	// Check that a corresponding member exists.
@@ -2835,6 +2835,13 @@ function checkImplMemberConformance(
 		}
 	}
 
+	if (signature.preconditions.length !== 0) {
+		throw new diagnostics.ImplMayNotHavePreconditionErr({
+			impl: displayConstraint(constraint),
+			memberName: fnName.name,
+			preconditionLocation: signature.preconditions[0].location,
+		});
+	}
 }
 
 function compileImpl(
@@ -2868,9 +2875,6 @@ function compileImpl(
 			});
 		}
 		memberBindings.set(fnName.name, fnName.location);
-
-		// TODO: Reject ensures/requires refinements on impl.
-
 		const { signature, stack, context } = compileFunctionSignature(
 			fnAST.signature, impl.typeScope, false, sourceContext);
 
@@ -2890,7 +2894,6 @@ function compileImpl(
 
 		// TODO: Handle signature type constraints.
 		const closureConstraints = impl.typeScope.constraints.map(x => x.constraint);
-
 		const canonicalMemberName = `${canonicalImplName}__${fnName.name}`;
 		program.functions[canonicalMemberName] = { signature, body };
 		vtable.entries[fnName.name] = {

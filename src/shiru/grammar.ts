@@ -1,6 +1,21 @@
 import { SourceLocation } from "./ir";
 import { ErrorElement, IdenToken, KeywordToken, NumberLiteralToken, OperatorToken, PUNCTUATION, PunctuationToken, StringLiteralToken, Token, tokenize, TypeIdenToken, TypeKeywordToken, TypeVarToken } from "./lexer";
-import { RecordParserDescription, ConstParser, Parser, ParsersFor, RecordParser, RepeatParser, TokenParser, DebugContext, ParseResult, choice, ChoiceParser, TokenSpan, FailHandler } from "./parser";
+import {
+	choice,
+	ChoiceParser,
+	ConstParser,
+	DebugContext,
+	FailHandler,
+	Parser,
+	ParseResult,
+	ParsersFor,
+	PeekParser,
+	RecordParser,
+	RecordParserDescription,
+	RepeatParser,
+	TokenParser,
+	TokenSpan,
+} from "./parser";
 
 function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken & { keyword: K }> {
 	return new TokenParser((t) => {
@@ -212,6 +227,14 @@ const tokens = {
 	typeIden: tokenParser("type-iden"),
 	iden: tokenParser("iden"),
 	typeVarIden: tokenParser("type-var"),
+	typeParameterConstraintMethodSubject: new TokenParser((token: Token) => {
+		if (token.tag === "type-var") {
+			return token;
+		} else if (token.tag === "type-keyword" && token.keyword === "This") {
+			return token as TypeKeywordToken & { keyword: "This" };
+		}
+		return null;
+	}),
 	typeKeyword: tokenParser("type-keyword"),
 	operator: tokenParser("operator"),
 	stringLiteral: tokenParser("string-literal"),
@@ -346,7 +369,12 @@ export interface InterfaceMember {
 export interface InterfaceDefinition {
 	tag: "interface-definition",
 	entityName: TypeIdenToken,
+
+	/// Unlike other type-parameters, the `constraints` list may be non-empty
+	/// even when `parameters` is empty (listing constraints on the implicit
+	/// `This` type-parameter)
 	typeParameters: TypeParameters,
+
 	members: InterfaceMember[],
 }
 
@@ -400,7 +428,7 @@ interface TypeArguments {
 }
 
 interface TypeConstraint {
-	methodSubject: TypeVarToken,
+	methodSubject: TypeVarToken | (TypeKeywordToken & { keyword: "This" }),
 	constraint: Constraint,
 
 	location: SourceLocation,
@@ -643,6 +671,7 @@ type ASTs = {
 	TypeConstraints: TypeConstraints,
 	TypeNamed: TypeNamed,
 	TypeParameters: TypeParameters,
+	TypeParametersOnlyConstraints: TypeParameters,
 	UnreachableSt: UnreachableSt,
 	VarDecl: VarDecl,
 	VarSt: VarSt,
@@ -897,7 +926,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		_interface: keywords.interface,
 		tag: new ConstParser("interface-definition"),
 		entityName: tokens.typeIden,
-		typeParameters: grammar.TypeParameters
+		typeParameters: new ChoiceParser(() => [grammar.TypeParametersOnlyConstraints, grammar.TypeParameters])
 			.otherwise({ parameters: [], constraints: [] } as TypeParameters),
 		_open: punctuation.curlyOpen,
 		members: new RepeatParser(grammar.InterfaceMember),
@@ -999,7 +1028,7 @@ export const grammar: ParsersFor<Token, ASTs> = {
 				"to complete type arguments started at", atReference("_open"))),
 	})),
 	TypeConstraint: new StructParser(() => ({
-		methodSubject: tokens.typeVarIden,
+		methodSubject: tokens.typeParameterConstraintMethodSubject,
 		_is: keywords.is
 			.required(parseProblem("Expected `is` after type constraint method subject at", atHead)),
 		constraint: grammar.TypeNamed
@@ -1010,6 +1039,17 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		constraints: new CommaParser(grammar.TypeConstraint,
 			"Expected a type constraint at", 1)
 			.required(parseProblem("Expected at least one type constraint at", atHead)),
+	})),
+	TypeParametersOnlyConstraints: new RecordParser(() => ({
+		_open: punctuation.squareOpen,
+		_peekNonTypeVar: new PeekParser(tokens.typeKeyword),
+		constraints: new CommaParser(grammar.TypeConstraint,
+			"Expected a type constraint at", 1)
+			.required(parseProblem("Expected at least one type constraint at", atHead)),
+		parameters: new ConstParser([]),
+		_close: punctuation.squareClose
+			.required(parseProblem("Expected a `]` at", atHead,
+				"to complete type parameters started at", atReference("_open"))),
 	})),
 	TypeParameters: new RecordParser(() => ({
 		_open: punctuation.squareOpen,

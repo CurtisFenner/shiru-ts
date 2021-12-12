@@ -483,11 +483,11 @@ export class TypesDontSatisfyConstraintErr extends SemanticError {
 		constraintLocation: SourceLocation | null,
 	}) {
 		const arr = [
-			"There is no implementation for `" + args.neededConstraint + "` at",
+			"There is no impl for `" + args.neededConstraint + "` at",
 			args.neededLocation,
 		];
 		if (args.constraintLocation !== null) {
-			arr.push("This implementation is required by the constraint at",
+			arr.push("This impl is required by the constraint at",
 				args.constraintLocation);
 		}
 		super(arr);

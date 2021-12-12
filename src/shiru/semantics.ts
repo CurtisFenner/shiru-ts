@@ -140,6 +140,9 @@ class ProgramContext {
 		methodSubject: ir.Type,
 		sourceContext: Readonly<SourceContext>,
 		scope: TypeScope,
+		/// The location of the constraint, including the method subject and
+		/// `is`.
+		constraintLocation: ir.SourceLocation,
 	}[] = [];
 
 	*namedEntities(): Generator<[string, NamedEntityDef]> {
@@ -404,6 +407,8 @@ function compileConstraint(
 	sourceContext: Readonly<SourceContext>,
 	scope: TypeScope,
 	checkConstraints: "check" | "skip" | "skip-internal",
+	/// The location of the constraint, including the method subject.
+	constraintLocation: ir.SourceLocation,
 ): ir.ConstraintParameter {
 	const programContext = sourceContext.programContext;
 	if (programContext.uncheckedConstraints !== null) {
@@ -413,6 +418,7 @@ function compileConstraint(
 				methodSubject,
 				sourceContext,
 				scope,
+				constraintLocation,
 			});
 			checkConstraints = "skip-internal";
 		}
@@ -467,7 +473,7 @@ function compileConstraint(
 			const instantiated: ir.ConstraintParameter = ir.constraintSubstitute(genericConstraint, instantiation);
 			checkConstraintSatisfied(instantiated, scope, sourceContext, {
 				constraintDeclaredAt: requirementBinding.location,
-				neededAt: c.location,
+				neededAt: constraintLocation,
 			});
 		}
 	}
@@ -779,7 +785,7 @@ function collectTypeScope(
 		const methodSubject = compileType(c.methodSubject, typeScope,
 			sourceContext, "skip")
 		const constraint = compileConstraint(c.constraint, methodSubject,
-			sourceContext, typeScope, "skip");
+			sourceContext, typeScope, "skip", c.location);
 		typeScope.constraints.push({
 			constraint,
 			location: c.location,
@@ -1331,7 +1337,7 @@ function compileConstraintCallExpression(
 	context: FunctionContext,
 ): ValueInfo {
 	const subject = compileType(e.constraint.subject, typeScope, context.sourceContext, "check");
-	const constraint = compileConstraint(e.constraint.constraint, subject, context.sourceContext, typeScope, "check");
+	const constraint = compileConstraint(e.constraint.constraint, subject, context.sourceContext, typeScope, "check", e.constraint.location);
 
 	checkConstraintSatisfied(constraint, typeScope, context.sourceContext, {
 		neededAt: e.constraint.location,
@@ -3215,7 +3221,8 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 				throw new Error("compileSources: ICE");
 			}
 			const baseEntity = programContext.getDataEntity(baseType.base);
-			const constraint = compileConstraint(implAST.constraint, baseType, sourceContext, typeScope, "skip");
+			const constraint = compileConstraint(implAST.constraint, baseType, sourceContext, typeScope, "skip",
+				ir.locationSpan(implAST.base.location, implAST.constraint.location));
 
 			// Associate the impl with its base record type.
 			associateImplWithBase(baseEntity, constraint, sourceID, typeScope, implAST);
@@ -3230,8 +3237,9 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 	for (const { t, scope, sourceContext } of uncheckedTypes) {
 		compileType(t, scope, sourceContext, "check");
 	}
-	for (const { c, methodSubject, sourceContext, scope } of uncheckedConstraints) {
-		compileConstraint(c, methodSubject, sourceContext, scope, "check");
+	for (const { c, methodSubject, sourceContext, scope, constraintLocation } of uncheckedConstraints) {
+		compileConstraint(c, methodSubject, sourceContext, scope, "check",
+			constraintLocation);
 	}
 
 	// Resolve members of entities. Type arguments must be validated based on

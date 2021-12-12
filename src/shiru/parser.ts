@@ -133,6 +133,25 @@ export class RepeatParser<T, R> extends Parser<T, R[]> {
 	}
 };
 
+/// PeekParser applies a subparser to the stream, but does not consume any
+/// tokens.
+export class PeekParser<T, R> extends Parser<T, R> {
+	constructor(private subparser: Parser<T, R>) {
+		super();
+	}
+
+	parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<R> {
+		const peek = this.subparser.parse(stream, from, debugContext);
+		if (peek === null) {
+			return null;
+		}
+		return {
+			object: peek.object,
+			rest: from,
+		};
+	}
+}
+
 export type RecordParserDescription<T, R> = { [P in keyof R]: (Parser<T, R[P]>) };
 
 export class RecordParser<T, R> extends Parser<T, R> {

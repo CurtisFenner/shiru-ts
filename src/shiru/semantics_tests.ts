@@ -256,9 +256,9 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
-				"There is no implementation for `Int is example.Good` at",
+				"There is no impl for `Int is example.Good` at",
 				{ fileID: "test-file", offset: 106, length: 6 },
-				"This implementation is required by the constraint at",
+				"This impl is required by the constraint at",
 				{ fileID: "test-file", offset: 60, length: 10 },
 			],
 		});
@@ -359,9 +359,9 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
-				"There is no implementation for `#Q is example.Good` at",
+				"There is no impl for `#Q is example.Good` at",
 				{ fileID: "test-file", offset: 104, length: 5 },
-				"This implementation is required by the constraint at",
+				"This impl is required by the constraint at",
 				{ fileID: "test-file", offset: 57, length: 10 },
 			],
 		});
@@ -475,7 +475,7 @@ export const tests = {
 		const ast = grammar.parseSource(source, "test-file");
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
-				"There is no implementation for `example.R is example.I` at",
+				"There is no impl for `example.R is example.I` at",
 				{ fileID: "test-file", offset: 104, length: 8 },
 			],
 		});
@@ -1089,6 +1089,71 @@ export const tests = {
 				{ fileID: "test-file", offset: 128, length: 6 },
 				"However, impls may not state additional preconditions; ",
 				"preconditions on the interface are automatically applied.",
+			],
+		});
+	},
+	"attempt-impl-with-types-not-satisfying-interface-subject-constraints"() {
+		const source = `
+		package example;
+
+		interface Good {}
+
+		interface I[#X | #X is Good] {}
+
+		record R {}
+
+		impl R is I[R] {}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"There is no impl for `example.R is example.Good` at",
+				{ fileID: "test-file", offset: 99, length: 9 },
+				"This impl is required by the constraint at",
+				{ fileID: "test-file", offset: 61, length: 10 },
+			],
+		});
+	},
+	"attempt-impl-with-this-subject-not-satisfying-interface-constraints"() {
+		const source = `
+		package example;
+
+		interface Good {}
+
+		interface I[This is Good] {}
+
+		record R {}
+
+		impl R is I {}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		assert(() => semantics.compileSources({ ast }), "throws", {
+			message: [
+				"There is no impl for `example.R is example.Good` at",
+				{ fileID: "test-file", offset: 96, length: 6 },
+				"This impl is required by the constraint at",
+				{ fileID: "test-file", offset: 56, length: 12 },
+			],
+		});
+	},
+	"attempt-this-constraint-in-record-type-parameters"() {
+		const source = `
+		package example;
+
+		interface I {}
+
+		record R[#T, This is I] {}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"Expected a type variable at",
+				{ fileID: "test-file", offset: 54, length: 4 },
 			],
 		});
 	},

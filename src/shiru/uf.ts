@@ -29,7 +29,7 @@ interface LiteralValue {
 // A (boolean) variable ID.
 type Reason = number;
 
-export type ValueID = symbol & { __brand: "uf.ValueID" };
+export type ValueID = egraph.EObject & { __brand: "uf.ValueID" };
 
 export interface Semantics {
 	eq?: true,

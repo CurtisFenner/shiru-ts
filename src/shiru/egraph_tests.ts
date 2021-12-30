@@ -1,7 +1,7 @@
 import * as egraph from "./egraph";
 import { assert, specSupersetOf } from "./test";
 
-function getTag<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Tag, id: symbol) {
+function getTag<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Tag, id: egraph.EObject) {
 	const tags = eg.getTagged(tag, id);
 	if (tags.length === 0) {
 		return null;
@@ -12,7 +12,7 @@ function getTag<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Ta
 	};
 }
 
-function getTags<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Tag, ids: symbol[]) {
+function getTags<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Tag, ids: egraph.EObject[]) {
 	const values = [];
 	const reasons = new Set<Reason>();
 	for (const id of ids) {
@@ -125,5 +125,34 @@ export const tests = {
 				reason: specSupersetOf(new Set(["a=10", "g=10"])),
 			});
 		}
-	}
+	},
+	"EGraph-remembers-path-for-reason"() {
+		// Construct nine nodes.
+		const eg = new egraph.EGraph<string, never, number>();
+		const n1 = eg.add("1", []);
+		const n2 = eg.add("2", []);
+		const n3 = eg.add("3", []);
+		const n4 = eg.add("4", []);
+		const n5 = eg.add("5", []);
+		const n6 = eg.add("6", []);
+		const n7 = eg.add("7", []);
+		const n8 = eg.add("8", []);
+		const n9 = eg.add("9", []);
+
+		// Join all consecutive pairs.
+		eg.merge(n3, n4, new Set([34]));
+		eg.merge(n7, n8, new Set([78]));
+		eg.merge(n5, n6, new Set([56]));
+		eg.merge(n4, n5, new Set([45]));
+		eg.merge(n8, n9, new Set([89]));
+		eg.merge(n6, n7, new Set([67]));
+		eg.merge(n1, n2, new Set([12]));
+		eg.merge(n2, n3, new Set([23]));
+
+		// Verify that the reason n1 is equal to n9 includes all pairs, and not
+		// just a subset.
+		assert(eg.query(n1, n9), "is equal to", new Set([
+			12, 23, 34, 45, 56, 67, 78, 89
+		]));
+	},
 };

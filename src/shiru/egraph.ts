@@ -1,20 +1,22 @@
 import { DefaultMap, DisjointSet, TrieMap } from "./data";
 
+export type EObject = symbol & { __brand: "EObject" };
+
 export type EClassDescription<Term> = {
-	members: { id: symbol, term: Term, operands: symbol[] }[]
+	members: { id: EObject, term: Term, operands: EObject[] }[]
 };
 
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
 export class EGraph<Term, Tag, Reason> {
 	/// `tagged.get(tag).get(rep)` is the set of IDs tagged with `tag` that are
 	/// equal to representative `rep`.
-	private tagged = new DefaultMap<Tag, DefaultMap<symbol, Set<symbol>>>(t => new DefaultMap(r => new Set()));
-	private taggedDef = new Map<symbol, { term: Term, operands: symbol[], tag: Tag }>();
+	private tagged = new DefaultMap<Tag, DefaultMap<EObject, Set<EObject>>>(t => new DefaultMap(r => new Set()));
+	private taggedDef = new Map<EObject, { term: Term, operands: EObject[], tag: Tag }>();
 
-	private tuples: TrieMap<[Term, ...symbol[]], symbol> = new TrieMap();
-	private ds: DisjointSet<symbol, Set<Reason>> = new DisjointSet();
+	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
+	private ds: DisjointSet<EObject, Set<Reason>> = new DisjointSet();
 
-	reset() {
+	reset(): void {
 		this.ds.reset();
 		for (const [_, map] of this.tagged) {
 			for (const [id, set] of map) {
@@ -27,7 +29,7 @@ export class EGraph<Term, Tag, Reason> {
 		}
 	}
 
-	getTagged(tag: Tag, id: symbol): Array<{ id: symbol, term: Term, operands: symbol[] }> {
+	getTagged(tag: Tag, id: EObject): Array<{ id: EObject, term: Term, operands: EObject[] }> {
 		const out = [];
 		const representative = this.ds.representative(id);
 		for (const tagged of this.tagged.get(tag).get(representative)) {
@@ -37,13 +39,13 @@ export class EGraph<Term, Tag, Reason> {
 		return out;
 	}
 
-	add(term: Term, operands: symbol[], tag?: Tag, hint?: string): symbol {
-		const tuple: [Term, ...symbol[]] = [term, ...operands];
+	add(term: Term, operands: EObject[], tag?: Tag, hint?: string): EObject {
+		const tuple: [Term, ...EObject[]] = [term, ...operands];
 		const existing = this.tuples.get(tuple);
 		if (existing) {
 			return existing;
 		} else {
-			const id: symbol = Symbol("egraph-term(" + hint + ")");
+			const id: EObject = Symbol("egraph-term(" + (hint || Math.random().toFixed(3).split(".")[1]) + ")") as EObject;
 			this.tuples.put(tuple, id);
 			if (tag !== undefined) {
 				this.tagged.get(tag).get(id).add(id);
@@ -54,15 +56,23 @@ export class EGraph<Term, Tag, Reason> {
 	}
 
 	/// `reason` is a conjunction of `Reason`s.
-	merge(a: symbol, b: symbol, reason: Set<Reason>): boolean {
+	/// merge(a, b, reason) returns false when this fact was already present in
+	/// this egrahp.
+	merge(a: EObject, b: EObject, reason: Set<Reason>): boolean {
 		const arep = this.ds.representative(a);
 		const brep = this.ds.representative(b);
 		if (arep === brep) {
 			return false;
 		}
 
-		this.ds.union(arep, brep, reason);
+		// Merge a and b specifically (and not their representatives) so that
+		// the reason is precisely tracked.
+		this.ds.union(a, b, reason);
+
 		const parent = this.ds.representative(arep);
+		if (parent !== arep && parent !== brep) {
+			throw new Error("EGraph.merge: unexpected new representative");
+		}
 		const child = arep === parent ? brep : arep;
 		for (const [tag, map] of this.tagged) {
 			const parentSet = this.tagged.get(tag).get(parent);
@@ -73,12 +83,12 @@ export class EGraph<Term, Tag, Reason> {
 		return true;
 	}
 
-	private updateCongruenceStep() {
+	private updateCongruenceStep(): boolean {
 		// The keys of `canonical` are representatives.
 		// The `id` is the symbol of the original (non-canonicalized) object;
 		// the `reason` is the union of reasons for why the canonicalized
 		// version is equal to the original version.
-		const canonical = new TrieMap<[Term, ...symbol[]], { id: symbol, reason: Set<Reason> }[]>();
+		const canonical = new TrieMap<[Term, ...EObject[]], { id: EObject, reason: Set<Reason> }[]>();
 		for (const [[term, ...operands], id] of this.tuples) {
 			const representatives = operands.map(x => this.ds.representative(x));
 			const reason = new Set<Reason>();
@@ -90,7 +100,7 @@ export class EGraph<Term, Tag, Reason> {
 					reason.add(r);
 				}
 			}
-			const key: [Term, ...symbol[]] = [term, ...representatives];
+			const key: [Term, ...EObject[]] = [term, ...representatives];
 			let group = canonical.get(key);
 			if (group === undefined) {
 				group = [];
@@ -125,7 +135,7 @@ export class EGraph<Term, Tag, Reason> {
 		return madeChanges;
 	}
 
-	query(a: symbol, b: symbol): null | Set<Reason> {
+	query(a: EObject, b: EObject): null | Set<Reason> {
 		if (!this.ds.compareEqual(a, b)) {
 			return null;
 		}
@@ -139,8 +149,8 @@ export class EGraph<Term, Tag, Reason> {
 		return all;
 	}
 
-	getClasses(duplicate?: boolean): Map<symbol, EClassDescription<Term>> {
-		const mapping: Map<symbol, EClassDescription<Term>> = new Map();
+	getClasses(duplicate?: boolean): Map<EObject, EClassDescription<Term>> {
+		const mapping: Map<EObject, EClassDescription<Term>> = new Map();
 		for (const [k, id] of this.tuples) {
 			const representative = this.ds.representative(id);
 			let eclass = mapping.get(representative);
@@ -152,7 +162,7 @@ export class EGraph<Term, Tag, Reason> {
 				mapping.set(id, eclass);
 			}
 			const term = k[0];
-			const operands = k.slice(1) as symbol[];
+			const operands = k.slice(1) as EObject[];
 			eclass.members.push({ id, term, operands });
 		}
 		return mapping;

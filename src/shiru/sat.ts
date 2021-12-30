@@ -320,6 +320,17 @@ export class SATSolver {
 			throw new Error("SATSolver.addClause() requires at least one unassigned literal");
 		}
 
+		let termFirstLiteral: Record<number, number> = {};
+		for (let i = 0; i < clause.length; i++) {
+			const literal = clause[i];
+			const term = literal > 0 ? +literal : -literal;
+			if (term in termFirstLiteral && termFirstLiteral[term] !== literal) {
+				// This clause is a tautology.
+				return -1;
+			}
+			termFirstLiteral[term] = literal;
+		}
+
 		const clauseID = this.clauses.length;
 		this.clauses.push(clause);
 

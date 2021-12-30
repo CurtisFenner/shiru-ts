@@ -45,7 +45,7 @@ export class EGraph<Term, Tag, Reason> {
 		if (existing) {
 			return existing;
 		} else {
-			const id: EObject = Symbol("egraph-term(" + (hint || Math.random().toFixed(3).split(".")[1]) + ")") as EObject;
+			const id: EObject = Symbol("egraph-term(" + hint + ")") as EObject;
 			this.tuples.put(tuple, id);
 			if (tag !== undefined) {
 				this.tagged.get(tag).get(id).add(id);
@@ -147,6 +147,14 @@ export class EGraph<Term, Tag, Reason> {
 			}
 		}
 		return all;
+	}
+
+	/// getRepresentative(obj) returns a "representative" element of obj's
+	/// equivalence class, such that any two objects that are equal have the
+	/// same representative, and any objects that are not equal have different
+	/// representatives.
+	getRepresentative(obj: EObject): EObject {
+		return this.ds.representative(obj);
 	}
 
 	getClasses(duplicate?: boolean): Map<EObject, EClassDescription<Term>> {

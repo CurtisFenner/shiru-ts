@@ -217,4 +217,286 @@ export const tests = {
 		assert(smt.attemptRefutation(), "is equal to", {});
 		smt.popScope();
 	},
+	"UFTheory-basic-transitivity"() {
+		const smt = new uf.UFTheory();
+
+		const alpha = smt.createVariable(ir.T_INT);
+		const beta = smt.createVariable(ir.T_INT);
+		const gamma = smt.createVariable(ir.T_INT);
+
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true });
+
+		smt.addConstraint([smt.createApplication(f, [alpha, beta])]);
+		smt.addConstraint([smt.createApplication(f, [beta, gamma])]);
+
+		// (a <= b && b <= g) is satisfiable.
+		assert(smt.attemptRefutation(), "is equal to", {});
+
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true });
+
+		// (a <= g) is implied by the previous constraints, so this is not
+		// satisfiable.
+		smt.addConstraint([smt.createApplication(not, [
+			smt.createApplication(f, [alpha, gamma]),
+		])]);
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFSolver-transitivity"() {
+		const solver = new uf.UFSolver();
+		const alpha = solver.createVariable();
+		const beta = solver.createVariable();
+		const gamma = solver.createVariable();
+
+		const p = solver.createFn({ transitive: true });
+
+		const query: uf.Assumption<number>[] = [
+			{
+				constraint: solver.createApplication(p, [alpha, beta]),
+				assignment: true,
+				reason: 100,
+			},
+			{
+				constraint: solver.createApplication(p, [beta, gamma]),
+				assignment: true,
+				reason: 200,
+			},
+			{
+				constraint: solver.createApplication(p, [alpha, gamma]),
+				assignment: false,
+				reason: 300,
+			},
+		];
+
+		const result = solver.refuteAssumptions(query);
+		assert(result, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set([100, 200, 300]),
+		});
+	},
+	"UFTheory-transitivity-with-choice"() {
+		const smt = new uf.UFTheory();
+
+		const alpha = smt.createVariable(ir.T_INT);
+		const beta = smt.createVariable(ir.T_INT);
+		const gamma = smt.createVariable(ir.T_INT);
+		const delta = smt.createVariable(ir.T_INT);
+
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true });
+
+		smt.addConstraint([smt.createApplication(f, [alpha, beta])]);
+		smt.addConstraint([smt.createApplication(f, [alpha, gamma])]);
+		smt.addConstraint([
+			smt.createApplication(f, [beta, delta]),
+			smt.createApplication(f, [gamma, delta]),
+		]);
+
+		// This is satisfiable.
+		assert(smt.attemptRefutation(), "is equal to", {});
+
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true });
+
+		// (a <= d) is implied by either (a <= b & b <= d) or (a <= g & g <= d).
+		smt.addConstraint([smt.createApplication(not, [
+			smt.createApplication(f, [alpha, delta]),
+		])]);
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFTheory-transitivity-with-short-equivalence-class"() {
+		const smt = new uf.UFTheory();
+
+		const alpha = smt.createVariable(ir.T_INT);
+		const beta = smt.createVariable(ir.T_INT);
+		const gamma = smt.createVariable(ir.T_INT);
+		const delta = smt.createVariable(ir.T_INT);
+
+		//   b
+		//  /|
+		// a | d
+		//   |/
+		//   g
+
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true });
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true });
+
+		smt.addConstraint([smt.createApplication(eq, [beta, gamma])]);
+		smt.addConstraint([smt.createApplication(f, [alpha, beta])]);
+		smt.addConstraint([smt.createApplication(f, [gamma, delta])]);
+
+		// This is satisfiable.
+		assert(smt.attemptRefutation(), "is equal to", {});
+
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true });
+
+		// a <= b == g <= d implies a <= d.
+		smt.addConstraint([smt.createApplication(not, [
+			smt.createApplication(f, [alpha, delta]),
+		])]);
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFSolver-transitivity-with-equivalence"() {
+		const solver = new uf.UFSolver();
+		const f = solver.createFn({ transitive: true });
+		const eq = solver.createFn({ eq: true });
+
+		const as = [];
+		const bs = [];
+		const cs = [];
+		for (let i = 0; i < 10; i++) {
+			as[i] = solver.createVariable();
+			bs[i] = solver.createVariable();
+			cs[i] = solver.createVariable();
+		}
+
+		const assumptions: uf.Assumption<number>[] = [
+			{
+				constraint: solver.createApplication(f, [as[0], bs[0]]),
+				assignment: true,
+				reason: 7777,
+			},
+			{
+				constraint: solver.createApplication(f, [bs[bs.length - 1], cs[0]]),
+				assignment: true,
+				reason: 8888,
+			},
+			{
+				constraint: solver.createApplication(f, [as[as.length - 1], cs[cs.length - 1]]),
+				assignment: false,
+				reason: 9999,
+			},
+		];
+
+		for (const i of [6, 5, 3, 1, 7, 8, 0, 4, 2]) {
+			assumptions.push({
+				constraint: solver.createApplication(eq, [as[i], as[i + 1]]),
+				assignment: true,
+				reason: i + 10,
+			});
+			assumptions.push({
+				constraint: solver.createApplication(eq, [bs[i], bs[i + 1]]),
+				assignment: true,
+				reason: i + 100,
+			});
+			assumptions.push({
+				constraint: solver.createApplication(eq, [cs[i], cs[i + 1]]),
+				assignment: true,
+				reason: i + 1000,
+			});
+		}
+
+		const result = solver.refuteAssumptions(assumptions);
+		assert(result, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set([
+				10, 11, 12, 13, 14, 15, 16, 17, 18,
+				100, 101, 102, 103, 104, 105, 106, 107, 108,
+				1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008,
+				7777, 8888, 9999
+			]),
+		});
+	},
+	"UFTheory-transitivity-with-long-equivalence-class"() {
+		const smt = new uf.UFTheory();
+
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true });
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true });
+
+		const alphas = [];
+		const betas = [];
+		const gammas = [];
+		for (let i = 0; i < 10; i++) {
+			alphas[i] = smt.createVariable(ir.T_INT);
+			betas[i] = smt.createVariable(ir.T_INT);
+			gammas[i] = smt.createVariable(ir.T_INT);
+		}
+
+		// Join all the elements together.
+		for (let i = 0; i + 1 < alphas.length; i++) {
+			smt.addConstraint([smt.createApplication(eq, [alphas[i], alphas[i + 1]])]);
+			smt.addConstraint([smt.createApplication(eq, [betas[i], betas[i + 1]])]);
+			smt.addConstraint([smt.createApplication(eq, [gammas[i], gammas[i + 1]])]);
+		}
+
+		// a[0] = ... = a[n] < b[0] = ... = b[n] < g[0] = ... = g[n]
+		smt.addConstraint([smt.createApplication(f, [alphas[alphas.length / 2 | 0], betas[betas.length / 2 | 0]])]);
+		smt.addConstraint([smt.createApplication(f, [betas[betas.length / 2 | 0], gammas[gammas.length / 2 | 0]])]);
+
+		// This is satisfiable.
+		assert(smt.attemptRefutation(), "is equal to", {});
+
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true });
+
+		// a < b and b < g implies a < g.
+		smt.addConstraint([smt.createApplication(not, [
+			smt.createApplication(f, [alphas[alphas.length / 2 | 0], gammas[gammas.length / 2 | 0]]),
+		])]);
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
+	"UFSolver-transitive-constants"() {
+		const solver = new uf.UFSolver<number>();
+
+		const c1 = solver.createConstant(1);
+		const c2 = solver.createConstant(2);
+		const b = solver.createVariable("b");
+
+		const eq = solver.createFn({ eq: true });
+		const eq_1_b = solver.createApplication(eq, [c1, b]);
+		const eq_2_b = solver.createApplication(eq, [c2, b]);
+
+		const query: uf.Assumption<number>[] = [
+			{
+				constraint: eq_2_b,
+				assignment: true,
+				reason: 400,
+			},
+			{
+				constraint: eq_1_b,
+				assignment: true,
+				reason: 300,
+			},
+		];
+		const result4 = solver.refuteAssumptions(query);
+		assert(result4, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set([300, 400]),
+		});
+	},
+	"UFSolver-eq-violation"() {
+		const solver = new uf.UFSolver<number>();
+
+		const c1 = solver.createConstant(1);
+		const c2 = solver.createConstant(2);
+		const b = solver.createVariable();
+
+		const f = solver.createFn({});
+		const f1 = solver.createApplication(f, [c1]);
+		const fb = solver.createApplication(f, [b]);
+
+		const eq = solver.createFn({ eq: true });
+		const eq_f1_1 = solver.createApplication(eq, [f1, c1]);
+		const eq_fb_2 = solver.createApplication(eq, [fb, c2]);
+		const eq_1_b = solver.createApplication(eq, [c1, b]);
+
+		const query: uf.Assumption<number>[] = [
+			{
+				constraint: eq_f1_1,
+				assignment: true,
+				reason: 100,
+			},
+			{
+				constraint: eq_fb_2,
+				assignment: true,
+				reason: 200,
+			},
+			{
+				constraint: eq_1_b,
+				assignment: true,
+				reason: 300,
+			},
+		];
+		const result4 = solver.refuteAssumptions(query);
+		assert(result4, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set([100, 200, 300]),
+		});
+	},
 };

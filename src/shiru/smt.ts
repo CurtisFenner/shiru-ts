@@ -6,22 +6,29 @@ import * as sat from "./sat";
 /// returned "satisfactions" do not actually satisfy the instance, but all
 /// refutation results definitely refute the instance.
 export abstract class SMTSolver<E, Counterexample> {
-	private clauses: sat.Literal[][] = [];
+	protected clauses: sat.Literal[][] = [];
+	protected unscopedClauses: sat.Literal[][] = [];
 	private scopes: { clauseCount: number }[] = [];
 
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
-			this.addClausified(clause);
+			this.addClausified(clause, this.clauses);
 		}
 	}
 
-	protected addClausified(clause: sat.Literal[]) {
+	addUnscopedConstraint(constraint: E) {
+		for (const clause of this.clausify(constraint)) {
+			this.addClausified(clause, this.unscopedClauses);
+		}
+	}
+
+	protected addClausified(clause: sat.Literal[], target: sat.Literal[][]) {
 		let maxTerm = 0;
 		for (let literal of clause) {
 			const term = literal > 0 ? literal : -literal;
 			maxTerm = Math.max(maxTerm, term);
 		}
-		this.clauses.push(clause);
+		target.push(clause);
 	}
 
 	pushScope() {
@@ -46,6 +53,16 @@ export abstract class SMTSolver<E, Counterexample> {
 	/// theory solver may be incomplete.
 	attemptRefutation(): "refuted" | Counterexample {
 		const solver = new sat.SATSolver();
+
+		for (const clause of this.unscopedClauses) {
+			if (clause.length === 0) {
+				return "refuted";
+			}
+			const maxTerm = Math.max(...clause.map(x => x > 0 ? x : -x));
+			solver.initTerms(maxTerm);
+			solver.addClause(clause);
+		}
+
 		let progress = 0;
 
 		while (true) {

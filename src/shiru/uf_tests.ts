@@ -499,4 +499,70 @@ export const tests = {
 			inconsistent: new Set([100, 200, 300]),
 		});
 	},
+	"UFSolver-transitiveAcyclic-is-anti-reflexive"() {
+		const solver = new uf.UFSolver<number>();
+
+		const f = solver.createFn({ transitive: true, transitiveAcyclic: true });
+		const eq = solver.createFn({ eq: true });
+
+		const a = solver.createVariable();
+		const b = solver.createVariable();
+
+		const query1: uf.Assumption<number>[] = [
+			{
+				constraint: solver.createApplication(eq, [a, b]),
+				assignment: true,
+				reason: 100,
+			},
+		];
+
+		const result1 = solver.refuteAssumptions(query1);
+		assert(result1, "is equal to", {
+			tag: "model",
+			model: {},
+		});
+
+		const query2: uf.Assumption<number>[] = [
+			{
+				constraint: solver.createApplication(eq, [a, b]),
+				assignment: true,
+				reason: 100,
+			},
+			{
+				constraint: solver.createApplication(f, [a, b]),
+				assignment: true,
+				reason: 200,
+			},
+		];
+
+		const result2 = solver.refuteAssumptions(query2);
+		assert(result2, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set([100, 200]),
+		});
+	},
+	"UFTheory-transitive-with-triangle"() {
+		const smt = new uf.UFTheory();
+
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true });
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true });
+
+		const a = smt.createVariable(ir.T_INT);
+		const b = smt.createVariable(ir.T_INT);
+		const c = smt.createVariable(ir.T_INT);
+		const d = smt.createVariable(ir.T_INT);
+
+		// a < b
+		// =   =
+		// c > d
+		smt.addConstraint([smt.createApplication(eq, [a, c])]);
+		smt.addConstraint([smt.createApplication(eq, [b, d])]);
+		smt.addConstraint([smt.createApplication(f, [a, b])]);
+
+		assert(smt.attemptRefutation(), "is equal to", {});
+
+		smt.addConstraint([smt.createApplication(f, [d, c])]);
+
+		assert(smt.attemptRefutation(), "is equal to", "refuted");
+	},
 };

@@ -42,6 +42,11 @@ export interface Semantics {
 	/// (This need not be specified for `eq` functions)
 	transitive?: true,
 
+	/// A `transitiveAcyclic` function is a `transitive` function which does not
+	/// admit cycles (a < b < c < d < ... < a). This implies that the relation
+	/// is anti-reflexive.
+	transitiveAcyclic?: true,
+
 	interpreter?: {
 		f(...args: (unknown | null)[]): unknown | null,
 	},
@@ -57,16 +62,17 @@ function transitivitySearch<Reason>(
 
 	while (frontier.length !== 0) {
 		const top = frontier.pop()!;
-		if (top.source === target) {
-			return top.reason;
-		}
 		const outEdges = digraphOutEdges.get(top.source);
 		for (const outEdge of outEdges) {
 			if (!reached.has(outEdge.target)) {
+				const reason = new Set([...top.reason, ...outEdge.reason]);
+				if (outEdge.target === target) {
+					return reason;
+				}
 				reached.add(outEdge.target);
 				frontier.push({
 					source: outEdge.target,
-					reason: new Set([...top.reason, ...outEdge.reason]),
+					reason,
 				});
 			}
 		}
@@ -106,6 +112,9 @@ export class UFSolver<Reason> {
 
 	createFn(semantics: Semantics): FnID {
 		const fnID = Symbol("uf-fn") as FnID;
+		if (semantics.transitiveAcyclic && !semantics.transitive) {
+			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
+		}
 		this.fns.set(fnID, semantics);
 		return fnID;
 	}
@@ -383,6 +392,26 @@ export class UFSolver<Reason> {
 				}
 			}
 		}
+
+		// Find violations of transitive-acyclic semantics.
+		for (const [id] of classes) {
+			if (this.egraph.getRepresentative(id) !== id) {
+				// Only consider e-class representatives.
+				continue;
+			}
+
+			// Search for a path from the group to itself.
+			for (const [fnID, digraph] of digraphs) {
+				const semantics = this.fns.get(fnID)!;
+				if (semantics.transitiveAcyclic === true) {
+					const transitiveChain = transitivitySearch(digraph, id, id);
+					if (transitiveChain !== null) {
+						return transitiveChain;
+					}
+				}
+			}
+		}
+
 		return null;
 	}
 

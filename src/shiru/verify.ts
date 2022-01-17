@@ -672,6 +672,7 @@ class VerificationState {
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true });
+	containsF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true });
 
 	/// Generates a SMT function for each return of each Shiru fn.
 	/// The first parameters are the type arguments (type id).
@@ -849,6 +850,11 @@ class VerificationState {
 		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
+
+	isSmallerThan(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
+		return this.smt.createApplication(this.containsF, [left, right]);
+	}
+
 	pushVariableScope(variableHiding: boolean): symbol {
 		const token = Symbol("variable-scope");
 		this.varScopes.push({
@@ -988,7 +994,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
 				if (source === "undef") continue;
-				state.smt.addConstraint([
+				state.smt.addUnscopedConstraint([
 					state.negate(symbolicCondition),
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1002,7 +1008,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
 				if (source === "undef") continue;
-				state.smt.addConstraint([
+				state.smt.addUnscopedConstraint([
 					symbolicCondition,
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1040,6 +1046,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
+		state.smt.addUnscopedConstraint([state.isSmallerThan(fieldValue, object.value)]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1047,17 +1054,17 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
+		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
 		state.defineVariable(op.destination, tagInfo.testResult);
 		return;
 	} else if (op.tag === "op-variant") {
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
-		// Check that the symbolic tag definitely matches this variant.
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
+		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
 
+		// Check that the symbolic tag definitely matches this variant.
 		state.pushPathConstraint(
 			state.negate(tagInfo.testResult)
 		);
@@ -1078,6 +1085,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
+		state.smt.addUnscopedConstraint([state.isSmallerThan(variantValue, object.value)]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1096,10 +1104,10 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.defineVariable(op.destination, enumValue);
 
 		const tagInfo = state.enumMap.hasTag(enumType.base, enumValue, op.variant, state);
-		state.smt.addConstraint([tagInfo.testResult]);
+		state.smt.addUnscopedConstraint([tagInfo.testResult]);
 
 		const destruction = state.enumMap.destruct(enumType.base, enumValue, op.variant);
-		state.smt.addConstraint([state.eq(destruction, variantValue)]);
+		state.smt.addUnscopedConstraint([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(program, new Map(), op.body, state, context);
@@ -1176,6 +1184,12 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		// Like a return statement, this path is subsequently treated as
 		// unreachable.
 		state.markPathUnreachable();
+		return;
+	} else if (op.tag === "op-proof-eq") {
+		const leftObject = state.getValue(op.left);
+		const rightObject = state.getValue(op.right);
+
+		state.defineVariable(op.destination, state.eq(leftObject.value, rightObject.value));
 		return;
 	}
 

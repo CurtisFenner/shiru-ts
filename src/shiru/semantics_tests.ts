@@ -1157,4 +1157,118 @@ export const tests = {
 			],
 		});
 	},
+	"attempt-eq-on-records-outside-proof-context"() {
+		const source = `
+		package example;
+
+		record R {
+			fn main(): Int {
+				// This is OK since assert introduces a proof context.
+				assert R{} == R{};
+
+				// This is NOT OK since there is no surrounding proof context.
+				var b: Boolean = R{} == R{};
+				return 1;
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"The operation `==` ",
+				"cannot be used outside a proof context as it is at",
+				{
+					fileID: "test-file",
+					offset: 229,
+					length: 2,
+				},
+			],
+		});
+	},
+	"attempt-not-eq-on-records-outside-proof-context"() {
+		const source = `
+		package example;
+
+		record R {
+			fn main(): Int {
+				// This is OK since assert introduces a proof context.
+				assert R{} != R{};
+
+				// This is NOT OK since there is no surrounding proof context.
+				var b: Boolean = R{} != R{};
+				return 1;
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"The operation `!=` ",
+				"cannot be used outside a proof context as it is at",
+				{
+					fileID: "test-file",
+					offset: 229,
+					length: 2,
+				},
+			],
+		});
+	},
+	"attempt-arithmetic-with-multiple-values-lhs"() {
+		const source = `
+		package example;
+
+		record R {
+			fn two(): Int, Int {
+				return 1, 2;
+			}
+
+			fn main(): Int {
+				return R.two() + 3;
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"An expression has 2 values and so cannot be grouped ",
+				"by a `+` operation at",
+				{ fileID: "test-file", offset: 112, length: 7 },
+			],
+		});
+	},
+	"attempt-arithmetic-with-multiple-values-rhs"() {
+		const source = `
+		package example;
+
+		record R {
+			fn two(): Int, Int {
+				return 1, 2;
+			}
+
+			fn main(): Int {
+				return 3 + R.two();
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"An expression has 2 values and so cannot be grouped ",
+				"by a `+` operation at",
+				{ fileID: "test-file", offset: 116, length: 7 },
+			],
+		});
+	},
 };

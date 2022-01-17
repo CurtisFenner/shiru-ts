@@ -467,6 +467,8 @@ function* interpretOp(
 	} else if (op.tag === "op-proof") {
 		// Do nothing.
 		return null;
+	} else if (op.tag === "op-proof-eq") {
+		throw new Error("unexpected op-proof-eq");
 	} else if (op.tag === "op-new-record") {
 		const recordValue: RecordValue = {
 			sort: "record",
@@ -606,9 +608,16 @@ export function printOp(
 		const cond = op.condition;
 		lines.push(indent + "if " + cond + " {");
 		printBlockContents(op.trueBranch, indent, context, lines);
-		lines.push(indent + "} else {");
+		lines.push(indent + "}");
+		for (const phi of op.destinations) {
+			lines.push(indent + "\t" + phi.destination.variable + " := " + (phi.trueSource as any).variable);
+		}
+		lines.push(indent + "else {");
 		printBlockContents(op.falseBranch, indent, context, lines);
 		lines.push(indent + "}");
+		for (const phi of op.destinations) {
+			lines.push(indent + "\t" + phi.destination.variable + " := " + (phi.falseSource as any).variable);
+		}
 		// TODO: Format destinations?
 		return;
 	} else if (op.tag === "op-return") {
@@ -649,7 +658,7 @@ export function printOp(
 	} else if (op.tag === "op-proof") {
 		lines.push(indent + "proof {");
 		printBlockContents(op.body, indent, context, lines);
-		lines.push("}");
+		lines.push(indent + "}");
 		return;
 	} else if (op.tag === "op-dynamic-call") {
 		const f = op.constraint + "." + op.signature_id;
@@ -687,6 +696,10 @@ export function printOp(
 	} else if (op.tag === "op-variant") {
 		const lhs = printVariable(op.destination);
 		lines.push(indent + lhs + " = " + op.object + "." + op.variant + ";");
+		return;
+	} else if (op.tag === "op-proof-eq") {
+		const lhs = printVariable(op.destination);
+		lines.push(indent + lhs + " = " + op.left + " proof== " + op.right + ";");
 		return;
 	}
 

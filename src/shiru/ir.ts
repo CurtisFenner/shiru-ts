@@ -125,6 +125,17 @@ export interface OpCopy {
 	copies: Copy[],
 }
 
+/// `OpProofEq` determines whether or not two objects are the same. This
+/// operation is only valid in proof contexts.
+export interface OpProofEq {
+	tag: "op-proof-eq",
+
+	left: VariableID,
+	right: VariableID,
+
+	destination: VariableDefinition,
+}
+
 /// `OpBranch` chooses which branch to execute depending on the current value of
 /// a `condition` variable.
 /// It defines a set of variables, with values selected by the branches.
@@ -315,6 +326,7 @@ export interface OpForeign {
 
 export type LeafOp = OpConst
 	| OpCopy
+	| OpProofEq
 	| OpNewRecord | OpNewEnum | OpField | OpVariant | OpIsVariant
 	| OpStaticCall | OpDynamicCall
 	| OpForeign

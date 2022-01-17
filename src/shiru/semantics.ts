@@ -1035,12 +1035,12 @@ function canonicalFunctionName(entityName: string, memberName: string): ir.Funct
 }
 
 interface FunctionContext {
-	/// `returnsTo` indicates the types that an `op -return ` returns to,
+	/// `returnsTo` indicates the types that an `op-return` returns to,
 	/// and where those return types can be found annotated in the source.
 	returnsTo: { t: ir.Type, location: ir.SourceLocation }[],
 
-	/// `ensuresReturnExpression` indicates the variables  that a `return `
-	/// expression refers to. It is `null` if a `return ` expression is not valid
+	/// `ensuresReturnExpression` indicates the variables  that a `return`
+	/// expression refers to. It is `null` if a `return` expression is not valid
 	/// in the given context (i.e., it's not in an `ensures` clause).
 	ensuresReturnExpression: null | ValueInfo,
 
@@ -1064,6 +1064,7 @@ interface VariableStackInfo {
 interface VariableStackBlock {
 	stackStart: number,
 	assignments: Record<string, { originalValue: ir.VariableID, latestValue: ir.VariableID }>,
+	isProofBlock: boolean,
 }
 
 class VariableStack {
@@ -1121,11 +1122,23 @@ class VariableStack {
 		};
 	}
 
-	openBlock() {
+	/// `openBlock(proofBlock)` opens a new scope. Variables added after this
+	/// call will be deleted when a corresponding `closeBlock()` call is made.
+	/// If `proofBlock` is `true`, `isInProofBlock()` will return `true` until
+	/// the corresponding `closeBlock()` call is made.
+	openBlock(proofBlock: boolean) {
 		this.blocks.push({
 			stackStart: this.variableStack.length,
 			assignments: {},
+			isProofBlock: proofBlock || this.isInProofBlock(),
 		});
+	}
+
+	/// `isInProofBlock()` returns `true` when a currently open block passed
+	/// `true` as the parameter to `openBlock`.
+	isInProofBlock(): boolean {
+		const top = this.blocks[this.blocks.length - 1];
+		return top !== undefined && top.isProofBlock;
 	}
 
 	updateLocal(local: string, newValue: ir.VariableID) {
@@ -1782,7 +1795,7 @@ function compileSuffixIs(
 
 	const location = ir.locationSpan(baseLocation, suffixIs.location);
 	const destination = {
-		variable: stack.uniqueID("istest"),
+		variable: stack.uniqueID("is_" + suffixIs.variant.name),
 		type: ir.T_BOOLEAN,
 		location,
 	};
@@ -1873,44 +1886,17 @@ function compileOperand(
 	return value;
 }
 
-/// Throws `MultiExpressionGroupedErr` if `lhs` does not have exactly 1 value.
-function resolveOperator(
-	lhs: ValueInfo,
-	operator: lexer.OperatorToken,
-): ir.FunctionID {
-	const opStr = operator.operator;
-	if (lhs.values.length !== 1) {
-		throw new diagnostics.MultiExpressionGroupedErr({
-			location: lhs.location,
-			valueCount: lhs.values.length,
-			grouping: "op",
-			op: opStr,
-		});
-	}
-	const value = lhs.values[0];
-	if (ir.equalTypes(ir.T_INT, value.type)) {
-		if (opStr === "+") {
-			return "Int+" as ir.FunctionID;
-		} else if (opStr === "-") {
-			return "Int-" as ir.FunctionID;
-		} else if (opStr === "==") {
-			return "Int==" as ir.FunctionID;
-		} else if (opStr === "<") {
-			return "Int<" as ir.FunctionID;
-		}
-	}
+type ResolvedOperator = ResolvedOperatorForeign | ResolvedOperatorProofEquality;
 
-	if (ir.equalTypes(ir.T_BOOLEAN, value.type)) {
-		if (opStr === "==") {
-			return "Boolean==" as ir.FunctionID;
-		}
-	}
+interface ResolvedOperatorForeign {
+	tag: "foreign-op",
+	foreignID: ir.FunctionID,
+	wrap: null | "negate",
+}
 
-	throw new diagnostics.TypeDoesNotProvideOperatorErr({
-		lhsType: displayType(value.type),
-		operator: opStr,
-		operatorLocation: operator.location,
-	});
+interface ResolvedOperatorProofEquality {
+	tag: "proof-equal-op",
+	wrap: null | "negate",
 }
 
 const operatorPrecedence = {
@@ -2151,6 +2137,317 @@ function expectOneBooleanForLogical(
 	return value;
 }
 
+/// compileLogicalExpressionTree compiles a binary operation like
+/// `implies` or `and`.
+function compileLogicalExpressionTree(
+	tree: OperatorTreeBranch & { join: { opToken: { tag: "keyword" } } },
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	const left = compileExpressionTree(tree.leftBranch, ops, stack, typeScope, context);
+
+	// Compile a logical binary operation.
+	const opStr = tree.join.opToken.keyword;
+
+	const leftValue = expectOneBooleanForLogical(left, typeScope, context, {
+		opStr: tree.join.opToken.keyword,
+		location: tree.join.opToken.location,
+	});
+
+	const destination = {
+		variable: stack.uniqueID("logical"),
+		type: ir.T_BOOLEAN,
+		location: tree.location,
+	};
+
+	const trueOps: ir.Op[] = [];
+	const falseOps: ir.Op[] = [];
+
+	let trueSource: { tag: "variable", variable: ir.VariableID };
+	let falseSource: { tag: "variable", variable: ir.VariableID };
+
+	if (opStr === "or") {
+		trueSource = { tag: "variable", variable: leftValue.variable };
+
+		stack.openBlock(false);
+
+		const right = compileExpressionTree(tree.rightBranch, falseOps, stack, typeScope, context);
+		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+			opStr: "or",
+			location: tree.join.opToken.location,
+		});
+		falseSource = { tag: "variable", variable: rightValue.variable };
+
+		for (const _ in stack.closeBlock()) {
+			throw new Error("ICE: unexpected local assignment in logical");
+		}
+	} else if (opStr === "and") {
+		falseSource = { tag: "variable", variable: leftValue.variable };
+
+		stack.openBlock(false);
+
+		const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
+		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+			opStr: "and",
+			location: tree.join.opToken.location,
+		});
+		trueSource = { tag: "variable", variable: rightValue.variable };
+
+		for (const _ in stack.closeBlock()) {
+			throw new Error("ICE: unexpected local assignment in logical");
+		}
+	} else if (opStr === "implies") {
+		const trueConst = {
+			variable: stack.uniqueID("falseimplies"),
+			type: ir.T_BOOLEAN,
+			location: ir.NONE,
+		};
+		falseOps.push({
+			tag: "op-const",
+			type: "Boolean",
+			boolean: true,
+			destination: trueConst,
+		});
+		falseSource = { tag: "variable", variable: trueConst.variable };
+
+		stack.openBlock(false);
+
+		const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
+		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
+			opStr: "implies",
+			location: tree.join.opToken.location,
+		});
+		trueSource = { tag: "variable", variable: rightValue.variable };
+
+		for (const _ in stack.closeBlock()) {
+			throw new Error("ICE: unexpected local assignment in logical");
+		}
+	} else {
+		const _: never = opStr;
+		throw new Error("Unhandled logical operator `" + opStr + "`");
+	}
+
+	const branch: ir.OpBranch = {
+		tag: "op-branch",
+		condition: leftValue.variable,
+		trueBranch: { ops: trueOps },
+		falseBranch: { ops: falseOps },
+		destinations: [
+			{
+				destination,
+				trueSource,
+				falseSource,
+			},
+		],
+	};
+	ops.push(branch);
+
+	return { values: [destination], location: tree.location };
+}
+
+/// Throws `MultiExpressionGroupedErr` if `lhs` does not have exactly 1 value.
+function resolveArithmeticOperator(
+	value: ir.VariableDefinition,
+	operator: lexer.OperatorToken,
+): ResolvedOperator {
+	const opStr = operator.operator;
+	if (ir.equalTypes(ir.T_INT, value.type)) {
+		if (opStr === "+") {
+			return { tag: "foreign-op", foreignID: "Int+" as ir.FunctionID, wrap: null };
+		} else if (opStr === "-") {
+			return { tag: "foreign-op", foreignID: "Int-" as ir.FunctionID, wrap: null };
+		} else if (opStr === "==") {
+			return { tag: "foreign-op", foreignID: "Int==" as ir.FunctionID, wrap: null };
+		} else if (opStr === "!=") {
+			return { tag: "foreign-op", foreignID: "Int==" as ir.FunctionID, wrap: "negate" };
+		} else if (opStr === "<") {
+			return { tag: "foreign-op", foreignID: "Int<" as ir.FunctionID, wrap: null };
+		}
+	}
+
+	if (ir.equalTypes(ir.T_BOOLEAN, value.type)) {
+		if (opStr === "==") {
+			return { tag: "foreign-op", foreignID: "Boolean==" as ir.FunctionID, wrap: null };
+		} else if (opStr === "!=") {
+			return { tag: "foreign-op", foreignID: "Boolean==" as ir.FunctionID, wrap: null };
+		}
+	}
+
+	if (opStr === "==") {
+		return { tag: "proof-equal-op", wrap: null };
+	} else if (opStr === "!=") {
+		return { tag: "proof-equal-op", wrap: "negate" };
+	}
+
+	throw new diagnostics.TypeDoesNotProvideOperatorErr({
+		lhsType: displayType(value.type),
+		operator: opStr,
+		operatorLocation: operator.location,
+	});
+}
+
+function compileArithmeticExpressionTree(
+	leftBranch: OperatorTree,
+	rightBranch: OperatorTree,
+	opToken: lexer.OperatorToken,
+	location: ir.SourceLocation,
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	// Compile an arithmetic operation.
+	const left = compileExpressionTree(leftBranch, ops, stack, typeScope, context);
+	const right = compileExpressionTree(rightBranch, ops, stack, typeScope, context);
+	const opStr = opToken.operator;
+
+	if (left.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: left.location,
+			valueCount: left.values.length,
+			grouping: "op",
+			op: opStr,
+		});
+	} else if (right.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: right.location,
+			valueCount: right.values.length,
+			grouping: "op",
+			op: opStr,
+		});
+	}
+
+	const resolvedOperator = resolveArithmeticOperator(left.values[0], opToken);
+
+	let signatureReturnType: ir.Type;
+	let expectedLhsType: ir.Type;
+	let expectedRhsType: ir.Type;
+	if (resolvedOperator.tag === "foreign-op") {
+		const signature = context.sourceContext.programContext.foreignSignatures[resolvedOperator.foreignID];
+		if (signature === undefined) {
+			throw new Error(
+				"resolveArithmeticOperator produced a bad foreign signature (`" + resolvedOperator
+				+ "`) for `" + displayType(left.values[0].type)
+				+ "` `" + opStr + "`");
+		} else if (signature.parameters.length !== 2) {
+			throw new Error(
+				"Foreign signature `" + resolvedOperator + "` cannot be used as"
+				+ "an operator since it doesn't take exactly 2 parameters");
+		} else if (signature.return_types.length !== 1) {
+			throw new Error(
+				"Foreign signature `" + resolvedOperator
+				+ "` cannot be used as an operator since it produces "
+				+ signature.return_types.length + " values");
+		}
+
+		expectedLhsType = signature.parameters[0].type;
+		expectedRhsType = signature.parameters[1].type;
+		signatureReturnType = signature.return_types[0];
+	} else if (resolvedOperator.tag === "proof-equal-op") {
+		expectedLhsType = left.values[0].type;
+		expectedRhsType = expectedLhsType;
+		signatureReturnType = ir.T_BOOLEAN;
+
+		if (!stack.isInProofBlock()) {
+			throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
+				operation: opToken.operator,
+				location: opToken.location,
+			});
+		}
+	} else {
+		const _: never = resolvedOperator;
+		throw new Error("compileArithmeticExpressionTree: unhandled operator type");
+	}
+
+	if (!ir.equalTypes(expectedRhsType, right.values[0].type)) {
+		throw new diagnostics.OperatorTypeMismatchErr({
+			lhsType: displayType(left.values[0].type),
+			operator: opStr,
+			givenRhsType: displayType(right.values[0].type),
+			expectedRhsType: displayType(expectedRhsType),
+			rhsLocation: right.location,
+		});
+	}
+
+	let operatorResult = {
+		variable: stack.uniqueID("arithmetic"),
+		type: signatureReturnType,
+		location,
+	};
+
+	if (resolvedOperator.tag === "foreign-op") {
+		ops.push({
+			tag: "op-foreign",
+			operation: resolvedOperator.foreignID,
+			arguments: [left.values[0].variable, right.values[0].variable],
+			destinations: [operatorResult],
+		});
+	} else if (resolvedOperator.tag === "proof-equal-op") {
+		ops.push({
+			tag: "op-proof-eq",
+			left: left.values[0].variable,
+			right: right.values[0].variable,
+			destination: operatorResult,
+		});
+	} else {
+		const _: never = resolvedOperator;
+		throw new Error("TODO");
+	}
+
+	if (resolvedOperator.wrap === "negate") {
+		const negatedResult = {
+			variable: stack.uniqueID("negatearithmetic"),
+			type: ir.T_BOOLEAN,
+			location,
+		};
+		const booleanConstant = {
+			variable: stack.uniqueID("negatearithmetic"),
+			type: ir.T_BOOLEAN,
+			location,
+		};
+		ops.push({
+			tag: "op-branch",
+			condition: operatorResult.variable,
+			trueBranch: {
+				ops: [
+					{
+						tag: "op-const",
+						destination: booleanConstant,
+						type: "Boolean",
+						boolean: false,
+					},
+				],
+			},
+			falseBranch: {
+				ops: [
+					{
+						tag: "op-const",
+						destination: booleanConstant,
+						type: "Boolean",
+						boolean: true,
+					},
+				],
+			},
+			destinations: [
+				{
+					destination: negatedResult,
+					trueSource: { tag: "variable", variable: booleanConstant.variable },
+					falseSource: { tag: "variable", variable: booleanConstant.variable },
+				},
+			],
+		});
+
+		operatorResult = negatedResult;
+	}
+
+	return {
+		values: [operatorResult],
+		location,
+	};
+}
+
 function compileExpressionTree(
 	tree: OperatorTree,
 	ops: ir.Op[],
@@ -2160,170 +2457,11 @@ function compileExpressionTree(
 ): ValueInfo {
 	if (tree.tag === "leaf") {
 		return compileOperand(tree.operand, ops, stack, typeScope, context);
-	}
-
-	const left = compileExpressionTree(tree.leftBranch, ops, stack, typeScope, context);
-	if (tree.join.opToken.tag === "keyword") {
-		// Compile a logical binary operation.
-		const opStr = tree.join.opToken.keyword;
-
-		const leftValue = expectOneBooleanForLogical(left, typeScope, context, {
-			opStr: tree.join.opToken.keyword,
-			location: tree.join.opToken.location,
-		});
-
-		const destination = {
-			variable: stack.uniqueID("logical"),
-			type: ir.T_BOOLEAN,
-			location: tree.location,
-		};
-
-		const trueOps: ir.Op[] = [];
-		const falseOps: ir.Op[] = [];
-
-		let trueSource: { tag: "variable", variable: ir.VariableID };
-		let falseSource: { tag: "variable", variable: ir.VariableID };
-
-		if (opStr === "or") {
-			trueSource = { tag: "variable", variable: leftValue.variable };
-
-			stack.openBlock();
-
-			const right = compileExpressionTree(tree.rightBranch, falseOps, stack, typeScope, context);
-			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-				opStr: "or",
-				location: tree.join.opToken.location,
-			});
-			falseSource = { tag: "variable", variable: rightValue.variable };
-
-			for (const _ in stack.closeBlock()) {
-				throw new Error("ICE: unexpected local assignment in logical");
-			}
-		} else if (opStr === "and") {
-			falseSource = { tag: "variable", variable: leftValue.variable };
-
-			stack.openBlock();
-
-			const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
-			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-				opStr: "and",
-				location: tree.join.opToken.location,
-			});
-			trueSource = { tag: "variable", variable: rightValue.variable };
-
-			for (const _ in stack.closeBlock()) {
-				throw new Error("ICE: unexpected local assignment in logical");
-			}
-		} else if (opStr === "implies") {
-			const trueConst = {
-				variable: stack.uniqueID("falseimplies"),
-				type: ir.T_BOOLEAN,
-				location: ir.NONE,
-			};
-			falseOps.push({
-				tag: "op-const",
-				type: "Boolean",
-				boolean: true,
-				destination: trueConst,
-			});
-			falseSource = { tag: "variable", variable: trueConst.variable };
-
-			stack.openBlock();
-
-			const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
-			const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-				opStr: "implies",
-				location: tree.join.opToken.location,
-			});
-			trueSource = { tag: "variable", variable: rightValue.variable };
-
-			for (const _ in stack.closeBlock()) {
-				throw new Error("ICE: unexpected local assignment in logical");
-			}
-		} else {
-			const _: never = opStr;
-			throw new Error("Unhandled logical operator `" + opStr + "`");
-		}
-
-		const branch: ir.OpBranch = {
-			tag: "op-branch",
-			condition: leftValue.variable,
-			trueBranch: { ops: trueOps },
-			falseBranch: { ops: falseOps },
-			destinations: [
-				{
-					destination,
-					trueSource,
-					falseSource,
-				},
-			],
-		};
-		ops.push(branch);
-
-		return { values: [destination], location: tree.location };
+	} else if (tree.join.opToken.tag === "keyword") {
+		return compileLogicalExpressionTree(tree as any, ops, stack, typeScope, context);
 	} else {
-		// Compile an arithmetic operation.
-		const right = compileExpressionTree(tree.rightBranch, ops, stack, typeScope, context);
-
-		const opStr = tree.join.opToken.operator;
-		const fn = resolveOperator(left, tree.join.opToken);
-		const foreign = context.sourceContext.programContext.foreignSignatures[fn];
-		if (foreign === undefined) {
-			throw new Error(
-				"resolveOperator produced a bad foreign signature (`" + fn
-				+ "`) for `" + displayType(left.values[0].type)
-				+ "` `" + opStr + "`");
-		} else if (foreign.parameters.length !== 2) {
-			throw new Error(
-				"Foreign signature `" + fn + "` cannot be used as"
-				+ "an operator since it doesn't take exactly 2 parameters");
-		}
-
-		if (right.values.length !== 1) {
-			throw new diagnostics.MultiExpressionGroupedErr({
-				location: right.location,
-				valueCount: right.values.length,
-				grouping: "op",
-				op: opStr,
-			});
-		}
-
-		const expectedRhsType = foreign.parameters[1].type;
-		if (!ir.equalTypes(expectedRhsType, right.values[0].type)) {
-			throw new diagnostics.OperatorTypeMismatchErr({
-				lhsType: displayType(left.values[0].type),
-				operator: opStr,
-				givenRhsType: displayType(right.values[0].type),
-				expectedRhsType: displayType(expectedRhsType),
-				rhsLocation: right.location,
-			});
-		}
-
-		if (foreign.return_types.length !== 1) {
-			throw new Error(
-				"Foreign signature `" + fn
-				+ "` cannot be used as an operator since it produces "
-				+ foreign.return_types.length + " values");
-		}
-
-		const location = ir.locationSpan(left.location, right.location);
-		const destination = {
-			variable: stack.uniqueID("arithmetic"),
-			type: foreign.return_types[0],
-			location,
-		};
-
-		ops.push({
-			tag: "op-foreign",
-			operation: fn,
-			arguments: [left.values[0].variable, right.values[0].variable],
-			destinations: [destination],
-		});
-
-		return {
-			values: [destination],
-			location,
-		};
+		return compileArithmeticExpressionTree(
+			tree.leftBranch, tree.rightBranch, tree.join.opToken, tree.location, ops, stack, typeScope, context);
 	}
 }
 
@@ -2442,10 +2580,19 @@ function compileAssertSt(
 	typeScope: TypeScope,
 	context: FunctionContext,
 ) {
-	// TODO: Introduce proof context.
-	const conditionTuple = compileExpression(statement.expression, ops, stack, typeScope, context);
+	const proof: ir.OpProof = {
+		tag: "op-proof",
+		body: {
+			ops: [],
+		},
+	};
+	// Compile the asserted expression in a proof context.
+	stack.openBlock(true);
+	const conditionTuple = compileExpression(statement.expression, proof.body.ops, stack, typeScope, context);
+	stack.closeBlock();
+
 	const asserted = expectOneBooleanForContract(conditionTuple, typeScope, context, "assert");
-	ops.push({
+	proof.body.ops.push({
 		tag: "op-branch",
 		condition: asserted.variable,
 		trueBranch: { ops: [] },
@@ -2460,6 +2607,7 @@ function compileAssertSt(
 		},
 		destinations: [],
 	});
+	ops.push(proof);
 }
 
 function compileReturnSt(
@@ -2544,7 +2692,7 @@ function compileIfClause(
 		trueAssignments = assignments;
 	});
 
-	stack.openBlock();
+	stack.openBlock(false);
 	let falseBranch: ir.OpBlock = { ops: [] };
 	if (restIndex >= rest.length) {
 		// Reached else clause.
@@ -2624,7 +2772,7 @@ function compileBlock(
 	callback?: (assignments: Record<string, ir.VariableID>) => void,
 ): ir.OpBlock {
 	const ops: ir.Op[] = [];
-	stack.openBlock();
+	stack.openBlock(false);
 
 	for (const s of block.statements) {
 		compileStatement(s, ops, stack, typeScope, context);
@@ -2689,10 +2837,13 @@ function compileFunctionSignature(
 
 	for (let precondition of signatureAST.requires) {
 		const block: ir.OpBlock = { ops: [] };
-		stack.openBlock();
+
+		// Compile the precondition in a proof context.
+		stack.openBlock(true);
 		const result = compileExpression(precondition.expression, block.ops, stack, typeScope, context);
 		const asserted = expectOneBooleanForContract(result, typeScope, context, "requires");
 		stack.closeBlock();
+
 		signature.preconditions.push({
 			block,
 			precondition: asserted.variable,
@@ -2701,7 +2852,9 @@ function compileFunctionSignature(
 	}
 
 	if (signatureAST.ensures.length !== 0) {
-		stack.openBlock();
+		// Compile the postcondition in a proof context.
+		stack.openBlock(true);
+
 		// The variables in a "return" expression are treated as "parameter"
 		// variables for the ensures block.
 		const ensuresReturnExpression: ValueInfo = {
@@ -2719,13 +2872,15 @@ function compileFunctionSignature(
 
 		for (let postcondition of signatureAST.ensures) {
 			const block: ir.OpBlock = { ops: [] };
-			stack.openBlock();
+
+			stack.openBlock(true);
 			const result = compileExpression(postcondition.expression, block.ops, stack, typeScope, {
 				...context,
 				ensuresReturnExpression,
 			});
 			const asserted = expectOneBooleanForContract(result, typeScope, context, "ensures");
 			stack.closeBlock();
+
 			signature.postconditions.push({
 				block,
 				returnedValues: ensuresReturnExpression.values,

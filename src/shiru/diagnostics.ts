@@ -693,3 +693,16 @@ export class ImplMayNotHavePreconditionErr extends SemanticError {
 		]);
 	}
 }
+
+export class ProofMemberUsedOutsideProofContextErr extends SemanticError {
+	constructor(args: {
+		operation: string,
+		location: SourceLocation,
+	}) {
+		super([
+			"The operation `" + args.operation + "` ",
+			"cannot be used outside a proof context as it is at",
+			args.location,
+		]);
+	}
+}

@@ -762,4 +762,72 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"refutes-recursive-object-containing-itself"() {
+		const source = `
+		package example;
+
+		record Cons[#T] {
+			var head: #T;
+			var tail: List[#T];
+		}
+
+		enum List[#T] {
+			var cons: Cons[#T];
+			var nil: Unit;
+		}
+
+		record Main {
+			fn t(a: List[Int]): Int {
+				if a is cons {
+					assert a.cons.tail != a;
+				}
+				return 5;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"attempt-to-claim-recursive-object-contains-itself"() {
+		const source = `
+		package example;
+
+		record Cons[#T] {
+			var head: #T;
+			var tail: List[#T];
+		}
+
+		enum List[#T] {
+			var cons: Cons[#T];
+			var nil: Unit;
+		}
+
+		record Main {
+			fn t(a: List[Int]): Int {
+				if a is cons {
+					// This is impossible.
+					assert a.cons.tail == a;
+				}
+				return 5;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-assert",
+				assertLocation: {
+					fileID: "test-file",
+					offset: 247,
+					length: 24,
+				},
+			},
+		]);
+	},
 };

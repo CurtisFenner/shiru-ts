@@ -73,7 +73,7 @@ export const tests = {
 			[3, 4, 5],
 		]);
 	},
-	"DisjointSet-explainEquality"() {
+	"DisjointSet-basic-explainEquality"() {
 		const ds = new DisjointSet();
 		ds.union(0, 1, "a");
 		ds.union(5, 4, "e");
@@ -84,5 +84,17 @@ export const tests = {
 		ds.union(3, 2, "c");
 		assert(new Set(ds.explainEquality(0, 5)), "is equal to", new Set(["a", "b", "c", "d", "e"]));
 		assert(new Set(ds.explainEquality(1, 1)), "is equal to", new Set());
-	}
+	},
+	"DisjointSet-explainEquality-efficient"() {
+		const ds = new DisjointSet();
+
+		const last = 1000;
+		for (let i = 0; i < last; i++) {
+			ds.union(i, i + 1, i);
+		}
+
+		// Querying this should be almost instant.
+		const reason = ds.explainEquality(0, last);
+		assert(new Set(reason).size, "is equal to", last);
+	},
 };

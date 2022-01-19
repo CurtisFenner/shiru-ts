@@ -143,15 +143,21 @@ export class DisjointSet<E, K> {
 				return keys;
 			}
 			for (const e of this.outgoingEdges.get(top.n)!) {
-				q.push({
-					n: e.next,
-					parent: top,
-					key: e.key,
-				});
+				// The outgoingEdges graph is strictly a tree, so we can avoid
+				// using a set for visited edges by simply skipping edges that
+				// go directly backward.
+				const isBackEdge = e.next === top.parent?.n;
+				if (!isBackEdge) {
+					q.push({
+						n: e.next,
+						parent: top,
+						key: e.key,
+					});
+				}
 			}
 		}
 
-		throw new Error(`objects ${a} and ${b} are in different components`);
+		throw new Error(`objects ${String(a)} and ${String(b)} are in different components`);
 	}
 
 	/// union updates this datastructure to join the equivalence classes of

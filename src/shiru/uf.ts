@@ -308,7 +308,7 @@ export class UFSolver<Reason> {
 							const r = interpreter.f(...args);
 							if (r !== null) {
 								const constant = this.createConstant(r);
-								const changed = this.egraph.merge(constant, eclass, reason);
+								const changed = this.egraph.merge(constant, member.id, reason);
 								if (changed) {
 									iterationMadeChanges = true;
 								}

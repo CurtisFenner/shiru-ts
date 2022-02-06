@@ -1,8 +1,9 @@
 import * as grammar from "./grammar";
 import * as ir from "./ir";
 import * as semantics from "./semantics";
+import * as uf from "./uf";
 import * as verify from "./verify";
-import { assert } from "./test";
+import { assert, spec, specDescribe } from "./test";
 
 export const tests = {
 	"empty-verification"() {
@@ -830,4 +831,102 @@ export const tests = {
 			},
 		]);
 	},
+	"clausifyNotSmallerThan-simple"() {
+		const smt = new uf.UFTheory();
+		smt.addConstraint([
+			smt.createConstant(ir.T_BOOLEAN, true),
+		]);
+		const eqF = smt.createFunction(ir.T_BOOLEAN, { eq: true });
+		const negF = smt.createFunction(ir.T_BOOLEAN, { not: true });
+		const ltF = smt.createFunction(ir.T_BOOLEAN, {
+			interpreter: {
+				f(...args: (unknown | null)[]): unknown | null {
+					if (args.length !== 2) {
+						throw new Error("unexpected");
+					}
+					const a = args[0];
+					const b = args[1];
+					if (a === null || b === null) {
+						return null;
+					}
+					if (typeof a !== "number" || typeof b !== "number") {
+						throw new Error("unexpected");
+					}
+					return a < b;
+				},
+			},
+		});
+
+		const isSatisfiable = (clauses: uf.ValueID[][]): boolean => {
+			smt.pushScope();
+			for (let i = 0; i < clauses.length; i++) {
+				smt.addConstraint(clauses[i]);
+			}
+			const result = smt.attemptRefutation();
+			smt.popScope();
+			return result !== "refuted";
+		}
+
+		const n1 = smt.createConstant(ir.T_INT, 1);
+		const n2 = smt.createConstant(ir.T_INT, 2);
+		const n3 = smt.createConstant(ir.T_INT, 3);
+
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n1])]]), "is equal to", false);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n2, n1])]]), "is equal to", false);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n2])]]), "is equal to", true);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n3])]]), "is equal to", true);
+
+		const testCases = [
+			{ lefts: [1, 2], rights: [1, 2], less: false },
+			{ lefts: [1, 1], rights: [1, 1], less: false },
+			{ lefts: [1, 1], rights: [2, 2], less: true },
+			{ lefts: [1, 1], rights: [1, 2], less: true },
+			{ lefts: [2, 1], rights: [1, 2], less: false },
+			{ lefts: [], rights: [1], less: true },
+			{ lefts: [1], rights: [], less: false },
+		];
+
+		assert(lexicographicComparison([1, 2, 3], [4]), "is equal to", -1);
+		assert(lexicographicComparison([4], [1, 2, 3]), "is equal to", +1);
+		assert(lexicographicComparison([1, 2, 3], [1, 2, 3]), "is equal to", 0);
+		assert(lexicographicComparison([1, 2, 3], [1, 2]), "is equal to", +1);
+		assert(lexicographicComparison([1, 2], [1, 2, 3]), "is equal to", -1);
+
+		for (const testCase of testCases) {
+			// Check that the test case expectation is correct.
+			assert(testCase.less, "is equal to",
+				specDescribe(lexicographicComparison(testCase.lefts, testCase.rights) === -1,
+					JSON.stringify(testCase)));
+
+			// Check that clausifyNotSmallerThan agrees with the direct check.
+			const lefts = testCase.lefts.map(n => smt.createConstant(ir.T_INT, n));
+			const rights = testCase.rights.map(n => smt.createConstant(ir.T_INT, n));
+			const clauses = verify.clausifyNotSmallerThan(smt, { eqF, ltF, negF }, lefts, rights);
+			assert(
+				isSatisfiable(clauses),
+				"is equal to",
+				specDescribe(!testCase.less, "!testCase.less", "case(" + JSON.stringify(testCase) + ")"),
+			);
+		}
+	},
 };
+
+function lexicographicComparison<T>(left: T[], right: T[]): -1 | 0 | 1 {
+	for (let i = 0; true; i++) {
+		if (i < left.length && i < right.length) {
+			if (left[i] < right[i]) {
+				return -1;
+			} else if (right[i] < left[i]) {
+				return +1;
+			}
+		} else {
+			if (i < left.length) {
+				return +1;
+			} else if (i < right.length) {
+				return -1;
+			} else {
+				return 0;
+			}
+		}
+	}
+}

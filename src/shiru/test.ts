@@ -17,13 +17,15 @@ export type Run = PassRun | FailRun;
 
 export interface PassRun {
 	name: string,
-	type: "pass"
+	type: "pass",
+	elapsedMillis: number,
 }
 
 export interface FailRun {
 	name: string,
 	type: "fail",
 	exception: any,
+	elapsedMillis: number,
 }
 
 export class TestRunner {
@@ -36,12 +38,15 @@ export class TestRunner {
 			return;
 		}
 
+		const beforeMillis = Date.now();
 		try {
 			body();
-			this.runs.push({ name, type: "pass" });
+			const elapsedMillis = Date.now() - beforeMillis;
+			this.runs.push({ name, type: "pass", elapsedMillis });
 			return;
 		} catch (e) {
-			this.runs.push({ name, type: "fail", exception: e });
+			const elapsedMillis = Date.now() - beforeMillis;
+			this.runs.push({ name, type: "fail", exception: e, elapsedMillis });
 		}
 	}
 
@@ -80,6 +85,16 @@ export class TestRunner {
 		console.log("Passed: " + passed.length + ".");
 		console.log("Failed: " + failed.length + (failed.length == 0 ? "." : "!"));
 
+		if (this.runs.length !== 0) {
+			let slowest = this.runs[0];
+			for (let i = 1; i < this.runs.length; i++) {
+				if (this.runs[i].elapsedMillis > slowest.elapsedMillis) {
+					slowest = this.runs[i];
+				}
+			}
+			console.log("Slowest: " + slowest.name + " took " + slowest.elapsedMillis + " ms");
+		}
+
 		if (passed.length === 0 || failed.length !== 0) {
 			return 1;
 		}
@@ -106,13 +121,41 @@ export function specSupersetOf<T>(subset: Set<T>): Spec<Set<T>> {
 	}
 }
 
-function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[] } {
+export function specEq<T>(value: Spec<T>): Spec<T> {
+	return {
+		[spec](test: T) {
+			return deepEqual(test, value);
+		},
+	};
+}
+
+export function specDescribe<T>(value: Spec<T>, description: string, path?: string): Spec<T> {
+	return {
+		[spec](test: T) {
+			const cmp = deepEqual(test, value);
+			if (cmp.eq === true) {
+				return cmp;
+			} else {
+				cmp.description = description;
+				if (path !== undefined) {
+					cmp.path = [path].concat(cmp.path);
+				}
+				return cmp;
+			}
+		},
+	};
+}
+
+function deepEqual(
+	a: any,
+	b: Spec<any>,
+): { eq: true } | { eq: false, path: any[], expectedValue?: any, description?: string } {
 	if (b !== null && typeof b === "object" && spec in b) {
 		return b[spec](a);
 	} else if (a === b) {
 		return { eq: true };
 	} else if (typeof a !== typeof b) {
-		return { eq: false, path: [] };
+		return { eq: false, path: [], expectedValue: b };
 	} else if (a instanceof Set && b instanceof Set) {
 		for (let v of a) {
 			if (!b.has(v)) {
@@ -158,7 +201,8 @@ function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[
 		for (let k in a) {
 			const cmp = deepEqual(a[k], b[k]);
 			if (!cmp.eq) {
-				return { eq: false, path: [k].concat(cmp.path) };
+				cmp.path = [k].concat(cmp.path);
+				return cmp;
 			}
 			checked[k] = true;
 		}
@@ -169,7 +213,7 @@ function deepEqual(a: any, b: Spec<any>): { eq: true } | { eq: false, path: any[
 		}
 		return { eq: true };
 	} else {
-		return { eq: false, path: [] };
+		return { eq: false, path: [], expectedValue: b };
 	}
 }
 
@@ -184,8 +228,9 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		const cmp = deepEqual(a, b);
 		if (!cmp.eq) {
 			const sa = util.inspect(a, { depth: 16, colors: true });
-			const sb = util.inspect(b, { depth: 16, colors: true });
-			throw new Error(`Expected \n${sa}\nto be equal to\n${sb}\nbut found difference in path \`${JSON.stringify(cmp.path)}\``);
+			const sb = util.inspect("expectedValue" in cmp ? cmp.expectedValue : b, { depth: 16, colors: true });
+			const expected = "description" in cmp ? " (" + cmp.description + ")" : "";
+			throw new Error(`Expected \n${sa}\nto be equal to\n${sb}${expected}\nbut found difference in path \`${JSON.stringify(cmp.path)}\``);
 		}
 	} else if (args[1] === "is array") {
 		const [a, op] = args;

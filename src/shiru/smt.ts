@@ -94,7 +94,7 @@ export abstract class SMTSolver<E, Counterexample> {
 					// logic in backtracking should be able to replace this.
 					solver.rollbackToDecisionLevel(-1);
 					if (theoryClause.length === 0) {
-						throw new Error("TODO: loop zero");
+						throw new Error("SMTSolver.attemptRefutation: unexpected zero-length theory clause");
 					}
 					solver.addClause(theoryClause);
 				} else {

@@ -1429,3 +1429,40 @@ function traverseDynamicCall(
 		throw new Error("TODO");
 	}
 }
+
+/// RETURNS a CNF clausification restricting solutions to those where the
+/// lexicographic comparison `lefts < rights` is NOT true.
+/// Note that when one tuple is a preifx of the other, the shorter tuple is
+/// considered to be smaller.
+export function clausifyNotSmallerThan(
+	smt: uf.UFTheory,
+	{ eqF, ltF, negF }: { eqF: uf.FnID, ltF: uf.FnID, negF: uf.FnID },
+	lefts: uf.ValueID[],
+	rights: uf.ValueID[],
+): uf.ValueID[][] {
+	const out: uf.ValueID[][] = [];
+	const neqs: uf.ValueID[] = [];
+	for (let i = 0; i <= lefts.length; i++) {
+		const left = lefts[i];
+		const right = rights[i];
+		let cmp: uf.ValueID;
+		if (left !== undefined && right !== undefined) {
+			cmp = smt.createApplication(ltF, [left, right]);
+		} else if (left === undefined && right === undefined) {
+			break;
+		} else if (left === undefined) {
+			cmp = smt.createConstant(ir.T_BOOLEAN, true);
+		} else if (right === undefined) {
+			cmp = smt.createConstant(ir.T_BOOLEAN, false);
+		} else {
+			throw new Error("clausifyNotSmallerThan: unreachable");
+		}
+
+		const ncmp = smt.createApplication(negF, [cmp]);
+		out.push([ncmp, ...neqs]);
+		const eq = smt.createApplication(eqF, [left, right]);
+		const neq = smt.createApplication(negF, [eq]);
+		neqs.push(neq);
+	}
+	return out;
+}

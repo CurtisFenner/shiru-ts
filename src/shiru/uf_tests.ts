@@ -565,4 +565,109 @@ export const tests = {
 
 		assert(smt.attemptRefutation(), "is equal to", "refuted");
 	},
+	"UFSolver-antireflexive-interpreter-yes"() {
+		const solver = new uf.UFSolver<string>();
+
+		const ltF = solver.createFn({
+			interpreter: {
+				f(...args: (unknown | null)[]): unknown | null {
+					if (args.length !== 2) {
+						throw new Error("unexpected");
+					}
+					const a = args[0];
+					const b = args[1];
+					if (a === null || b === null) {
+						return null;
+					}
+					if (typeof a !== "number" || typeof b !== "number") {
+						throw new Error("unexpected");
+					}
+					return a < b;
+				},
+			},
+		});
+
+		const n1 = solver.createConstant(1);
+
+		const refutation = solver.refuteAssumptions([
+			{
+				constraint: solver.createApplication(ltF, [n1, n1]),
+				assignment: true,
+				reason: "alpha",
+			},
+		]);
+
+		assert(refutation, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set(["alpha"]),
+		});
+	},
+	"UFTheory-antireflexive-interpreter"() {
+		const smt = new uf.UFTheory();
+		smt.addConstraint([
+			smt.createConstant(ir.T_BOOLEAN, true),
+		]);
+		const ltF = smt.createFunction(ir.T_BOOLEAN, {
+			interpreter: {
+				f(...args: (unknown | null)[]): unknown | null {
+					if (args.length !== 2) {
+						throw new Error("unexpected");
+					}
+					const a = args[0];
+					const b = args[1];
+					if (a === null || b === null) {
+						return null;
+					}
+					if (typeof a !== "number" || typeof b !== "number") {
+						throw new Error("unexpected");
+					}
+					return a < b;
+				},
+			},
+		});
+
+		const isSatisfiable = (clauses: uf.ValueID[][]): boolean => {
+			smt.pushScope();
+			for (let i = 0; i < clauses.length; i++) {
+				smt.addConstraint(clauses[i]);
+			}
+			const result = smt.attemptRefutation();
+			smt.popScope();
+			return result !== "refuted";
+		}
+
+		const n1 = smt.createConstant(ir.T_INT, 1);
+		const n2 = smt.createConstant(ir.T_INT, 2);
+		const n3 = smt.createConstant(ir.T_INT, 3);
+
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n1])]]), "is equal to", false);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n2, n1])]]), "is equal to", false);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n2])]]), "is equal to", true);
+		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n3])]]), "is equal to", true);
+	},
+	"UFSolver-always-false-interpreter"() {
+
+		const solver = new uf.UFSolver<string>();
+
+		const ltF = solver.createFn({
+			interpreter: {
+				f(...args: (unknown | null)[]): unknown | null {
+					return false;
+				},
+			},
+		});
+
+		const refutation = solver.refuteAssumptions([
+			{
+				constraint: solver.createApplication(ltF, []),
+				assignment: true,
+				reason: "alpha",
+			},
+		]);
+
+		assert(refutation, "is equal to", {
+			tag: "inconsistent",
+			inconsistent: new Set(["alpha"]),
+		});
+	},
 };

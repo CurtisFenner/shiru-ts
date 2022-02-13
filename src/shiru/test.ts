@@ -201,8 +201,7 @@ function deepEqual(
 		for (let k in a) {
 			const cmp = deepEqual(a[k], b[k]);
 			if (!cmp.eq) {
-				cmp.path = [k].concat(cmp.path);
-				return cmp;
+				return { eq: cmp.eq, path: [k].concat(cmp.path) };
 			}
 			checked[k] = true;
 		}

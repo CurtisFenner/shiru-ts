@@ -307,28 +307,32 @@ export class SATSolver {
 	/// The array `clause` is interpreted as a conjunction ("and") of its
 	/// contained literals.
 	/// A clause is satisfied when at least one of its literals is satisfied.
-	addClause(clause: Literal[]): ClauseID {
+	addClause(unprocessedClause: Literal[]): ClauseID {
+
+		// Check for tautological clauses and for redundant literals.
 		let hasUnassigned = false;
-		for (let literal of clause) {
-			const term = literal > 0 ? literal : -literal;
+		const clause: Literal[] = [];
+		let termFirstLiteral: Record<number, number> = {};
+		for (let i = 0; i < unprocessedClause.length; i++) {
+			const literal = unprocessedClause[i];
+			const term = literal > 0 ? +literal : -literal;
 			if (this.assignments[term] === 0) {
 				hasUnassigned = true;
-				break;
 			}
-		}
-		if (!hasUnassigned) {
-			throw new Error("SATSolver.addClause() requires at least one unassigned literal");
+
+			if (term in termFirstLiteral) {
+				if (termFirstLiteral[term] !== literal) {
+					// This clause is a tautology.
+					return -1;
+				}
+			} else {
+				termFirstLiteral[term] = literal;
+				clause.push(literal);
+			}
 		}
 
-		let termFirstLiteral: Record<number, number> = {};
-		for (let i = 0; i < clause.length; i++) {
-			const literal = clause[i];
-			const term = literal > 0 ? +literal : -literal;
-			if (term in termFirstLiteral && termFirstLiteral[term] !== literal) {
-				// This clause is a tautology.
-				return -1;
-			}
-			termFirstLiteral[term] = literal;
+		if (!hasUnassigned) {
+			throw new Error("SATSolver.addClause() requires at least one unassigned literal");
 		}
 
 		const clauseID = this.clauses.length;

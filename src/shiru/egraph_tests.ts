@@ -155,4 +155,28 @@ export const tests = {
 			12, 23, 34, 45, 56, 67, 78, 89
 		]));
 	},
+	"EGraph-multiple-congruent-applications"() {
+		const eg = new egraph.EGraph<string, never, number>();
+		const a = eg.add("a", []);
+		const b = eg.add("b", []);
+		const c = eg.add("c", []);
+		const d = eg.add("d", []);
+
+		eg.merge(a, b, new Set([2]));
+		eg.merge(a, c, new Set([3]));
+		eg.merge(a, d, new Set([4]));
+
+		const fa = eg.add("f", [a]);
+		const fb = eg.add("f", [b]);
+		const fc = eg.add("f", [c]);
+		const fd = eg.add("f", [d]);
+
+		eg.updateCongruence();
+
+		// All three (and not just some) should become equal after a single step
+		// of congruence.
+		assert(eg.query(fa, fb), "is equal to", new Set([2]));
+		assert(eg.query(fa, fc), "is equal to", new Set([3]));
+		assert(eg.query(fa, fd), "is equal to", new Set([4]));
+	},
 };

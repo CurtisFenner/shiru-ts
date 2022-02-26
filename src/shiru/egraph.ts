@@ -116,7 +116,7 @@ export class EGraph<Term, Tag, Reason> {
 			}
 			const first = members[0];
 			for (let i = 1; i < members.length; i++) {
-				const second = members[1];
+				const second = members[i];
 				if (this.ds.representative(first.id) === this.ds.representative(second.id)) {
 					// They're already equal.
 					continue;

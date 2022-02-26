@@ -221,6 +221,7 @@ export function parseSource(blob: string, fileID: string) {
 
 export type BooleanLiteralToken = KeywordToken & { keyword: "true" | "false" };
 export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
+export type KeywordOperatorToken = KeywordToken & { keyword: "bounds" };
 
 const tokens = {
 	packageIden: tokenParser("iden"),
@@ -236,7 +237,6 @@ const tokens = {
 		return null;
 	}),
 	typeKeyword: tokenParser("type-keyword"),
-	operator: tokenParser("operator"),
 	stringLiteral: tokenParser("string-literal"),
 	numberLiteral: tokenParser("number-literal"),
 	booleanLiteral: new TokenParser((token: Token) => {
@@ -254,6 +254,14 @@ const tokens = {
 			return null;
 		}
 		return token as BinaryLogicalToken;
+	}),
+	arithmeticOperator: new TokenParser<Token, KeywordOperatorToken | OperatorToken>(token => {
+		if (token.tag === "operator") {
+			return token;
+		} else if (token.tag === "keyword" && token.keyword === "bounds") {
+			return token as KeywordOperatorToken;
+		}
+		return null;
 	}),
 	returnKeyword: keywordParser("return"),
 };
@@ -275,6 +283,7 @@ const keywords = {
 	record: keywordParser("record"),
 	requires: keywordParser("requires"),
 	return: keywordParser("return"),
+	bounds: keywordParser("bounds"),
 	unreachable: keywordParser("unreachable"),
 	var: keywordParser("var"),
 };
@@ -557,11 +566,11 @@ export interface ExpressionSuffixIs {
 	location: SourceLocation,
 }
 
-export type ExpressionOperation = ExpressionOperationBinary | ExpressionOperationLogical;
+export type ExpressionOperation = ExpressionOperationArithmetic | ExpressionOperationLogical;
 
-export interface ExpressionOperationBinary {
-	tag: "binary",
-	operator: OperatorToken,
+export interface ExpressionOperationArithmetic {
+	tag: "arithmetic",
+	operator: OperatorToken | KeywordOperatorToken,
 	right: ExpressionOperand,
 }
 
@@ -639,7 +648,7 @@ type ASTs = {
 	ExpressionConstraintCall: ExpressionConstraintCall,
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
-	ExpressionOperationBinary: ExpressionOperationBinary,
+	ExpressionOperationArithmetic: ExpressionOperationArithmetic,
 	ExpressionOperationLogical: ExpressionOperationLogical,
 	ExpressionParenthesized: ExpressionParenthesized,
 	ExpressionRecordLiteral: ExpressionRecordLiteral,
@@ -838,13 +847,13 @@ export const grammar: ParsersFor<Token, ASTs> = {
 		accesses: new RepeatParser(grammar.ExpressionAccess),
 		suffixIs: grammar.ExpressionSuffixIs.otherwise(null),
 	})),
-	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary", "ExpressionOperationLogical"),
-	ExpressionOperationBinary: new RecordParser(() => ({
-		tag: new ConstParser("binary"),
-		operator: tokens.operator,
+	ExpressionOperation: choice(() => grammar, "ExpressionOperationArithmetic", "ExpressionOperationLogical"),
+	ExpressionOperationArithmetic: new RecordParser(() => ({
+		tag: new ConstParser("arithmetic"),
+		operator: tokens.arithmeticOperator,
 		right: grammar.ExpressionOperand
 			.required(parseProblem("Expected an operand at", atHead,
-				"after the binary operator at", atReference("operator")))
+				"after the arithmetic operator at", atReference("operator")))
 	})),
 	ExpressionOperationLogical: new RecordParser(() => ({
 		tag: new ConstParser("logical"),

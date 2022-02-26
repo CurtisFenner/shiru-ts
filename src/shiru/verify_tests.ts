@@ -3,7 +3,7 @@ import * as ir from "./ir";
 import * as semantics from "./semantics";
 import * as uf from "./uf";
 import * as verify from "./verify";
-import { assert, spec, specDescribe } from "./test";
+import { assert, specDescribe } from "./test";
 
 export const tests = {
 	"empty-verification"() {
@@ -265,7 +265,9 @@ export const tests = {
 
 		record R {
 			fn dec(n: Int): Int
-			ensures n < 0 or return == R.dec(n - 1) {
+			ensures n == (n + 1) - 1
+			ensures n < 0 or (n + 1) - 1 bounds n - 1
+			ensures n - 1 < 0 or return == R.dec(n - 1) {
 				if n < 0 {
 					return 0;
 				}
@@ -465,7 +467,8 @@ export const tests = {
 			}
 
 			fn tail(self: List[#T]): List[#T]
-			requires self is cons {
+			requires self is cons
+			ensures self bounds return {
 				return self.cons.tail;
 			}
 
@@ -884,6 +887,10 @@ export const tests = {
 			{ lefts: [2, 1], rights: [1, 2], less: false },
 			{ lefts: [], rights: [1], less: true },
 			{ lefts: [1], rights: [], less: false },
+			{ lefts: [1, 2, 3, 4], rights: [1], less: false },
+			{ lefts: [1], rights: [1, 2, 3, 4], less: true },
+			{ lefts: [1, 2, 3, 4], rights: [1, 9], less: true },
+			{ lefts: [1, 9], rights: [1, 2, 3, 4], less: false },
 		];
 
 		assert(lexicographicComparison([1, 2, 3], [4]), "is equal to", -1);
@@ -908,6 +915,163 @@ export const tests = {
 				specDescribe(!testCase.less, "!testCase.less", "case(" + JSON.stringify(testCase) + ")"),
 			);
 		}
+	},
+	"unsound-recursive-ensures-true"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn oracle(b: Boolean): Boolean
+			ensures b == return
+			ensures return {
+				if b {
+					return b;
+				}
+				return Main.oracle(b);
+			}
+
+			fn main(): Unit {
+				assert Main.oracle(false);
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-totality",
+				nonDecreasingCall: { fileID: "test-file", offset: 157, length: 14 },
+				cycle: [],
+			},
+		]);
+	},
+	"add-zero-is-identify"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn zeroIsRightIdentity(a: Int): Boolean
+			ensures a + 0 == a {
+				return true;
+			}
+
+			fn zeroIsLeftIdentity(a: Int): Boolean
+			ensures 0 + a == a {
+				assert 0 + a == a + 0;
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"int-subtract-then-add-is-identity"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn subtractThenAddIsIdentity(n: Int, k: Int): Boolean
+			ensures (n - k) + k == n {
+				assert (n - k) + k == ((n + 0) - k) + k;
+				assert (n - k) + k == (n + (0 - k)) + k;
+				assert (0 - k) + k == k + (0 - k);
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"arithmetic-bounds"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn nonZeroBoundsZero(n: Int): Boolean 
+			requires n != 0
+			ensures n bounds 0 {
+				return true;
+			}
+
+			fn positiveBoundsSmallerPositive(smaller: Int, larger: Int): Boolean 
+			requires 0 < smaller
+			requires smaller < larger
+			ensures larger bounds smaller {
+				return true;
+			}
+
+			fn additionPreservesInequality(a: Int, b: Int, k: Int): Boolean
+			// this requires an ordered ring (or group) axiom:
+			// forall c. a < b ifandonlyif a + c < b + c
+			ensures (a < b) == (a + k < b + k) {
+				//assert a < b implies 0 < b - a;
+				return true;
+			}
+
+			fn addThenSubtractIsIdentity(n: Int, k: Int): Boolean
+			ensures (n + k) - k == n {
+				// v = -k
+				// assume k + v == 0.
+				// learn (n + k) + v == n + (k + v)
+				assert (n + k) - k == n + (k - k);
+				assert k - k == 0;
+				return true;
+			}
+
+			fn subtractThenAddIsIdentity(n: Int, k: Int): Boolean
+			ensures (n - k) + k == n {
+				assert (n - k) + k == ((n + 0) - k) + k;
+				assert (n - k) + k == (n + (0 - k)) + k;
+				assert (0 - k) + k == k + (0 - k);
+				return true;
+			}
+
+			fn positiveImpliesPredecessorNonNegative(n: Int): Boolean
+			requires 0 < n
+			ensures n - 1 < 0 implies false {
+				assert n - 1 < 0 implies (n - 1) + 1 < 0 + 1;
+				assert (n - 1) + 1 < 0 + 1 implies n < 1;
+				// a number larger than 0 is either 1 or larger than 1
+				return true;
+			}
+
+			// fn intBoundsPositivePredecessor(n: Int): Boolean
+			// requires 0 < n
+			// ensures n bounds n - 1 {
+			// 	return true;
+			// }
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"int-addition-associative"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn isAssociative(a: Int, b: Int, c: Int): Boolean
+			ensures (a + b) + c == a + (b + c) {
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
 	},
 };
 

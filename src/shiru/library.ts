@@ -116,6 +116,12 @@ export function formatVerificationFailure(
 				v.accessLocation,
 			],
 		};
+	} else if (v.tag === "failed-totality") {
+		return {
+			message: [
+				"A function is missing a `partial` annotation, but does not necessarily terminate"
+			],
+		};
 	} else {
 		const _: never = v;
 		throw new Error("unhandled `" + v["tag"] + "`");

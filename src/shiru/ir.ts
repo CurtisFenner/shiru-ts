@@ -125,13 +125,25 @@ export interface OpCopy {
 	copies: Copy[],
 }
 
-/// `OpProofEq` determines whether or not two objects are the same. This
-/// operation is only valid in proof contexts.
+/// `OpProofEq` determines whether or not two objects are the same.
+/// This operation is only valid in proof contexts.
 export interface OpProofEq {
 	tag: "op-proof-eq",
 
 	left: VariableID,
 	right: VariableID,
+
+	destination: VariableDefinition,
+}
+
+/// `OpProofBounds` determines whether or not `smaller` is "smaller than"
+/// `larger`.
+/// This operation is only valid in proof contexts.
+export interface OpProofBounds {
+	tag: "op-proof-bounds",
+
+	larger: VariableID,
+	smaller: VariableID,
 
 	destination: VariableDefinition,
 }
@@ -326,7 +338,7 @@ export interface OpForeign {
 
 export type LeafOp = OpConst
 	| OpCopy
-	| OpProofEq
+	| OpProofEq | OpProofBounds
 	| OpNewRecord | OpNewEnum | OpField | OpVariant | OpIsVariant
 	| OpStaticCall | OpDynamicCall
 	| OpForeign
@@ -405,6 +417,16 @@ export interface FunctionSignature {
 		/// equivalence relation that respects extensionality.
 		/// That is, a == b implies f(a) == f(b).
 		eq?: true,
+
+		/// A `transitive` function respects transitivity:
+		/// f(a, b) and f(b, a) implies f(a, c).
+		/// (This need not be specified for `eq` functions)
+		transitive?: true,
+
+		/// A `transitiveAcyclic` function is a `transitive` function which does not
+		/// admit cycles (a < b < c < d < ... < a). This implies that the relation
+		/// is anti-reflexive.
+		transitiveAcyclic?: true,
 	},
 };
 

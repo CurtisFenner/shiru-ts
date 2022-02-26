@@ -469,6 +469,8 @@ function* interpretOp(
 		return null;
 	} else if (op.tag === "op-proof-eq") {
 		throw new Error("unexpected op-proof-eq");
+	} else if (op.tag === "op-proof-bounds") {
+		throw new Error("unexpected op-proof-bounds");
 	} else if (op.tag === "op-new-record") {
 		const recordValue: RecordValue = {
 			sort: "record",
@@ -700,6 +702,11 @@ export function printOp(
 	} else if (op.tag === "op-proof-eq") {
 		const lhs = printVariable(op.destination);
 		lines.push(indent + lhs + " = " + op.left + " proof== " + op.right + ";");
+		return;
+	} else if (op.tag === "op-proof-bounds") {
+		const lhs = printVariable(op.destination);
+		const rhs = op.larger + " proofbounds " + op.smaller;
+		lines.push(indent + lhs + " = " + rhs);
 		return;
 	}
 

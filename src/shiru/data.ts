@@ -5,7 +5,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	private map: Map<KS[number], TrieMap<KS, V>> = new Map();
 	private value: V | undefined = undefined;
 
-	get(key: KS, from?: number): V | undefined {
+	get(key: Readonly<KS>, from?: number): V | undefined {
 		from = from || 0;
 
 		if (key.length === from) {
@@ -21,7 +21,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 		}
 	}
 
-	put(key: KS, v: V, from?: number) {
+	put(key: Readonly<KS>, v: V, from?: number) {
 		from = from || 0;
 		if (key.length === from) {
 			this.value = v;
@@ -107,6 +107,10 @@ export class DisjointSet<E, K> {
 	/// equivalence class, such that two elements are members of the same
 	/// equivalence class if and only if their representatives are the same.
 	representative(e: E): E {
+		if (e === undefined) {
+			throw new Error("DisjointSet.representative: unexpected `undefined` argument");
+		}
+
 		this.init(e);
 		while (true) {
 			const parent = this.parents.get(e)!;

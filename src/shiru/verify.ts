@@ -1,5 +1,6 @@
-import { DefaultMap } from "./data";
+import { DefaultMap, TrieMap } from "./data";
 import * as diagnostics from "./diagnostics";
+import * as egraph from "./egraph";
 import * as ir from "./ir";
 import { displayType } from "./semantics";
 import * as uf from "./uf";
@@ -11,47 +12,86 @@ export function verifyProgram(
 
 	// Index impls by their interface signatures.
 	const interfaceSignaturesByImplFn = indexInterfaceSignaturesByImplFn(program);
+	const nonDecreasingGraph = new CallGraph();
 
 	// Verify each interface signature.
 	for (const i in program.interfaces) {
-		problems.push(...verifyInterface(program, i, interfaceSignaturesByImplFn));
+		problems.push(...verifyInterface(program, i as ir.InterfaceID, interfaceSignaturesByImplFn, nonDecreasingGraph));
 	}
 
 	// Verify each function body.
 	for (let f in program.functions) {
-		problems.push(...verifyFunction(program, f, interfaceSignaturesByImplFn));
+		problems.push(...verifyFunction(program, f as ir.FunctionID, interfaceSignaturesByImplFn, nonDecreasingGraph));
 	}
+
+	// Verify totality by inspecting the graph of non-decreasing calls.
+	problems.push(...verifyCallGraphTotality(nonDecreasingGraph));
 
 	return problems;
 }
 
+class CallGraph {
+	callsByStatic: DefaultMap<ir.FunctionID, CallGraphCall[]> = new DefaultMap(_ => []);
+	callsByDynamic: DefaultMap<ir.InterfaceID, DefaultMap<string, CallGraphCall[]>> = new DefaultMap(_ => new DefaultMap(_ => []));
+
+	addCall(from: CallGraphNode, call: CallGraphCall) {
+		if (from.tag === "dynamic") {
+			this.callsByDynamic.get(from.interfaceID).get(from.memberID).push(call);
+		} else {
+			this.callsByStatic.get(from.functionID).push(call);
+		}
+	}
+}
+
+type CallGraphNode = { tag: "static", functionID: ir.FunctionID }
+	| { tag: "dynamic", interfaceID: ir.InterfaceID, memberID: string };
+
+interface CallGraphCall {
+	/// Which function in the program made the call.
+	caller: CallGraphNode,
+
+	/// Which function in the program is being called.
+	calling: CallGraphNode,
+
+	/// Where in the source code is the call located.
+	callLocation: ir.SourceLocation,
+
+	/// "decreasing" when the argument tuple of the calling function is strictly
+	/// lexicographically larger than the call's argument tuple.
+	decreasing: "decreasing" | "non-decreasing";
+}
+
 function verifyInterface(
 	program: ir.Program,
-	interfaceName: string,
+	interfaceID: ir.InterfaceID,
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
+	nonDecreasingGraph: CallGraph,
 ): FailedVerification[] {
-	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
-	const trait = program.interfaces[interfaceName];
+	const state = new VerificationState(
+		program,
+		interfaceSignaturesByImplFn,
+		nonDecreasingGraph);
+	const trait = program.interfaces[interfaceID];
 
 	// Create the type scope for the interface's subjects.
 	const interfaceTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
 	for (let i = 0; i < trait.type_parameters.length; i++) {
 		const typeVariable = trait.type_parameters[i];
-		const typeID = state.smt.createVariable(ir.T_ANY);
+		const typeID = state.smt.createVariable(ir.T_ANY, "typeof(#" + typeVariable + ")");
 		interfaceTypeScope.set(typeVariable, typeID);
 	}
 	state.pushTypeScope(interfaceTypeScope);
 
 	// Validate that the interface's contracts are well-formed, in that
 	// they explicitly guarantee their internal preconditions.
-	for (const member in trait.signatures) {
-		const signature = trait.signatures[member];
+	for (const memberID in trait.signatures) {
+		const signature = trait.signatures[memberID];
 
 		// Create the type scope for this member's type parameters.
 		const signatureTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
 		for (let i = 0; i < signature.type_parameters.length; i++) {
 			const typeVariable = signature.type_parameters[i];
-			const typeID = state.smt.createVariable(ir.T_ANY);
+			const typeID = state.smt.createVariable(ir.T_ANY, "typeof(#" + typeVariable + ")");
 			signatureTypeScope.set(typeVariable, typeID);
 		}
 
@@ -59,8 +99,11 @@ function verifyInterface(
 		const functionScope = state.pushVariableScope(true);
 
 		// Create symbolic values for the arguments.
+		const parameterTuple = [];
 		for (const parameter of signature.parameters) {
-			state.defineVariable(parameter, state.smt.createVariable(parameter.type));
+			const symbolicParameter = state.smt.createVariable(parameter.type, parameter.variable);
+			parameterTuple.push(symbolicParameter);
+			state.defineVariable(parameter, symbolicParameter);
 		}
 
 		// Verify that preconditions explicitly state their own preconditions,
@@ -70,6 +113,13 @@ function verifyInterface(
 				// Return ops within a precondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
+
+				nonDecreasingCallSource: {
+					tag: "dynamic",
+					interfaceID,
+					memberID,
+					comparison: parameterTuple,
+				},
 			}, () => {
 				state.assumeGuaranteedInPath(precondition.precondition);
 			});
@@ -77,8 +127,9 @@ function verifyInterface(
 
 		// Create symbolic values for the returns.
 		const symbolicReturned = [];
-		for (const r of signature.return_types) {
-			symbolicReturned.push(state.smt.createVariable(r));
+		for (let i = 0; i < signature.return_types.length; i++) {
+			const r = signature.return_types[i];
+			symbolicReturned.push(state.smt.createVariable(r, "return." + i));
 		}
 
 		for (const postcondition of signature.postconditions) {
@@ -90,6 +141,13 @@ function verifyInterface(
 				// Return ops within a postcondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
+
+				nonDecreasingCallSource: {
+					tag: "dynamic",
+					interfaceID,
+					memberID,
+					comparison: parameterTuple,
+				},
 			}, () => {
 				state.assumeGuaranteedInPath(postcondition.postcondition);
 			});
@@ -125,26 +183,160 @@ function indexInterfaceSignaturesByImplFn(
 	return map;
 }
 
-const foreignInterpeters = {
-	"Int+": {
-		f(a: unknown | null, b: unknown | null): unknown | null {
-			if (a === null || b === null) {
-				return null;
-			} else if (typeof a !== "bigint") {
-				throw new Error("foreignInterpreters['Int+']: got non bigint `" + a + "`");
-			} else if (typeof b !== "bigint") {
-				throw new Error("foreignInterpreters['Int+']: got non bigint `" + b + "`");
-			}
-			return (a as bigint) + (b as bigint);
+function getForeignInterpeters(state: VerificationState) {
+	return {
+		"Int-unary": {
+			interpreter: {
+				f(a: unknown): unknown | null {
+					if (a === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else {
+						return -(a as bigint);
+					}
+				}
+			},
 		},
-	},
-};
+		"Int+": {
+			interpreter: {
+				f(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						throw new Error("foreignInterpreters['Int+']: got non bigint `" + a + "`");
+					} else if (typeof b !== "bigint") {
+						throw new Error("foreignInterpreters['Int+']: got non bigint `" + b + "`");
+					}
+
+					return (a as bigint) + (b as bigint);
+				},
+			},
+
+			generalInterpreter: {
+				g(
+					matcher: uf.EMatcher<number>,
+					solver: uf.UFSolver<number>,
+					id: egraph.EObject,
+					operands: egraph.EObject[],
+				): "change" | "no-change" {
+					const sum = state.foreign.get("Int+")[0];
+
+					const left = operands[0] as uf.ValueID;
+					const right = operands[1] as uf.ValueID;
+
+					let change: "change" | "no-change" = "no-change";
+
+					// Resolve commutativity by swapping all sums.
+					const swapped = solver.hasApplication(sum, [right, left]);
+					if (swapped !== null) {
+						let freshCommutative = matcher.egraph.merge(id, swapped, new Set());
+						if (freshCommutative) {
+							change = "change";
+						}
+					}
+
+					// Resolve associativity by canonicalizing all left sums to
+					// be left-leaning.
+					const rightSums = matcher.asApplication(right, sum);
+					for (const rightSum of rightSums) {
+						const a = rightSum.operands[0] as uf.ValueID;
+						const b = rightSum.operands[1] as uf.ValueID;
+
+						const leftASum = solver.hasApplication(sum, [left, a]);
+						if (leftASum !== null) {
+							const leftLeaning = solver.hasApplication(sum, [
+								leftASum, b,
+							]);
+
+							if (leftLeaning !== null) {
+								const freshAssociative = matcher.egraph.merge(id, leftLeaning, rightSum.reason);
+								if (freshAssociative) {
+									change = "change";
+								}
+							}
+						}
+					}
+
+					return change;
+				}
+			},
+		},
+		"Int<": {
+			interpreter: {
+				f(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else if (typeof b !== "bigint") {
+						return null;
+					}
+					return (a as bigint) < (b as bigint);
+				},
+			},
+
+			generalInterpreter: {
+				g(
+					matcher: uf.EMatcher<number>,
+					solver: uf.UFSolver<number>,
+					id: egraph.EObject,
+					operands: egraph.EObject[],
+				): "change" | "no-change" {
+					const sum = state.foreign.get("Int+")[0];
+					const lt = state.foreign.get("Int<")[0];
+					const left = operands[0];
+					const right = operands[1];
+
+					const leftSums = matcher.asApplication(left, sum);
+					const rightSums = matcher.asApplication(right, sum);
+
+					// TODO: Improve performance by indexing sums by their terms
+					// instead of doing a quadratic scan when many are equal.
+					// Search for the pattern 
+					// a + k1 < b + k2 where k1 = k2.
+					let change: "change" | "no-change" = "no-change";
+					for (const leftSum of leftSums) {
+						for (const rightSum of rightSums) {
+							const kQuery = matcher.egraph.query(leftSum.operands[1], rightSum.operands[1]);
+							if (kQuery !== null) {
+								// Equate this with `a < b`, using the reason
+								// which is why
+								// left == (a+k1) and right == (b+k2)
+								// and k1 == k2.
+								const newLt = solver.hasApplication(lt, [
+									leftSum.operands[0] as uf.ValueID,
+									rightSum.operands[0] as uf.ValueID,
+								]);
+								if (newLt === null) {
+									continue;
+								}
+								const reason = new Set([
+									...leftSum.reason,
+									...rightSum.reason,
+									...kQuery,
+								]);
+								const fresh = matcher.egraph.merge(id, newLt, reason);
+								if (fresh) {
+									change = "change";
+								}
+							}
+						}
+					}
+
+					return change;
+				},
+			},
+		},
+	};
+}
 
 function assumeStaticPreconditions(
 	program: ir.Program,
 	signature: ir.FunctionSignature,
 	valueArguments: uf.ValueID[],
 	typeArguments: uf.ValueID[],
+	callPointer: CallGraphNode,
 	state: VerificationState,
 ): void {
 	if (signature.type_parameters.length !== typeArguments.length) {
@@ -173,6 +365,12 @@ function assumeStaticPreconditions(
 			// Return ops within a precondition block do not have their own
 			// postconditions.
 			verifyAtReturn: [],
+
+			// Record any preconditions calls which are non-decreasing.
+			nonDecreasingCallSource: {
+				...callPointer,
+				comparison: valueArguments,
+			},
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
 		});
@@ -186,7 +384,7 @@ function assumeStaticPreconditions(
 /// implFnTypeArguments: The arguments to the impl fn. These are the impl's
 /// "for_any" type parameters, followed by the interface-signature's type
 /// parameters.
-function assumeConstraintPreconditions(
+function assumeConstraintPreconditionsForImpl(
 	program: ir.Program,
 	valueArguments: uf.ValueID[],
 	implFnTypeArguments: uf.ValueID[],
@@ -225,6 +423,10 @@ function assumeConstraintPreconditions(
 	for (const precondition of interfaceSignature.preconditions) {
 		traverseBlock(program, variableScope, precondition.block, state, {
 			verifyAtReturn: [],
+
+			// Any non-decreasing calls are attributed directly to the
+			// interface.
+			nonDecreasingCallSource: null,
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
 		});
@@ -324,8 +526,9 @@ function verifyPostconditionWellFormedness(
 ): void {
 	state.smt.pushScope();
 	let symbolicReturned = [];
-	for (const r of signature.return_types) {
-		symbolicReturned.push(state.smt.createVariable(r));
+	for (let i = 0; i < signature.return_types.length; i++) {
+		const r = signature.return_types[i];
+		symbolicReturned.push(state.smt.createVariable(r, "return." + i));
 	}
 	for (const verifyAtReturn of verifyAtReturns) {
 		const valueArgs = new Map<ir.VariableDefinition, uf.ValueID>();
@@ -347,11 +550,15 @@ function verifyPostconditionWellFormedness(
 /// checked.
 function verifyFunction(
 	program: ir.Program,
-	fName: string,
+	fName: ir.FunctionID,
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
+	nonDecreasingGraph: CallGraph,
 ): FailedVerification[] {
 	const interfaceSignatures = interfaceSignaturesByImplFn.get(fName as ir.FunctionID);
-	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
+	const state = new VerificationState(
+		program,
+		interfaceSignaturesByImplFn,
+		nonDecreasingGraph);
 
 	const f = program.functions[fName];
 
@@ -361,7 +568,7 @@ function verifyFunction(
 	const typeArguments = [];
 	for (let i = 0; i < f.signature.type_parameters.length; i++) {
 		const typeParameter = f.signature.type_parameters[i];
-		const typeArgument = state.smt.createVariable(ir.T_ANY);
+		const typeArgument = state.smt.createVariable(ir.T_ANY, "typeof(#" + typeParameter + ")");
 		typeArguments.push(typeArgument);
 		typeScope.set(typeParameter, typeArgument);
 	}
@@ -373,13 +580,14 @@ function verifyFunction(
 		const parameter = f.signature.parameters[i];
 
 		// Create a symbolic constant for the initial value of the parameter.
-		const symbolic = state.smt.createVariable(parameter.type);
+		const symbolic = state.smt.createVariable(parameter.type, parameter.variable);
 		state.defineVariable(parameter, symbolic);
 		symbolicArguments.push(symbolic);
 	}
 
 	// Execute and validate the function's preconditions.
-	assumeStaticPreconditions(program, f.signature, symbolicArguments, typeArguments, state);
+	const callPointer: CallGraphNode = { tag: "static", functionID: fName };
+	assumeStaticPreconditions(program, f.signature, symbolicArguments, typeArguments, callPointer, state);
 
 	const verifyAtReturns: VerifyAtReturn[] = [];
 
@@ -389,7 +597,7 @@ function verifyFunction(
 			throw new Error("impl function `" + fName + "` must not impose explicit preconditions");
 		}
 
-		assumeConstraintPreconditions(program, symbolicArguments, typeArguments, interfaceSignatureReference, state);
+		assumeConstraintPreconditionsForImpl(program, symbolicArguments, typeArguments, interfaceSignatureReference, state);
 		verifyAtReturns.push(...generateToVerifyFromConstraint(program, symbolicArguments, typeArguments, interfaceSignatureReference, state));
 	}
 
@@ -404,6 +612,11 @@ function verifyFunction(
 	// ensured postconditions).
 	traverseBlock(program, new Map(), f.body, state, {
 		verifyAtReturn: verifyAtReturns,
+
+		nonDecreasingCallSource: {
+			...callPointer,
+			comparison: symbolicArguments,
+		},
 	});
 
 	const lastOp = f.body.ops[f.body.ops.length - 1];
@@ -437,13 +650,20 @@ interface VerifyAtReturn {
 interface VerificationContext {
 	/// The post-conditions to verify at a ReturnStatement.
 	verifyAtReturn: VerifyAtReturn[],
+
+	/// The function to attribute non-decreasing calls to.
+	/// `null` when non-decreasing need not be checked (for example, when
+	/// traversing a recursive contract, or when checking the body of a
+	/// "partial" function).
+	nonDecreasingCallSource: (CallGraphNode & { comparison: uf.ValueID[] }) | null,
 }
 
 export type FailedVerification = FailedPreconditionVerification
 	| FailedAssertVerification
 	| FailedReturnVerification
 	| FailedPostconditionValidation
-	| FailedVariantVerification;
+	| FailedVariantVerification
+	| FailedTotality;
 
 export interface FailedPreconditionVerification {
 	tag: "failed-precondition",
@@ -474,6 +694,12 @@ export interface FailedVariantVerification {
 	accessLocation: ir.SourceLocation,
 }
 
+export interface FailedTotality {
+	tag: "failed-totality",
+	nonDecreasingCall: ir.SourceLocation,
+	cycle: ir.SourceLocation[],
+}
+
 interface SignatureSet {
 	blockedFunctions: Record<string, boolean>,
 	blockedInterfaces: Record<string, Record<string, string>>,
@@ -498,7 +724,7 @@ class DynamicFunctionMap {
 			}
 			const map = ir.typeArgumentsMap(typeParameters, anys);
 			const rs = signature.return_types.map(r => ir.typeSubstitute(r, map));
-			return rs.map(r => this.smt.createFunction(r, { eq: signature.semantics?.eq }));
+			return rs.map(r => this.smt.createFunction(r, { eq: signature.semantics?.eq }, i + "." + s));
 		}));
 
 	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
@@ -526,7 +752,7 @@ class RecordMap {
 		const record = this.program.records[r];
 		const fields: Record<string, uf.FnID> = {};
 		for (const k in record.fields) {
-			fields[k] = this.smt.createFunction(record.fields[k], {});
+			fields[k] = this.smt.createFunction(record.fields[k], {}, r + "." + k);
 		}
 
 		const recordType: ir.TypeCompound = {
@@ -535,9 +761,9 @@ class RecordMap {
 			type_arguments: record.type_parameters.map(x => ({ tag: "type-any" })),
 		};
 		return {
-			constructor: this.smt.createFunction(recordType, {}),
+			constructor: this.smt.createFunction(recordType, {}, r),
 			fields,
-			typeID: this.smt.createFunction(ir.T_INT, {}),
+			typeID: this.smt.createFunction(ir.T_INT, {}, r + "[]"),
 		};
 	});
 
@@ -598,18 +824,18 @@ class EnumMap {
 		let tagIndex = 0;
 		for (const variant in enumEntity.variants) {
 			const variantType = ir.typeSubstitute(enumEntity.variants[variant], instantiation);
-			constructors[variant] = this.smt.createFunction(enumType, {});
-			destructors[variant] = this.smt.createFunction(variantType, {});
+			constructors[variant] = this.smt.createFunction(enumType, {}, enumID + "[" + variant + "]");
+			destructors[variant] = this.smt.createFunction(variantType, {}, enumID + "." + variant);
 			tagValues[variant] = this.smt.createConstant(ir.T_INT, tagIndex);
 			tagIndex += 1;
 		}
 
 		return {
-			extractTag: this.smt.createFunction(ir.T_INT, {}),
+			extractTag: this.smt.createFunction(ir.T_INT, {}, enumID + "/tag"),
 			constructors,
 			destructors,
 			tagValues,
-			typeID: this.smt.createFunction(ir.T_INT, {}),
+			typeID: this.smt.createFunction(ir.T_INT, {}, enumID + "[]"),
 		};
 	});
 
@@ -667,12 +893,12 @@ class EnumMap {
 
 class VerificationState {
 	private program: ir.Program;
-	private foreignInterpreters: Record<string, uf.Semantics["interpreter"]>;
+	private foreignInterpreters: Record<string, uf.Semantics<number>>;
 
 	smt: uf.UFTheory = new uf.UFTheory();
-	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
-	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true });
-	containsF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true });
+	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
+	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
 
 	/// Generates a SMT function for each return of each Shiru fn.
 	/// The first parameters are the type arguments (type id).
@@ -690,7 +916,7 @@ class VerificationState {
 		for (const r of fn.signature.return_types) {
 			// Use a more generic "Any" type.
 			const resultType = ir.typeSubstitute(r, instantiation);
-			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }));
+			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }, fnID));
 		}
 		return out;
 	});
@@ -704,8 +930,11 @@ class VerificationState {
 		for (const r of fn.return_types) {
 			out.push(this.smt.createFunction(r, {
 				eq: fn.semantics?.eq,
-				interpreter: this.foreignInterpreters[op],
-			}));
+				interpreter: this.foreignInterpreters[op]?.interpreter,
+				generalInterpreter: this.foreignInterpreters[op]?.generalInterpreter,
+				transitive: fn.semantics?.transitive,
+				transitiveAcyclic: fn.semantics?.transitiveAcyclic,
+			}, op));
 		}
 		return out;
 	});
@@ -816,7 +1045,7 @@ class VerificationState {
 
 	/// `pathConstraints` is the stack of conditional constraints that must be
 	/// true to reach a position in the program.
-	private pathConstraints: uf.ValueID[] = [];
+	private pathConstraints: uf.ValueID[][] = [];
 
 	// Verification adds failure messages to this stack as they are encountered.
 	// Multiple failures can be returned.
@@ -824,22 +1053,26 @@ class VerificationState {
 
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
 
+	callGraph: CallGraph;
+
 	constructor(
 		program: ir.Program,
-		foreignInterpeters: Record<string, uf.Semantics["interpreter"]>,
 		interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
+		nonDecreasingGraph: CallGraph,
 	) {
 		this.program = program;
-		this.foreignInterpreters = foreignInterpeters;
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.recordMap = new RecordMap(this.program, this.smt);
 		this.enumMap = new EnumMap(this.program, this.smt);
 		this.interfaceSignaturesByImplFn = interfaceSignaturesByImplFn;
+		this.callGraph = nonDecreasingGraph;
 
 		// SMT requires at least one constraint.
 		this.smt.addConstraint([
 			this.smt.createConstant(ir.T_BOOLEAN, true),
 		]);
+
+		this.foreignInterpreters = getForeignInterpeters(this);
 	}
 
 	negate(bool: uf.ValueID): uf.ValueID {
@@ -851,8 +1084,8 @@ class VerificationState {
 	}
 
 
-	isSmallerThan(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
-		return this.smt.createApplication(this.containsF, [left, right]);
+	isBoundedBy(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
+		return this.smt.createApplication(this.boundedByF, [left, right]);
 	}
 
 	pushVariableScope(variableHiding: boolean): symbol {
@@ -881,7 +1114,7 @@ class VerificationState {
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
-		this.pathConstraints.push(c);
+		this.pathConstraints.push([c]);
 	}
 
 	popPathConstraint() {
@@ -902,14 +1135,39 @@ class VerificationState {
 		return reply;
 	}
 
+	checkPossiblyNonDecreasingInPath(
+		left: uf.ValueID[],
+		right: uf.ValueID[],
+		reason: FailedVerification,
+	): uf.UFCounterexample | "refuted" {
+		const clausified = clausifyNotSmallerThan(this.smt, {
+			ltF: this.boundedByF,
+			eqF: this.eqF,
+			negF: this.notF,
+		}, left, right);
+
+		for (const clause of clausified) {
+			this.pathConstraints.push(clause);
+		}
+
+		const reply = this.checkReachable(reason);
+
+		for (const clause of clausified) {
+			this.pathConstraints.pop();
+		}
+
+		return reply;
+	}
+
 	/// `checkReachable` checks whether or not the conjunction of current path
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
-			this.smt.addConstraint([constraint]);
+			this.smt.addConstraint(constraint);
 		}
+
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
 		return model;
@@ -918,8 +1176,15 @@ class VerificationState {
 	/// `markPathUnreachable` ensures that the conjunction of the current path
 	/// constraints is considered not satisfiable in subsequent invocations of
 	/// the `smt` solver.
+	/// REQUIRES that every currently in-scope path constraint clause is a
+	/// unit clause.
 	markPathUnreachable() {
-		const pathUnreachable = this.pathConstraints.map(e => this.negate(e));
+		const pathUnreachable = this.pathConstraints.map(e => {
+			if (e.length !== 1) {
+				throw new Error("VerificationState.markPathUnreachable: every path constraint must be a unit clause");
+			}
+			return this.negate(e[0]);
+		});
 		this.smt.addConstraint(pathUnreachable);
 	}
 
@@ -985,7 +1250,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		const phis: uf.ValueID[] = [];
 		for (const destination of op.destinations) {
-			phis.push(state.smt.createVariable(destination.destination.type));
+			phis.push(state.smt.createVariable(destination.destination.type, destination.destination.variable));
 		}
 
 		state.pushPathConstraint(symbolicCondition);
@@ -1046,7 +1311,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
-		state.smt.addUnscopedConstraint([state.isSmallerThan(fieldValue, object.value)]);
+		state.smt.addUnscopedConstraint([state.isBoundedBy(fieldValue, object.value)]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1085,7 +1350,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
-		state.smt.addUnscopedConstraint([state.isSmallerThan(variantValue, object.value)]);
+		state.smt.addUnscopedConstraint([state.isBoundedBy(variantValue, object.value)]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1127,43 +1392,13 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.markPathUnreachable();
 		return;
 	} else if (op.tag === "op-foreign") {
-		const signature = program.foreign[op.operation];
-
-		for (let precondition of signature.preconditions) {
-			throw new Error("TODO: Check precondition of op-foreign");
-		}
-
-		for (let postcondition of signature.postconditions) {
-			throw new Error("TODO: Assume postcondition of op-foreign");
-		}
-
-		const args = [];
-		for (let i = 0; i < op.arguments.length; i++) {
-			args.push(state.getValue(op.arguments[i]).value);
-		}
-
-		if (signature.semantics?.eq === true) {
-			if (op.arguments.length !== 2) {
-				throw new Error("Foreign signature with `eq` semantics"
-					+ " must take exactly 2 arguments (" + op.operation + ")");
-			} else if (op.destinations.length !== 1) {
-				throw new Error("Foreign signature with `eq` semantics"
-					+ " must return exactly 1 value");
-			}
-			const destination = op.destinations[0];
-			state.defineVariable(destination, state.eq(args[0], args[1]));
-		} else {
-			const fIDs = state.foreign.get(op.operation);
-			for (let i = 0; i < op.destinations.length; i++) {
-				state.defineVariable(op.destinations[i], state.smt.createApplication(fIDs[i], args));
-			}
-		}
+		traverseForeignCall(program, op, state, context);
 		return;
 	} else if (op.tag === "op-static-call") {
-		traverseStaticCall(program, op, state);
+		traverseStaticCall(program, op, state, context);
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		traverseDynamicCall(program, op, state);
+		traverseDynamicCall(program, op, state, context);
 		return;
 	} else if (op.tag === "op-unreachable") {
 		// TODO: Better classify verification failures.
@@ -1191,6 +1426,57 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		state.defineVariable(op.destination, state.eq(leftObject.value, rightObject.value));
 		return;
+	} else if (op.tag === "op-proof-bounds") {
+		const smallerObject = state.getValue(op.smaller);
+		const largerObject = state.getValue(op.larger);
+
+		const smaller = smallerObject.value;
+		const larger = largerObject.value;
+
+		// Compare using the structural comparison.
+		const boundsComparison = state.isBoundedBy(smaller, larger);
+
+		if (ir.equalTypes(ir.T_INT, smallerObject.type) && ir.equalTypes(ir.T_INT, largerObject.type)) {
+			// Use a more specific definition for integers in terms of `Int<`:
+			// `a bounds b` means `b is strictly between -a and a`.
+			// For now, this will be restricted to the simpler condition
+			// `b between 0 and a`:
+			// `(0 < b < a) or (a < b < 0) or (a != 0 and b = 0).
+			const lessThanFns = state.foreign.get("Int<");
+			if (lessThanFns.length !== 1) {
+				throw new Error("verify: Expected `Int<` to have exactly one return");
+			}
+			const lessThanFn = lessThanFns[0];
+
+			const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+
+			// (smaller == 0 and larger != 0) implies cmp
+			// (smaller != 0 or larger == 0) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.eq(smaller, zero)),
+				state.eq(larger, zero),
+				boundsComparison,
+			]);
+
+			// (0 < smaller and smaller < larger) implies cmp
+			// (0 !< smaller or smaller !< larger) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
+				state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
+				boundsComparison,
+			]);
+
+			// (larger < smaller and smaller < 0) implies cmp
+			// (larger !< smaller or smaller !< 0) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
+				state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
+				boundsComparison,
+			]);
+		}
+
+		state.defineVariable(op.destination, boundsComparison);
+		return;
 	}
 
 	const _: never = op;
@@ -1216,6 +1502,10 @@ function checkPrecondition(
 		// Return ops within a precondition do not have their own
 		// postconditions.
 		verifyAtReturn: [],
+
+		// The non-decreasingness of a call within a precondition is check where
+		// the precondition is defined, rather than where it is invoked.
+		nonDecreasingCallSource: null,
 	}, () => {
 		if (state.checkPossiblyFalseInPath(precondition.precondition, reason) !== "refuted") {
 			state.failedVerifications.push(reason);
@@ -1244,6 +1534,10 @@ function assumePostcondition(
 	traverseBlock(program, valueArgs, postcondition.block, state, {
 		// Return ops within a postcondition do not have their own postconditions.
 		verifyAtReturn: [],
+
+		// The non-decreasingness of a call within a postcondition is checked
+		// where the postcondition is defined, rather than where it is invoked.
+		nonDecreasingCallSource: null,
 	}, () => {
 		state.assumeGuaranteedInPath(postcondition.postcondition);
 	});
@@ -1283,6 +1577,12 @@ function checkVerifyAtReturns(
 			// Return ops within a postcondition do not have their own
 			// postconditions.
 			verifyAtReturn: [],
+
+			// The non-decreasingness of calls within the postcondition must be
+			// established without specific access to the values being returned.
+			// It is checked along with the well-formedness of the
+			// postconditions, rather than at the return site.
+			nonDecreasingCallSource: null,
 		}, () => {
 			const reason: FailedVerification = {
 				tag: "failed-postcondition",
@@ -1308,6 +1608,7 @@ function traverseStaticCall(
 	program: ir.Program,
 	op: ir.OpStaticCall,
 	state: VerificationState,
+	context: VerificationContext,
 ): void {
 	const fn = op.function;
 	const signature = program.functions[fn].signature;
@@ -1318,6 +1619,22 @@ function traverseStaticCall(
 	const valueArgs = [];
 	for (let i = 0; i < op.arguments.length; i++) {
 		valueArgs.push(state.getValue(op.arguments[i]).value);
+	}
+
+	if (context.nonDecreasingCallSource !== null) {
+		const refutation = state.checkPossiblyNonDecreasingInPath(valueArgs, context.nonDecreasingCallSource.comparison, {
+			tag: "failed-totality",
+		} as any);
+
+		state.callGraph.addCall(context.nonDecreasingCallSource, {
+			caller: context.nonDecreasingCallSource,
+			calling: {
+				tag: "static",
+				functionID: op.function,
+			},
+			callLocation: op.diagnostic_callsite,
+			decreasing: refutation === "refuted" ? "decreasing" : "non-decreasing",
+		});
 	}
 
 	const typeArgs = [];
@@ -1388,6 +1705,7 @@ function traverseDynamicCall(
 	program: ir.Program,
 	op: ir.OpDynamicCall,
 	state: VerificationState,
+	context: VerificationContext,
 ): void {
 	const constraint = program.interfaces[op.constraint.interface];
 	const signature = constraint.signatures[op.signature_id];
@@ -1409,6 +1727,10 @@ function traverseDynamicCall(
 
 	const valueArgs = op.arguments.map(v => state.getValue(v).value);
 
+	if (context.nonDecreasingCallSource !== null) {
+		throw new Error("TODO! non-decreasing dynamic");
+	}
+
 	for (const precondition of signature.preconditions) {
 		throw new Error("TODO");
 	}
@@ -1428,6 +1750,199 @@ function traverseDynamicCall(
 	if (signature.semantics?.eq === true) {
 		throw new Error("TODO");
 	}
+}
+
+function traverseForeignCall(
+	program: ir.Program,
+	op: ir.OpForeign,
+	state: VerificationState,
+	context: VerificationContext,
+): void {
+	const signature = program.foreign[op.operation];
+
+	for (let precondition of signature.preconditions) {
+		throw new Error("TODO: Check precondition of op-foreign");
+	}
+
+	const valueArgs = [];
+	for (let i = 0; i < op.arguments.length; i++) {
+		valueArgs.push(state.getValue(op.arguments[i]).value);
+	}
+
+	const typeArgsMap: Map<ir.TypeVariableID, uf.ValueID> = new Map();
+	if (signature.type_parameters.length !== 0) {
+		throw new Error("TODO: allow type-parameters in foreign functions");
+	}
+
+	const results = [];
+	if (signature.semantics?.eq === true) {
+		if (op.arguments.length !== 2) {
+			throw new Error("Foreign signature with `eq` semantics"
+				+ " must take exactly 2 arguments (" + op.operation + ")");
+		} else if (op.destinations.length !== 1) {
+			throw new Error("Foreign signature with `eq` semantics"
+				+ " must return exactly 1 value");
+		}
+		const destination = op.destinations[0];
+		const result = state.eq(valueArgs[0], valueArgs[1]);
+		results.push(result);
+		state.defineVariable(destination, result);
+	} else {
+		const fIDs = state.foreign.get(op.operation);
+		for (let i = 0; i < op.destinations.length; i++) {
+			const result = state.smt.createApplication(fIDs[i], valueArgs);
+			results.push(result);
+			state.defineVariable(op.destinations[i], result);
+		}
+	}
+
+	const fnKey = "foreign{{" + op.operation + "}}";
+	if (state.recursivePostconditions.blockedFunctions[fnKey] !== true) {
+		state.recursivePostconditions.blockedFunctions[fnKey] = true;
+
+		for (const postcondition of signature.postconditions) {
+			const valueArgsMap = new Map<ir.VariableDefinition, uf.ValueID>();
+			for (let i = 0; i < op.arguments.length; i++) {
+				const variable = signature.parameters[i];
+				valueArgsMap.set(variable, valueArgs[i]);
+			}
+			for (let i = 0; i < op.destinations.length; i++) {
+				const variable = postcondition.returnedValues[i];
+				valueArgsMap.set(variable, results[i]);
+			}
+
+			assumePostcondition(program, valueArgsMap, typeArgsMap, postcondition, state);
+		}
+
+		delete state.recursivePostconditions.blockedFunctions[fnKey];
+	}
+}
+
+type CallGraphNodeKey = [boolean, "static", ir.FunctionID]
+	| [boolean, "dynamic", ir.InterfaceID, string];
+
+function verifyCallGraphExtractPath(
+	end: { node: CallGraphNode, hasNonDecreasing: boolean },
+	visited: TrieMap<CallGraphNodeKey, { call: CallGraphCall, parentKey: CallGraphNodeKey } | null>,
+): FailedVerification[] {
+	const failures: FailedVerification[] = [];
+
+	const calls: CallGraphCall[] = [];
+
+	if (!end.hasNonDecreasing) {
+		throw new Error("verifyCallGraphExtractPath: unexpected query for no non-decreasing");
+	}
+
+	if (end.node.tag !== "static") {
+		throw new Error("TODO");
+	}
+
+	let cursor: CallGraphNodeKey = [
+		end.hasNonDecreasing,
+		"static",
+		end.node.functionID,
+	];
+
+	while (cursor !== null) {
+		const call = visited.get(cursor);
+		if (call === undefined) {
+			throw new Error("verifyCallGraphExtractPath: ICE");
+		} else if (call === null) {
+			break;
+		}
+		calls.push(call.call);
+		cursor = call.parentKey
+	}
+
+	calls.reverse();
+
+	for (let i = 0; i < calls.length; i++) {
+		if (calls[i].decreasing === "non-decreasing") {
+			const befores = calls.slice(0, i - 1).map(x => x.callLocation);
+			const afters = calls.slice(i + 1).map(x => x.callLocation);
+			failures.push({
+				tag: "failed-totality",
+				nonDecreasingCall: calls[i].callLocation,
+				cycle: afters.concat(befores),
+			});
+		}
+	}
+
+	return failures;
+}
+
+function verifyCallGraphTotality(
+	callGraph: CallGraph,
+): FailedVerification[] {
+	const nonTerminatingCycles: FailedVerification[] = [];
+
+	// Find every call cycle that contains at least one non-decreasing edge.
+	for (const [fnID] of callGraph.callsByStatic) {
+		const visited = new TrieMap<CallGraphNodeKey, { call: CallGraphCall, parentKey: CallGraphNodeKey } | null>();
+		const startKey: CallGraphNodeKey = [false, "static", fnID];
+		if (visited.get(startKey) !== undefined) {
+			// A different search has already covered this node (and thus all
+			// its descendants)
+			continue;
+		}
+
+		// Perform breadth first search.
+		visited.put(startKey, null);
+		const q: { node: CallGraphNode, hasNonDecreasing: boolean }[] = [
+			{
+				node: { tag: "static", functionID: fnID },
+				hasNonDecreasing: false,
+			},
+		];
+
+		let cursor = 0;
+		while (cursor < q.length) {
+			const front = q[cursor];
+			if (front.node.tag === "dynamic") {
+				throw new Error("TODO");
+			} else {
+				if (front.node.functionID === fnID && front.hasNonDecreasing) {
+					// Found a cycle.
+					nonTerminatingCycles.push(...verifyCallGraphExtractPath(front, visited));
+
+					break;
+				}
+
+				const keyOfSource: CallGraphNodeKey = [
+					front.hasNonDecreasing,
+					"static",
+					front.node.functionID,
+				];
+
+				const calls = callGraph.callsByStatic.get(front.node.functionID);
+				for (const call of calls) {
+					const keyOfDestination: CallGraphNodeKey = call.calling.tag === "static"
+						? [
+							front.hasNonDecreasing || call.decreasing === "non-decreasing",
+							"static",
+							call.calling.functionID,
+						]
+						: [
+							front.hasNonDecreasing || call.decreasing === "non-decreasing",
+							"dynamic",
+							call.calling.interfaceID,
+							call.calling.memberID,
+						];
+
+					if (visited.get(keyOfDestination) === undefined) {
+						visited.put(keyOfDestination, { call, parentKey: keyOfSource });
+						q.push({
+							node: call.calling,
+							hasNonDecreasing: front.hasNonDecreasing || call.decreasing === "non-decreasing",
+						});
+					}
+				}
+			}
+			cursor += 1;
+		}
+	}
+
+	return nonTerminatingCycles;
 }
 
 /// RETURNS a CNF clausification restricting solutions to those where the
@@ -1460,6 +1975,9 @@ export function clausifyNotSmallerThan(
 
 		const ncmp = smt.createApplication(negF, [cmp]);
 		out.push([ncmp, ...neqs]);
+		if (left === undefined || right === undefined) {
+			break;
+		}
 		const eq = smt.createApplication(eqF, [left, right]);
 		const neq = smt.createApplication(negF, [eq]);
 		neqs.push(neq);

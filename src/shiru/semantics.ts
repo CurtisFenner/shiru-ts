@@ -3,6 +3,7 @@ import * as ir from "./ir";
 import * as diagnostics from "./diagnostics";
 import * as lexer from "./lexer";
 import { DefaultMap } from "./data";
+import * as builtin from "./builtin";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,
@@ -323,7 +324,7 @@ function collectInterfaceRecordEntity(
 // Collects the set of entities defined across all given sources.
 function collectAllEntities(sources: Record<string, grammar.Source>) {
 	const programContext = new ProgramContext();
-	programContext.foreignSignatures = getBasicForeign();
+	programContext.foreignSignatures = builtin.getBasicForeign();
 
 	for (const sourceID in sources) {
 		const source = sources[sourceID];
@@ -1886,7 +1887,9 @@ function compileOperand(
 	return value;
 }
 
-type ResolvedOperator = ResolvedOperatorForeign | ResolvedOperatorProofEquality;
+type ResolvedOperator = ResolvedOperatorForeign
+	| ResolvedOperatorProofEquality
+	| ResolvedOperatorProofBounds;
 
 interface ResolvedOperatorForeign {
 	tag: "foreign-op",
@@ -1899,11 +1902,17 @@ interface ResolvedOperatorProofEquality {
 	wrap: null | "negate",
 }
 
+interface ResolvedOperatorProofBounds {
+	tag: "proof-bounds-op",
+	wrap: null | "negate",
+}
+
 const operatorPrecedence = {
 	precedences: {
 		"implies": 10,
 		"and": 10,
 		"or": 10,
+		"bounds": 20,
 		"==": 20,
 		"<": 20,
 		">": 20,
@@ -1932,10 +1941,8 @@ interface OperatorTreeLeaf {
 	location: ir.SourceLocation,
 }
 
-interface OperatorTreeJoin {
+type OperatorTreeJoin = (OperatorArithmeticJoin | OperatorLogicalJoin) & {
 	index: number,
-
-	opToken: lexer.OperatorToken | grammar.BinaryLogicalToken,
 	associativity: "none" | "left" | "right",
 
 	/// Only operations with the same `associates` can associate without
@@ -1943,6 +1950,16 @@ interface OperatorTreeJoin {
 	associates: string,
 
 	precedence: number,
+}
+
+interface OperatorArithmeticJoin {
+	tag: "arithmetic",
+	opToken: lexer.OperatorToken | grammar.KeywordOperatorToken,
+}
+
+interface OperatorLogicalJoin {
+	tag: "logical",
+	opToken: grammar.BinaryLogicalToken,
 }
 
 interface OperatorTreeBranch {
@@ -2005,7 +2022,13 @@ function checkTreeCompatible(subtree: OperatorTree, parent: OperatorTreeJoin) {
 }
 
 function applyOrderOfOperations(
-	operators: (lexer.OperatorToken | grammar.BinaryLogicalToken)[],
+	operators: ({
+		tag: "arithmetic",
+		token: lexer.OperatorToken | grammar.KeywordOperatorToken,
+	} | {
+		tag: "logical",
+		token: grammar.BinaryLogicalToken,
+	})[],
 	operands: grammar.ExpressionOperand[],
 ): OperatorTree {
 	if (operators.length !== operands.length - 1) {
@@ -2015,7 +2038,8 @@ function applyOrderOfOperations(
 	let joins: OperatorTreeJoin[] = [];
 	for (let i = 0; i < operators.length; i++) {
 		const operator = operators[i];
-		const opStr = operator.tag === "keyword" ? operator.keyword : operator.operator;
+		const token = operator.token;
+		const opStr = token.tag === "keyword" ? token.keyword : token.operator;
 
 		let precedence = operatorPrecedence.precedences[opStr];
 		if (precedence === undefined) {
@@ -2030,8 +2054,9 @@ function applyOrderOfOperations(
 		}
 
 		joins.push({
+			tag: operator.tag,
 			index: i,
-			opToken: operator,
+			opToken: token as any,
 			associativity, precedence, associates,
 		});
 	}
@@ -2140,19 +2165,21 @@ function expectOneBooleanForLogical(
 /// compileLogicalExpressionTree compiles a binary operation like
 /// `implies` or `and`.
 function compileLogicalExpressionTree(
-	tree: OperatorTreeBranch & { join: { opToken: { tag: "keyword" } } },
+	tree: OperatorTreeBranch & { join: { tag: "logical" } },
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
 	context: FunctionContext,
 ): ValueInfo {
+	if (tree.join.tag !== "logical") {
+		throw new Error("compileLogicalExpressionTree: expected tree.join.tag to be logical");
+	}
 	const left = compileExpressionTree(tree.leftBranch, ops, stack, typeScope, context);
-
 	// Compile a logical binary operation.
 	const opStr = tree.join.opToken.keyword;
 
 	const leftValue = expectOneBooleanForLogical(left, typeScope, context, {
-		opStr: tree.join.opToken.keyword,
+		opStr,
 		location: tree.join.opToken.location,
 	});
 
@@ -2250,8 +2277,17 @@ function compileLogicalExpressionTree(
 /// Throws `MultiExpressionGroupedErr` if `lhs` does not have exactly 1 value.
 function resolveArithmeticOperator(
 	value: ir.VariableDefinition,
-	operator: lexer.OperatorToken,
+	operator: lexer.OperatorToken | grammar.KeywordOperatorToken,
 ): ResolvedOperator {
+	if (operator.tag === "keyword") {
+		if (operator.keyword === "bounds") {
+			return { tag: "proof-bounds-op", wrap: null };
+		} else {
+			const _: never = operator.keyword;
+			throw new Error("resolveArithmeticOperator: unhandled keyword `" + operator.keyword + "`");
+		}
+	}
+
 	const opStr = operator.operator;
 	if (ir.equalTypes(ir.T_INT, value.type)) {
 		if (opStr === "+") {
@@ -2291,7 +2327,7 @@ function resolveArithmeticOperator(
 function compileArithmeticExpressionTree(
 	leftBranch: OperatorTree,
 	rightBranch: OperatorTree,
-	opToken: lexer.OperatorToken,
+	opToken: lexer.OperatorToken | grammar.KeywordOperatorToken,
 	location: ir.SourceLocation,
 	ops: ir.Op[],
 	stack: VariableStack,
@@ -2301,7 +2337,7 @@ function compileArithmeticExpressionTree(
 	// Compile an arithmetic operation.
 	const left = compileExpressionTree(leftBranch, ops, stack, typeScope, context);
 	const right = compileExpressionTree(rightBranch, ops, stack, typeScope, context);
-	const opStr = opToken.operator;
+	const opStr = opToken.tag === "operator" ? opToken.operator : opToken.keyword;
 
 	if (left.values.length !== 1) {
 		throw new diagnostics.MultiExpressionGroupedErr({
@@ -2352,7 +2388,18 @@ function compileArithmeticExpressionTree(
 
 		if (!stack.isInProofBlock()) {
 			throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
-				operation: opToken.operator,
+				operation: opStr,
+				location: opToken.location,
+			});
+		}
+	} else if (resolvedOperator.tag === "proof-bounds-op") {
+		expectedLhsType = left.values[0].type;
+		expectedRhsType = right.values[0].type;
+		signatureReturnType = ir.T_BOOLEAN;
+
+		if (!stack.isInProofBlock()) {
+			throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
+				operation: opStr,
 				location: opToken.location,
 			});
 		}
@@ -2389,6 +2436,13 @@ function compileArithmeticExpressionTree(
 			tag: "op-proof-eq",
 			left: left.values[0].variable,
 			right: right.values[0].variable,
+			destination: operatorResult,
+		});
+	} else if (resolvedOperator.tag === "proof-bounds-op") {
+		ops.push({
+			tag: "op-proof-bounds",
+			smaller: right.values[0].variable,
+			larger: left.values[0].variable,
 			destination: operatorResult,
 		});
 	} else {
@@ -2457,8 +2511,9 @@ function compileExpressionTree(
 ): ValueInfo {
 	if (tree.tag === "leaf") {
 		return compileOperand(tree.operand, ops, stack, typeScope, context);
-	} else if (tree.join.opToken.tag === "keyword") {
-		return compileLogicalExpressionTree(tree as any, ops, stack, typeScope, context);
+	}
+	if (tree.join.tag === "logical") {
+		return compileLogicalExpressionTree(tree as (typeof tree & { join: { tag: "logical" } }), ops, stack, typeScope, context);
 	} else {
 		return compileArithmeticExpressionTree(
 			tree.leftBranch, tree.rightBranch, tree.join.opToken, tree.location, ops, stack, typeScope, context);
@@ -2473,7 +2528,15 @@ function compileExpression(
 	context: FunctionContext,
 ): ValueInfo {
 	const operands = [e.left, ...e.operations.map(x => x.right)];
-	const operators = e.operations.map(x => x.operator);
+	const operators: ({
+		tag: "arithmetic",
+		token: lexer.OperatorToken | grammar.KeywordOperatorToken,
+	} | {
+		tag: "logical",
+		token: grammar.BinaryLogicalToken,
+	})[] = e.operations.map(x => {
+		return { tag: x.tag, token: x.operator } as any;
+	});
 	const tree = applyOrderOfOperations(operators, operands);
 	return compileExpressionTree(tree, ops, stack, typeScope, context);
 }
@@ -3181,117 +3244,6 @@ function compileEntity(
 
 	const _: never = entity;
 	throw new Error("compileEntity: unhandled tag `" + entity["tag"] + "`");
-}
-
-function getBasicForeign(): Record<string, ir.FunctionSignature> {
-	return {
-		"Int==": {
-			// Equality
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {
-				eq: true,
-			},
-		},
-		"Boolean==": {
-			// Equality
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_BOOLEAN,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_BOOLEAN,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {
-				eq: true,
-			},
-		},
-		"Int<": {
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {},
-		},
-		"Int+": {
-			// Addition
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_INT],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-		},
-		"Int-": {
-			// Subtract
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_INT],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-		},
-	};
 }
 
 function associateImplWithBase(

@@ -31,7 +31,7 @@ type ReasonSatLiteral = number;
 
 export type ValueID = egraph.EObject & { __uf: "uf.ValueID" };
 
-export interface Semantics {
+export interface Semantics<Reason> {
 	/// An `eq` function respects congruence: a == b implies f(a) == f(b).
 	eq?: true,
 
@@ -49,6 +49,15 @@ export interface Semantics {
 
 	interpreter?: {
 		f(...args: (unknown | null)[]): unknown | null,
+	},
+
+	generalInterpreter?: {
+		g(
+			matcher: EMatcher<Reason>,
+			solver: UFSolver<Reason>,
+			id: egraph.EObject,
+			operands: egraph.EObject[],
+		): "change" | "no-change",
 	},
 }
 
@@ -91,9 +100,67 @@ interface UFInconsistency<Reason> {
 	inconsistent: Set<Reason>,
 }
 
+export class EMatcher<Reason> {
+	private membersByClassAndTerm = new Map<egraph.EObject, Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>>();
+
+	constructor(
+		public egraph: egraph.EGraph<FnID | VarID, "constant", Reason>,
+		eclasses: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
+	) {
+		for (const { members, representative } of eclasses.values()) {
+			const map = new Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>();
+			for (const member of members) {
+				let byTerm = map.get(member.term);
+				if (byTerm === undefined) {
+					byTerm = { members: [], representative };
+					map.set(member.term, byTerm);
+				}
+				byTerm.members.push(member);
+			}
+			this.membersByClassAndTerm.set(representative, map);
+		}
+	}
+
+	asApplication(
+		obj: egraph.EObject,
+		term: FnID,
+	): Array<{
+		id: egraph.EObject,
+		term: FnID,
+		operands: egraph.EObject[],
+		reason: Set<Reason>,
+	}> {
+		const eclass = this.membersByClassAndTerm.get(this.egraph.getRepresentative(obj));
+		if (eclass === undefined) {
+			throw new Error("asApplication: obj is not contained in this membersByClassAndTerm index");
+		}
+
+		const byTerm = eclass.get(term);
+		if (byTerm === undefined) {
+			return [];
+		}
+
+		const out = [];
+		for (let i = 0; i < byTerm.members.length; i++) {
+			const member = byTerm.members[i];
+			const reason = this.egraph.query(obj, member.id);
+			if (reason === null) {
+				throw new Error("asApplication: membersByClassAndItem index does not match egraph.query result");
+			}
+			out.push({
+				id: member.id,
+				term,
+				operands: member.operands,
+				reason,
+			});
+		}
+		return out;
+	}
+}
+
 export class UFSolver<Reason> {
 	private values = new Map<ValueID, Value>();
-	private fns = new Map<FnID, Semantics>();
+	private fns = new Map<FnID, Semantics<Reason>>();
 	private egraph = new egraph.EGraph<VarID | FnID, "constant", Reason>();
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
@@ -104,19 +171,23 @@ export class UFSolver<Reason> {
 	});
 
 	createVariable(hint?: string): ValueID {
-		const varID = Symbol("uf-var") as VarID;
+		const varID = Symbol(hint || "uf-var") as VarID;
 		const object = this.egraph.add(varID, [], undefined, hint) as ValueID;
-		this.values.set(object, { tag: "var", var: Symbol("uf-var") as VarID });
+		this.values.set(object, { tag: "var", var: varID });
 		return object;
 	}
 
-	createFn(semantics: Semantics): FnID {
-		const fnID = Symbol("uf-fn") as FnID;
+	createFn(semantics: Semantics<Reason>, hint?: string): FnID {
+		const fnID = Symbol(hint || "uf-fn") as FnID;
 		if (semantics.transitiveAcyclic && !semantics.transitive) {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
 		this.fns.set(fnID, semantics);
 		return fnID;
+	}
+
+	hasApplication(fn: FnID, args: ValueID[]): ValueID | null {
+		return this.egraph.hasStructure(fn, args) as ValueID | null;
 	}
 
 	createApplication(fn: FnID, args: ValueID[]): ValueID {
@@ -137,7 +208,7 @@ export class UFSolver<Reason> {
 		return value;
 	}
 
-	getFnSemantics(fnID: FnID): Semantics {
+	getFnSemantics(fnID: FnID): Semantics<Reason> {
 		const semantics = this.fns.get(fnID);
 		if (semantics === undefined) {
 			throw new Error("UFSolver.getFnSemantics: no such fn");
@@ -149,12 +220,14 @@ export class UFSolver<Reason> {
 	trueObject = this.createConstant(true);
 	falseObject = this.createConstant(false);
 
-	/// refuteAssumptions(assumptions) returns a set of facts which the solver
+	printSatisfyingModels = true;
+
+	/// refuteInTheory(assumptions) returns a set of facts which the solver
 	/// has determined are inconsistent, or a model ("counterexample") when the
 	/// facts appear to be consistent.
-	/// refuteAssumptions() is _sound_ with respect to refutation; when
+	/// refuteInTheory() is _sound_ with respect to refutation; when
 	/// "inconsistent" is returned, the assumptions are definitely inconsistent.
-	refuteAssumptions(
+	refuteInTheory(
 		assumptions: Assumption<Reason>[],
 	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample } {
 		this.egraph.reset();
@@ -166,36 +239,18 @@ export class UFSolver<Reason> {
 			this.egraph.merge(truthObject, assumption.constraint, new Set([assumption.reason]));
 		}
 
+		// Continuously learn more facts and check for contradictions.
 		let progress = true;
 		while (progress) {
 			progress = false;
 
 			const classes = this.egraph.getClasses(true);
 
-			// Iterate over all true constraints (those equal to the true
-			// object).
-			const trueClass = classes.get(this.trueObject)!;
-			for (const trueMember of trueClass.members) {
-				const reasonTrue = this.egraph.query(this.trueObject, trueMember.id)!;
-				const handled = this.handleTrueMember(trueMember.term, trueMember.operands as ValueID[], reasonTrue);
-				if (handled === "change") {
-					progress = true;
-				} else if (handled !== "no-change") {
-					return handled;
-				}
-			}
-
-			// Iterate over all false constraints (those equal to the false
-			// object).
-			const falseClass = classes.get(this.falseObject)!;
-			for (const falseMember of falseClass.members) {
-				const reasonFalse = this.egraph.query(this.falseObject, falseMember.id)!;
-				const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], reasonFalse);
-				if (handled === "change") {
-					progress = true;
-				} else if (handled !== "no-change") {
-					return handled;
-				}
+			const trueMembersResult = this.handleTrueMembers(classes);
+			if (trueMembersResult === "change") {
+				progress = true;
+			} else if (trueMembersResult !== "no-change") {
+				return trueMembersResult;
 			}
 
 			if (this.egraph.updateCongruence()) {
@@ -214,37 +269,103 @@ export class UFSolver<Reason> {
 					inconsistent: inconsistency,
 				};
 			}
+
+			const falseMembersResult = this.handleFalseMembers(classes);
+			if (falseMembersResult === "change") {
+				progress = true;
+			} else if (falseMembersResult !== "no-change") {
+				return falseMembersResult;
+			}
 		}
 
 		// The UFSolver has failed to show that the given assumptions are
 		// inconsistent.
+
+		// Print the model.
+		if (this.printSatisfyingModels) {
+			console.log("</refuteInTheory: model>");
+			console.log("\tassumptions:");
+			for (const assumption of assumptions) {
+				console.log("\t\t", assumption.assignment, "for", assumption.constraint);
+			}
+			console.log("\tmodel:");
+			for (const [rep, members] of this.egraph.getClasses()) {
+				console.log("\t\t", rep);
+				for (const member of members.members) {
+					console.log("\t\t\t=", member.id);
+				}
+			}
+		}
+
 		return {
 			tag: "model",
 			model: {},
 		};
 	}
 
+	private handleTrueMembers(
+		classes: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
+	): "change" | "no-change" | UFInconsistency<Reason> {
+		// Iterate over all true constraints (those equal to the true
+		// object).
+		let change: "change" | "no-change" = "no-change";
+		const trueClass = classes.get(this.trueObject)!;
+		for (const trueMember of trueClass.members) {
+			const reasonTrue = () => this.egraph.query(this.trueObject, trueMember.id)!;
+			const handled = this.handleTrueMember(trueMember.term, trueMember.operands as ValueID[], reasonTrue);
+			if (handled === "change") {
+				change = "change";
+			} else if (handled !== "no-change") {
+				return handled;
+			}
+		}
+		return change;
+	}
+
 	private handleTrueMember(
 		term: FnID | VarID,
 		operands: ValueID[],
-		reasonTrue: Set<Reason>,
+		reasonTrue: () => Set<Reason>,
 	): "change" | "no-change" | UFInconsistency<Reason> {
 		const semantics = this.fns.get(term as FnID);
 		if (semantics !== undefined) {
 			if (semantics.eq) {
-				const newKnowledge = this.egraph.merge(operands[0], operands[1], reasonTrue);
-				if (newKnowledge) {
-					return "change";
+				const left = operands[0];
+				const right = operands[1];
+				if (this.egraph.getRepresentative(left) !== this.egraph.getRepresentative(right)) {
+					const newKnowledge = this.egraph.merge(left, right, reasonTrue());
+					if (newKnowledge) {
+						return "change";
+					}
 				}
 			}
 		}
 		return "no-change";
 	}
 
+	private handleFalseMembers(
+		classes: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
+	): "change" | "no-change" | UFInconsistency<Reason> {
+		// Iterate over all false constraints (those equal to the false
+		// object).
+		let change: "change" | "no-change" = "no-change";
+		const falseClass = classes.get(this.falseObject)!;
+		for (const falseMember of falseClass.members) {
+			const reasonFalse = () => this.egraph.query(this.falseObject, falseMember.id)!;
+			const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], reasonFalse);
+			if (handled === "change") {
+				change = "change";
+			} else if (handled !== "no-change") {
+				return handled;
+			}
+		}
+		return change;
+	}
+
 	private handleFalseMember(
 		term: FnID | VarID,
 		operands: ValueID[],
-		reasonFalse: Set<Reason>,
+		reasonFalse: () => Set<Reason>,
 	): "change" | "no-change" | UFInconsistency<Reason> {
 		const semantics = this.fns.get(term as FnID)
 		if (semantics !== undefined) {
@@ -253,7 +374,7 @@ export class UFSolver<Reason> {
 				if (query !== null) {
 					return {
 						tag: "inconsistent",
-						inconsistent: new Set([...query, ...reasonFalse]),
+						inconsistent: new Set([...query, ...reasonFalse()]),
 					};
 				}
 			}
@@ -286,43 +407,91 @@ export class UFSolver<Reason> {
 		let madeChanges = false;
 		while (true) {
 			let iterationMadeChanges = false;
-			for (const [eclass, { members }] of this.egraph.getClasses()) {
+			const eclasses = this.egraph.getClasses();
+			const matcher = new EMatcher(this.egraph, eclasses);
+			for (const { members } of eclasses.values()) {
 				for (const member of members) {
 					const semantics = this.fns.get(member.term as FnID);
 					if (semantics !== undefined) {
 						const interpreter = semantics.interpreter;
 						if (interpreter !== undefined) {
-							const reason = new Set<Reason>();
-							const args = [];
-							for (const operand of member.operands) {
-								const ec = this.evaluateConstant(operand as ValueID);
-								if (ec !== null) {
-									args.push(ec.constant);
-									for (const s of ec.reason) {
-										reason.add(s);
-									}
-								} else {
-									args.push(null);
-								}
+							const subresult = this.propagateFnInterpreter(matcher, member, interpreter);
+							if (subresult === "change") {
+								iterationMadeChanges = true;
 							}
-							const r = interpreter.f(...args);
-							if (r !== null) {
-								const constant = this.createConstant(r);
-								const changed = this.egraph.merge(constant, member.id, reason);
-								if (changed) {
-									iterationMadeChanges = true;
-								}
+						}
+
+						const generalInterpreter = semantics.generalInterpreter;
+						if (generalInterpreter !== undefined) {
+							const subresult = this.propagateGeneralInterpreter(matcher, member, generalInterpreter);
+							if (subresult === "change") {
+								iterationMadeChanges = true;
 							}
 						}
 					}
 				}
 			}
+
 			if (!iterationMadeChanges) {
 				break;
 			}
 			madeChanges = true;
 		}
 		return madeChanges ? "change" : "no-change";
+	}
+
+	private propagateGeneralInterpreter(
+		matcher: EMatcher<Reason>,
+		member: { id: egraph.EObject, operands: egraph.EObject[] },
+		interpreter: {
+			g(
+				matcher: EMatcher<Reason>,
+				solver: UFSolver<Reason>,
+				id: egraph.EObject,
+				operands: egraph.EObject[],
+			): "change" | "no-change",
+		},
+	): "change" | "no-change" {
+		return interpreter.g(matcher, this, member.id, member.operands);
+	}
+
+	private propagateFnInterpreter(
+		matcher: EMatcher<Reason>,
+		member: { id: egraph.EObject, operands: egraph.EObject[] },
+		interpreter: { f(...args: unknown[]): unknown },
+	): "change" | "no-change" {
+		return this.propagateGeneralInterpreter(matcher, member, {
+			g(
+				matcher: EMatcher<Reason>,
+				solver: UFSolver<Reason>,
+				id: egraph.EObject,
+				operands: egraph.EObject[],
+			): "change" | "no-change" {
+				const reason = new Set<Reason>();
+				const args = [];
+				for (const operand of operands) {
+					const operandConstant = solver.evaluateConstant(operand as ValueID);
+					if (operandConstant !== null) {
+						args.push(operandConstant.constant);
+						for (const r of operandConstant.reason) {
+							reason.add(r);
+						}
+					} else {
+						args.push(null);
+					}
+				}
+
+				const result = interpreter.f(...args);
+				if (result !== null) {
+					const resultConstant = solver.createConstant(result);
+					const changed = solver.egraph.merge(resultConstant, id, reason);
+					if (changed) {
+						return "change";
+					}
+				}
+				return "no-change";
+			},
+		});
 	}
 
 	private findTransitivityContradictions(): null | Set<Reason> {
@@ -451,11 +620,13 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return term;
 	});
 
+	private booleanFunctions = new Set<FnID>();
+
 	// The Boolean-typed object associated with the given SAT term.
 	private objectByTerm = new Map<number, ValueID>();
 
-	createVariable(type: ir.Type): ValueID {
-		const v = this.solver.createVariable();
+	createVariable(type: ir.Type, nameHint?: string): ValueID {
+		const v = this.solver.createVariable(nameHint);
 		if (ir.equalTypes(ir.T_BOOLEAN, type)) {
 			// Boolean-typed variables must be equal to either true or false.
 			// This constraint ensures that the sat solver will commit the
@@ -475,14 +646,24 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return this.solver.createConstant(c);
 	}
 
-	createFunction(returnType: ir.Type, semantics: Semantics): FnID {
-		return this.solver.createFn(semantics);
+	createFunction(returnType: ir.Type, semantics: Semantics<ReasonSatLiteral>, hint?: string): FnID {
+		const fnID = this.solver.createFn(semantics, hint);
+		if (ir.equalTypes(ir.T_BOOLEAN, returnType)) {
+			this.booleanFunctions.add(fnID);
+		}
+		return fnID;
 	}
 
-	private eqFn = this.createFunction(ir.T_BOOLEAN, { eq: true });
+	private eqFn = this.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 
 	createApplication(fnID: FnID, args: ValueID[]): ValueID {
-		return this.solver.createApplication(fnID, args);
+		const application = this.solver.createApplication(fnID, args);
+		if (this.booleanFunctions.has(fnID)) {
+			// This application must be assigned true or false by the SAT
+			// solver.
+			this.toSatLiteral(application);
+		}
+		return application;
 	}
 
 	private toSatLiteral(valueID: ValueID): number {
@@ -516,7 +697,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 				reason: literal,
 			});
 		}
-		const result = this.solver.refuteAssumptions(assumptions);
+		const result = this.solver.refuteInTheory(assumptions);
 		if (result.tag === "inconsistent") {
 			const learnedClause = [];
 			for (const element of result.inconsistent) {

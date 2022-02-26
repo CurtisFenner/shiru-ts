@@ -37,7 +37,7 @@ function verifyInterface(
 	const interfaceTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
 	for (let i = 0; i < trait.type_parameters.length; i++) {
 		const typeVariable = trait.type_parameters[i];
-		const typeID = state.smt.createVariable(ir.T_ANY);
+		const typeID = state.smt.createVariable(ir.T_ANY, "#" + typeVariable + ".type");
 		interfaceTypeScope.set(typeVariable, typeID);
 	}
 	state.pushTypeScope(interfaceTypeScope);
@@ -51,7 +51,7 @@ function verifyInterface(
 		const signatureTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
 		for (let i = 0; i < signature.type_parameters.length; i++) {
 			const typeVariable = signature.type_parameters[i];
-			const typeID = state.smt.createVariable(ir.T_ANY);
+			const typeID = state.smt.createVariable(ir.T_ANY, "#" + typeVariable + ".type");
 			signatureTypeScope.set(typeVariable, typeID);
 		}
 
@@ -60,7 +60,8 @@ function verifyInterface(
 
 		// Create symbolic values for the arguments.
 		for (const parameter of signature.parameters) {
-			state.defineVariable(parameter, state.smt.createVariable(parameter.type));
+			state.defineVariable(parameter,
+				state.smt.createVariable(parameter.type, parameter.variable));
 		}
 
 		// Verify that preconditions explicitly state their own preconditions,
@@ -77,8 +78,9 @@ function verifyInterface(
 
 		// Create symbolic values for the returns.
 		const symbolicReturned = [];
-		for (const r of signature.return_types) {
-			symbolicReturned.push(state.smt.createVariable(r));
+		for (let i = 0; i < signature.return_types.length; i++) {
+			const r = signature.return_types[i];
+			symbolicReturned.push(state.smt.createVariable(r, "return." + i));
 		}
 
 		for (const postcondition of signature.postconditions) {
@@ -324,8 +326,9 @@ function verifyPostconditionWellFormedness(
 ): void {
 	state.smt.pushScope();
 	let symbolicReturned = [];
-	for (const r of signature.return_types) {
-		symbolicReturned.push(state.smt.createVariable(r));
+	for (let i = 0; i < signature.return_types.length; i++) {
+		const r = signature.return_types[i];
+		symbolicReturned.push(state.smt.createVariable(r, "return." + i));
 	}
 	for (const verifyAtReturn of verifyAtReturns) {
 		const valueArgs = new Map<ir.VariableDefinition, uf.ValueID>();
@@ -361,7 +364,7 @@ function verifyFunction(
 	const typeArguments = [];
 	for (let i = 0; i < f.signature.type_parameters.length; i++) {
 		const typeParameter = f.signature.type_parameters[i];
-		const typeArgument = state.smt.createVariable(ir.T_ANY);
+		const typeArgument = state.smt.createVariable(ir.T_ANY, "#" + typeParameter + ".type");
 		typeArguments.push(typeArgument);
 		typeScope.set(typeParameter, typeArgument);
 	}
@@ -373,7 +376,7 @@ function verifyFunction(
 		const parameter = f.signature.parameters[i];
 
 		// Create a symbolic constant for the initial value of the parameter.
-		const symbolic = state.smt.createVariable(parameter.type);
+		const symbolic = state.smt.createVariable(parameter.type, parameter.variable);
 		state.defineVariable(parameter, symbolic);
 		symbolicArguments.push(symbolic);
 	}
@@ -498,7 +501,13 @@ class DynamicFunctionMap {
 			}
 			const map = ir.typeArgumentsMap(typeParameters, anys);
 			const rs = signature.return_types.map(r => ir.typeSubstitute(r, map));
-			return rs.map(r => this.smt.createFunction(r, { eq: signature.semantics?.eq }));
+			const fnIDs = [];
+			for (let i = 0; i < signature.return_types.length; i++) {
+				const returnType = ir.typeSubstitute(signature.return_types[i], map);
+				fnIDs[i] = this.smt.createFunction(returnType, { eq: signature.semantics?.eq },
+					i + "." + s + (signature.return_types.length !== 0 ? "." + i : ""));
+			}
+			return fnIDs;
 		}));
 
 	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
@@ -526,7 +535,7 @@ class RecordMap {
 		const record = this.program.records[r];
 		const fields: Record<string, uf.FnID> = {};
 		for (const k in record.fields) {
-			fields[k] = this.smt.createFunction(record.fields[k], {});
+			fields[k] = this.smt.createFunction(record.fields[k], {}, r + "." + k);
 		}
 
 		const recordType: ir.TypeCompound = {
@@ -535,9 +544,9 @@ class RecordMap {
 			type_arguments: record.type_parameters.map(x => ({ tag: "type-any" })),
 		};
 		return {
-			constructor: this.smt.createFunction(recordType, {}),
+			constructor: this.smt.createFunction(recordType, {}, r + ".record"),
 			fields,
-			typeID: this.smt.createFunction(ir.T_INT, {}),
+			typeID: this.smt.createFunction(ir.T_INT, {}, r + ".type"),
 		};
 	});
 
@@ -598,18 +607,18 @@ class EnumMap {
 		let tagIndex = 0;
 		for (const variant in enumEntity.variants) {
 			const variantType = ir.typeSubstitute(enumEntity.variants[variant], instantiation);
-			constructors[variant] = this.smt.createFunction(enumType, {});
-			destructors[variant] = this.smt.createFunction(variantType, {});
+			constructors[variant] = this.smt.createFunction(enumType, {}, enumID + ".enum." + variant);
+			destructors[variant] = this.smt.createFunction(variantType, {}, enumID + "." + variant);
 			tagValues[variant] = this.smt.createConstant(ir.T_INT, tagIndex);
 			tagIndex += 1;
 		}
 
 		return {
-			extractTag: this.smt.createFunction(ir.T_INT, {}),
+			extractTag: this.smt.createFunction(ir.T_INT, {}, enumID + ".enum.tag"),
 			constructors,
 			destructors,
 			tagValues,
-			typeID: this.smt.createFunction(ir.T_INT, {}),
+			typeID: this.smt.createFunction(ir.T_INT, {}, enumID + ".type"),
 		};
 	});
 
@@ -670,9 +679,9 @@ class VerificationState {
 	private foreignInterpreters: Record<string, uf.Semantics["interpreter"]>;
 
 	smt: uf.UFTheory = new uf.UFTheory();
-	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true });
-	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true });
-	containsF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true });
+	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
+	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+	containsF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "bounds");
 
 	/// Generates a SMT function for each return of each Shiru fn.
 	/// The first parameters are the type arguments (type id).
@@ -690,7 +699,7 @@ class VerificationState {
 		for (const r of fn.signature.return_types) {
 			// Use a more generic "Any" type.
 			const resultType = ir.typeSubstitute(r, instantiation);
-			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }));
+			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }, fnID));
 		}
 		return out;
 	});
@@ -705,7 +714,7 @@ class VerificationState {
 			out.push(this.smt.createFunction(r, {
 				eq: fn.semantics?.eq,
 				interpreter: this.foreignInterpreters[op],
-			}));
+			}, op));
 		}
 		return out;
 	});
@@ -985,7 +994,8 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		const phis: uf.ValueID[] = [];
 		for (const destination of op.destinations) {
-			phis.push(state.smt.createVariable(destination.destination.type));
+			phis.push(state.smt.createVariable(
+				destination.destination.type, destination.destination.variable));
 		}
 
 		state.pushPathConstraint(symbolicCondition);

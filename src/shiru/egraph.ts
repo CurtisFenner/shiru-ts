@@ -14,10 +14,12 @@ export class EGraph<Term, Tag, Reason> {
 	private taggedDef = new Map<EObject, { term: Term, operands: EObject[], tag: Tag }>();
 
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
+	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
 	private ds: DisjointSet<EObject, Set<Reason>> = new DisjointSet();
 
 	reset(): void {
 		this.ds.reset();
+		this.queryCache.clear();
 		for (const [_, map] of this.tagged) {
 			for (const [id, set] of map) {
 				const has = set.has(id);
@@ -39,14 +41,41 @@ export class EGraph<Term, Tag, Reason> {
 		return out;
 	}
 
+	debugSymbolNames = true;
+	private uniqueObjectCount = 1;
+
 	add(term: Term, operands: EObject[], tag?: Tag, hint?: string): EObject {
 		const tuple: [Term, ...EObject[]] = [term, ...operands];
 		const existing = this.tuples.get(tuple);
 		if (existing) {
 			return existing;
 		} else {
-			const id: EObject = Symbol("egraph-term(" + hint + ")") as EObject;
+			if (!hint && this.debugSymbolNames) {
+				const fnName = String(term).match(/^Symbol\((.+)\)$/);
+				hint = (fnName ? fnName[1] : "unknown");
+				if (operands.length !== 0) {
+					hint += "(";
+					hint += operands.map(x => {
+						const raw = String(x);
+						const match = String(x).match(/^Symbol\(egraph-term    (.+)    \)$/);
+						if (match) {
+							return match[1];
+						} else {
+							return raw;
+						}
+					}).join(", ");
+					hint += ")";
+				}
+			}
+
+			const id: EObject = Symbol("egraph-term    " + hint + " #" + this.uniqueObjectCount + "    ") as EObject;
+			this.uniqueObjectCount += 1;
 			this.tuples.put(tuple, id);
+			this.objectDefinition.set(id, {
+				term,
+				operands,
+				uniqueObjectCount: this.uniqueObjectCount,
+			});
 			if (tag !== undefined) {
 				this.tagged.get(tag).get(id).add(id);
 				this.taggedDef.set(id, { term, operands, tag });
@@ -88,41 +117,44 @@ export class EGraph<Term, Tag, Reason> {
 		// The `id` is the symbol of the original (non-canonicalized) object;
 		// the `reason` is the union of reasons for why the canonicalized
 		// version is equal to the original version.
-		const canonical = new TrieMap<[Term, ...EObject[]], { id: EObject, reason: Set<Reason> }[]>();
+		const canonical = new TrieMap<[Term, ...EObject[]], { id: EObject, representative: EObject }[]>();
 		for (const [[term, ...operands], id] of this.tuples) {
-			const representatives = operands.map(x => this.ds.representative(x));
-			const reason = new Set<Reason>();
-			for (let i = 0; i < representatives.length; i++) {
-				const representative = representatives[i];
-				const original = operands[i];
-				const explanation = this.query(representative, original)!;
-				for (const r of explanation) {
-					reason.add(r);
-				}
+			const key: [Term, ...EObject[]] = [term];
+			for (let i = 0; i < operands.length; i++) {
+				key.push(this.getRepresentative(operands[i]));
 			}
-			const key: [Term, ...EObject[]] = [term, ...representatives];
 			let group = canonical.get(key);
 			if (group === undefined) {
 				group = [];
 				canonical.put(key, group);
 			}
-			group.push({ id, reason });
+
+			group.push({ id, representative: this.getRepresentative(id) });
 		}
 
 		let madeChanges = false;
 		for (const [_, members] of canonical) {
-			if (members.length < 2) {
-				continue;
-			}
 			const first = members[0];
 			for (let i = 1; i < members.length; i++) {
 				const second = members[i];
-				if (this.ds.representative(first.id) === this.ds.representative(second.id)) {
+				if (first.representative === second.representative) {
 					// They're already equal.
 					continue;
 				}
-				const reason = new Set([...first.reason, ...second.reason]);
-				this.merge(first.id, second.id, reason);
+
+				const conjunctionOfOperandReasons: Set<Reason> = new Set();
+				const firstDefinition = this.objectDefinition.get(first.id)!;
+				const secondDefinition = this.objectDefinition.get(second.id)!;
+				for (let i = 0; i < firstDefinition.operands.length; i++) {
+					const a = firstDefinition.operands[i];
+					const b = secondDefinition.operands[i];
+					const reasonOperandEqual = this.query(a, b)!
+					for (const r of reasonOperandEqual) {
+						conjunctionOfOperandReasons.add(r);
+					}
+				}
+
+				this.merge(first.id, second.id, conjunctionOfOperandReasons);
 				madeChanges = true;
 			}
 		}
@@ -135,10 +167,21 @@ export class EGraph<Term, Tag, Reason> {
 		return madeChanges;
 	}
 
+	private queryCache: Map<EObject, Map<EObject, Set<Reason>>> = new Map();
+
 	query(a: EObject, b: EObject): null | Set<Reason> {
 		if (!this.ds.compareEqual(a, b)) {
 			return null;
 		}
+
+		let cacheA = this.queryCache.get(a);
+		if (cacheA !== undefined) {
+			const cacheB = cacheA.get(b);
+			if (cacheB !== undefined) {
+				return cacheB;
+			}
+		}
+
 		const seq = this.ds.explainEquality(a, b);
 		const all = new Set<Reason>();
 		for (const list of seq) {
@@ -146,6 +189,12 @@ export class EGraph<Term, Tag, Reason> {
 				all.add(el);
 			}
 		}
+
+		if (cacheA === undefined) {
+			cacheA = new Map();
+			this.queryCache.set(a, cacheA);
+		}
+		cacheA.set(b, all);
 		return all;
 	}
 

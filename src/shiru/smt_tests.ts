@@ -46,7 +46,7 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 		this.variables[configuration[0]] = configuration[1];
 	}
 
-	rejectModel(concrete: number[]): number[] | Record<string, number> {
+	rejectModel(concrete: number[]): number[][] | Record<string, number> {
 		let environments: Record<string, number>[] = [{}];
 		for (let v in this.variables) {
 			const domain = this.variables[v];
@@ -74,7 +74,7 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 		}
 
 		// At least one must change.
-		return concrete.map(x => -x);
+		return [concrete.map(x => -x)];
 	}
 
 	clausify(constraint: BoundedRelation[]): number[][] {

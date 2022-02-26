@@ -87,31 +87,38 @@ export abstract class SMTSolver<E, Counterexample> {
 				// clauses which merely preserve satisfiability and not logical
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
-				const theoryClause = this.rejectModel(booleanModel);
-				if (Array.isArray(theoryClause)) {
+				const theoryClauses = this.rejectModel(booleanModel);
+				if (Array.isArray(theoryClauses)) {
 					// Completely undo the assignment.
-					// TODO: theoryClause should be an asserting clause, so the
-					// logic in backtracking should be able to replace this.
+					// TODO: theoryClauses should contain an asserting clause,
+					// so the logic in backtracking should be able to replace
+					// this.
 					solver.rollbackToDecisionLevel(-1);
-					if (theoryClause.length === 0) {
-						throw new Error("SMTSolver.attemptRefutation: unexpected zero-length theory clause");
+					if (theoryClauses.length === 0) {
+						throw new Error("SMTSolver.attemptRefutation: expected at least one clause from theory refutation");
 					}
-					solver.addClause(theoryClause);
+					for (const theoryClause of theoryClauses) {
+						if (theoryClause.length === 0) {
+							throw new Error("SMTSolver.attemptRefutation: expected theoryClause to not be empty");
+						}
+
+						solver.addClause(theoryClause);
+					}
 				} else {
 					// TODO: Instantiation may need to take place here.
 					// The SAT+SMT solver has failed to refute the formula.
 					solver.rollbackToDecisionLevel(-1);
-					return theoryClause;
+					return theoryClauses;
 				}
 			}
 		}
 	}
 
-	/// rejectModel returns a new clause to add to the SAT solver which
+	/// rejectModel returns new clause(s) to add to the SAT solver which
 	/// rejects this concrete assignment.
-	/// The returned clause should be an asserting clause in reference to the
+	/// The returned clause(s) should be an asserting clause in reference to the
 	/// concrete assignment.
-	protected abstract rejectModel(concrete: sat.Literal[]): Counterexample | sat.Literal[];
+	protected abstract rejectModel(concrete: sat.Literal[]): Counterexample | sat.Literal[][];
 
 	/// clausify returns a set of clauses to add to the underlying SAT solver.
 	/// This modifies state, associating literals (and other internal variables)

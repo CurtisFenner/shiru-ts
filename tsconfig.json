@@ -5,6 +5,7 @@
     "outDir": "built",
     "strict": true,
     "noImplicitAny": true,
+    "noImplicitOverride": true,
     "allowJs": true,
     "sourceMap": true,
     "inlineSources": true,

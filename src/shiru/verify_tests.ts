@@ -836,8 +836,8 @@ export const tests = {
 		smt.addConstraint([
 			smt.createConstant(ir.T_BOOLEAN, true),
 		]);
-		const eqF = smt.createFunction(ir.T_BOOLEAN, { eq: true });
-		const negF = smt.createFunction(ir.T_BOOLEAN, { not: true });
+		const eqF = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+		const negF = smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 		const ltF = smt.createFunction(ir.T_BOOLEAN, {
 			interpreter: {
 				f(...args: (unknown | null)[]): unknown | null {
@@ -855,7 +855,7 @@ export const tests = {
 					return a < b;
 				},
 			},
-		});
+		}, "<");
 
 		const isSatisfiable = (clauses: uf.ValueID[][]): boolean => {
 			smt.pushScope();

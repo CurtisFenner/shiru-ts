@@ -3,7 +3,7 @@ import * as egraph from "./egraph";
 import * as ir from "./ir";
 import * as smt from "./smt";
 
-export interface UFCounterexample { }
+export interface UFCounterexample { model: {} }
 
 type VarID = symbol & { __brand: "uf-var" };
 export type FnID = symbol & { __brand: "uf-fn" };
@@ -88,7 +88,7 @@ export interface Assumption<Reason> {
 
 interface UFInconsistency<Reason> {
 	tag: "inconsistent",
-	inconsistent: Set<Reason>,
+	inconsistencies: Set<Reason>[],
 }
 
 export class UFSolver<Reason> {
@@ -103,15 +103,15 @@ export class UFSolver<Reason> {
 		return object;
 	});
 
-	createVariable(hint?: string): ValueID {
-		const varID = Symbol("uf-var") as VarID;
-		const object = this.egraph.add(varID, [], undefined, hint) as ValueID;
-		this.values.set(object, { tag: "var", var: Symbol("uf-var") as VarID });
+	createVariable(debugName: string): ValueID {
+		const varID = Symbol(debugName || "unknown-var") as VarID;
+		const object = this.egraph.add(varID, [], undefined, debugName) as ValueID;
+		this.values.set(object, { tag: "var", var: varID });
 		return object;
 	}
 
-	createFn(semantics: Semantics): FnID {
-		const fnID = Symbol("uf-fn") as FnID;
+	createFn(semantics: Semantics, debugName: string): FnID {
+		const fnID = Symbol(debugName || "unknown-fn") as FnID;
 		if (semantics.transitiveAcyclic && !semantics.transitive) {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
@@ -166,6 +166,8 @@ export class UFSolver<Reason> {
 			this.egraph.merge(truthObject, assumption.constraint, new Set([assumption.reason]));
 		}
 
+		const inconsistencies: Set<Reason>[] = [];
+
 		let progress = true;
 		while (progress) {
 			progress = false;
@@ -181,7 +183,7 @@ export class UFSolver<Reason> {
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
-					return handled;
+					inconsistencies.push(...handled.inconsistencies);
 				}
 			}
 
@@ -194,7 +196,7 @@ export class UFSolver<Reason> {
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
-					return handled;
+					inconsistencies.push(...handled.inconsistencies);
 				}
 			}
 
@@ -206,13 +208,14 @@ export class UFSolver<Reason> {
 				progress = true;
 			}
 
-			const inconsistency = this.findInconsistentConstants()
+			const constantInconsistency = this.findInconsistentConstants()
 				|| this.findTransitivityContradictions();
-			if (inconsistency !== null) {
-				return {
-					tag: "inconsistent",
-					inconsistent: inconsistency,
-				};
+			if (constantInconsistency !== null) {
+				inconsistencies.push(constantInconsistency);
+			}
+
+			if (inconsistencies.length !== 0) {
+				return { tag: "inconsistent", inconsistencies };
 			}
 		}
 
@@ -220,7 +223,7 @@ export class UFSolver<Reason> {
 		// inconsistent.
 		return {
 			tag: "model",
-			model: {},
+			model: { model: {} },
 		};
 	}
 
@@ -253,7 +256,7 @@ export class UFSolver<Reason> {
 				if (query !== null) {
 					return {
 						tag: "inconsistent",
-						inconsistent: new Set([...query, ...reasonFalse]),
+						inconsistencies: [new Set([...query, ...reasonFalse])],
 					};
 				}
 			}
@@ -454,8 +457,8 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	// The Boolean-typed object associated with the given SAT term.
 	private objectByTerm = new Map<number, ValueID>();
 
-	createVariable(type: ir.Type): ValueID {
-		const v = this.solver.createVariable();
+	createVariable(type: ir.Type, debugName: string): ValueID {
+		const v = this.solver.createVariable(debugName);
 		if (ir.equalTypes(ir.T_BOOLEAN, type)) {
 			// Boolean-typed variables must be equal to either true or false.
 			// This constraint ensures that the sat solver will commit the
@@ -475,11 +478,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return this.solver.createConstant(c);
 	}
 
-	createFunction(returnType: ir.Type, semantics: Semantics): FnID {
-		return this.solver.createFn(semantics);
+	createFunction(returnType: ir.Type, semantics: Semantics, debugName: string): FnID {
+		return this.solver.createFn(semantics, debugName);
 	}
 
-	private eqFn = this.createFunction(ir.T_BOOLEAN, { eq: true });
+	private eqFn = this.createFunction(ir.T_BOOLEAN, { eq: true }, "proof==");
 
 	createApplication(fnID: FnID, args: ValueID[]): ValueID {
 		return this.solver.createApplication(fnID, args);
@@ -505,7 +508,17 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return [clause];
 	}
 
-	rejectModel(literals: number[]): UFCounterexample | number[] {
+	private showLiteral(literal: number): string {
+		if (literal < 0) {
+			return "not " + this.showLiteral(-literal);
+		}
+		const object = this.objectByTerm.get(literal)!;
+		const pattern = /^Symbol\(egraph-term    (.+)    \)$/;
+		const match = String(object).match(pattern);
+		return (match && match[1]) || String(object);
+	}
+
+	rejectModel(literals: number[]): UFCounterexample | number[][] {
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of literals) {
 			const term = literal > 0 ? +literal : -literal;
@@ -516,14 +529,25 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 				reason: literal,
 			});
 		}
+
 		const result = this.solver.refuteAssumptions(assumptions);
 		if (result.tag === "inconsistent") {
-			const learnedClause = [];
-			for (const element of result.inconsistent) {
-				learnedClause.push(-element);
+			const learnedClauses = [];
+			for (const inconsistent of result.inconsistencies) {
+				const learnedClause = [];
+				for (const element of inconsistent) {
+					learnedClause.push(-element);
+				}
+				learnedClauses.push(learnedClause);
 			}
-			return learnedClause;
+			return learnedClauses;
 		}
 		return result.model;
+	}
+
+	override attemptRefutation(): "refuted" | UFCounterexample {
+		// Run the solver.
+		const output = super.attemptRefutation();
+		return output;
 	}
 }

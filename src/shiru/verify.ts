@@ -1127,37 +1127,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.markPathUnreachable();
 		return;
 	} else if (op.tag === "op-foreign") {
-		const signature = program.foreign[op.operation];
-
-		for (let precondition of signature.preconditions) {
-			throw new Error("TODO: Check precondition of op-foreign");
-		}
-
-		for (let postcondition of signature.postconditions) {
-			throw new Error("TODO: Assume postcondition of op-foreign");
-		}
-
-		const args = [];
-		for (let i = 0; i < op.arguments.length; i++) {
-			args.push(state.getValue(op.arguments[i]).value);
-		}
-
-		if (signature.semantics?.eq === true) {
-			if (op.arguments.length !== 2) {
-				throw new Error("Foreign signature with `eq` semantics"
-					+ " must take exactly 2 arguments (" + op.operation + ")");
-			} else if (op.destinations.length !== 1) {
-				throw new Error("Foreign signature with `eq` semantics"
-					+ " must return exactly 1 value");
-			}
-			const destination = op.destinations[0];
-			state.defineVariable(destination, state.eq(args[0], args[1]));
-		} else {
-			const fIDs = state.foreign.get(op.operation);
-			for (let i = 0; i < op.destinations.length; i++) {
-				state.defineVariable(op.destinations[i], state.smt.createApplication(fIDs[i], args));
-			}
-		}
+		traverseForeignCall(program, op, state, context);
 		return;
 	} else if (op.tag === "op-static-call") {
 		traverseStaticCall(program, op, state);
@@ -1427,6 +1397,72 @@ function traverseDynamicCall(
 
 	if (signature.semantics?.eq === true) {
 		throw new Error("TODO");
+	}
+}
+
+function traverseForeignCall(
+	program: ir.Program,
+	op: ir.OpForeign,
+	state: VerificationState,
+	context: VerificationContext,
+): void {
+	const signature = program.foreign[op.operation];
+
+	for (let precondition of signature.preconditions) {
+		throw new Error("TODO: Check precondition of op-foreign");
+	}
+
+	const valueArgs = [];
+	for (let i = 0; i < op.arguments.length; i++) {
+		valueArgs.push(state.getValue(op.arguments[i]).value);
+	}
+
+	const typeArgsMap: Map<ir.TypeVariableID, uf.ValueID> = new Map();
+	if (signature.type_parameters.length !== 0) {
+		throw new Error("TODO: allow type-parameters in foreign functions");
+	}
+
+	const results = [];
+	if (signature.semantics?.eq === true) {
+		if (op.arguments.length !== 2) {
+			throw new Error("Foreign signature with `eq` semantics"
+				+ " must take exactly 2 arguments (" + op.operation + ")");
+		} else if (op.destinations.length !== 1) {
+			throw new Error("Foreign signature with `eq` semantics"
+				+ " must return exactly 1 value");
+		}
+		const destination = op.destinations[0];
+		const result = state.eq(valueArgs[0], valueArgs[1]);
+		results.push(result);
+		state.defineVariable(destination, result);
+	} else {
+		const fIDs = state.foreign.get(op.operation);
+		for (let i = 0; i < op.destinations.length; i++) {
+			const result = state.smt.createApplication(fIDs[i], valueArgs);
+			results.push(result);
+			state.defineVariable(op.destinations[i], result);
+		}
+	}
+
+	const fnKey = "foreign{{" + op.operation + "}}";
+	if (state.recursivePostconditions.blockedFunctions[fnKey] !== true) {
+		state.recursivePostconditions.blockedFunctions[fnKey] = true;
+
+		for (const postcondition of signature.postconditions) {
+			const valueArgsMap = new Map<ir.VariableDefinition, uf.ValueID>();
+			for (let i = 0; i < op.arguments.length; i++) {
+				const variable = signature.parameters[i];
+				valueArgsMap.set(variable, valueArgs[i]);
+			}
+			for (let i = 0; i < op.destinations.length; i++) {
+				const variable = postcondition.returnedValues[i];
+				valueArgsMap.set(variable, results[i]);
+			}
+
+			assumePostcondition(program, valueArgsMap, typeArgsMap, postcondition, state);
+		}
+
+		delete state.recursivePostconditions.blockedFunctions[fnKey];
 	}
 }
 

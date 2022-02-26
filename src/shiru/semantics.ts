@@ -3,6 +3,7 @@ import * as ir from "./ir";
 import * as diagnostics from "./diagnostics";
 import * as lexer from "./lexer";
 import { DefaultMap } from "./data";
+import * as builtin from "./builtin";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,
@@ -323,7 +324,7 @@ function collectInterfaceRecordEntity(
 // Collects the set of entities defined across all given sources.
 function collectAllEntities(sources: Record<string, grammar.Source>) {
 	const programContext = new ProgramContext();
-	programContext.foreignSignatures = getBasicForeign();
+	programContext.foreignSignatures = builtin.getBasicForeign();
 
 	for (const sourceID in sources) {
 		const source = sources[sourceID];
@@ -3181,117 +3182,6 @@ function compileEntity(
 
 	const _: never = entity;
 	throw new Error("compileEntity: unhandled tag `" + entity["tag"] + "`");
-}
-
-function getBasicForeign(): Record<string, ir.FunctionSignature> {
-	return {
-		"Int==": {
-			// Equality
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {
-				eq: true,
-			},
-		},
-		"Boolean==": {
-			// Equality
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_BOOLEAN,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_BOOLEAN,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {
-				eq: true,
-			},
-		},
-		"Int<": {
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_BOOLEAN],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-			semantics: {},
-		},
-		"Int+": {
-			// Addition
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_INT],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-		},
-		"Int-": {
-			// Subtract
-			parameters: [
-				{
-					variable: "left" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-				{
-					variable: "right" as ir.VariableID,
-					type: ir.T_INT,
-					location: ir.NONE,
-				},
-			],
-			return_types: [ir.T_INT],
-			type_parameters: [],
-			constraint_parameters: [],
-			preconditions: [],
-			postconditions: [],
-		},
-	};
 }
 
 function associateImplWithBase(

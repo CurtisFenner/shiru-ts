@@ -405,6 +405,16 @@ export interface FunctionSignature {
 		/// equivalence relation that respects extensionality.
 		/// That is, a == b implies f(a) == f(b).
 		eq?: true,
+
+		/// A `transitive` function respects transitivity:
+		/// f(a, b) and f(b, a) implies f(a, c).
+		/// (This need not be specified for `eq` functions)
+		transitive?: true,
+
+		/// A `transitiveAcyclic` function is a `transitive` function which does not
+		/// admit cycles (a < b < c < d < ... < a). This implies that the relation
+		/// is anti-reflexive.
+		transitiveAcyclic?: true,
 	},
 };
 

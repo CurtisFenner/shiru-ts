@@ -88,13 +88,20 @@ export const tests = {
 	"DisjointSet-explainEquality-efficient"() {
 		const ds = new DisjointSet();
 
-		const last = 1000;
-		for (let i = 0; i < last; i++) {
-			ds.union(i, i + 1, i);
+		const count = 1000;
+		for (let i = 0; i < count; i++) {
+			ds.union(i, i + 1, `${i} - ${i + 1}`);
 		}
 
 		// Querying this should be almost instant.
-		const reason = ds.explainEquality(0, last);
-		assert(new Set(reason).size, "is equal to", last);
+		const reason = ds.explainEquality(0, count);
+		assert(new Set(reason).size, "is equal to", count);
+
+		let total = 0;
+		for (let i = 0; i < count; i++) {
+			const reason = ds.explainEquality(i, count - 1 - i);
+			total += reason.length;
+			assert(reason.length >= i - (count - 1 - i), "is equal to", true);
+		}
 	},
 };

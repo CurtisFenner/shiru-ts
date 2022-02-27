@@ -70,12 +70,7 @@ export class DefaultMap<K, V> {
 	}
 }
 
-interface Edge<E, K> {
-	next: E,
-	key: K,
-};
-
-type BFS<E, K> = { n: E, parent: null } | { n: E, parent: BFS<E, K>, key: K };
+type BFS<E> = { n: E, parent: null } | { n: E, parent: BFS<E> };
 
 /// DisjointSet implements the "disjoint set" (a.k.a. "union find") data-
 /// structure, which tracks the set of components in an undirected graph between
@@ -85,21 +80,27 @@ type BFS<E, K> = { n: E, parent: null } | { n: E, parent: BFS<E, K>, key: K };
 export class DisjointSet<E, K> {
 	parents: Map<E, E> = new Map();
 	ranks: Map<E, number> = new Map();
-	outgoingEdges: Map<E, Edge<E, K>[]> = new Map();
+
+	/// outgoingEdges is a tree, including only edges that bridge previously
+	/// separated components.
+	outgoingEdges: Map<E, Map<E, K>> = new Map();
+
+	/// neighbors is a full graph, including all edges added by union().
+	neighbors: Map<E, Map<E, K>> = new Map();
 
 	reset() {
-		for (const [k, _] of this.parents) {
-			this.parents.set(k, k);
-			this.ranks.set(k, 0);
-			this.outgoingEdges.set(k, []);
-		}
+		this.neighbors.clear();
+		this.parents.clear();
+		this.ranks.clear();
+		this.outgoingEdges.clear();
 	}
 
 	init(e: E) {
 		if (!this.parents.has(e)) {
 			this.parents.set(e, e);
 			this.ranks.set(e, 0);
-			this.outgoingEdges.set(e, []);
+			this.outgoingEdges.set(e, new Map());
+			this.neighbors.set(e, new Map());
 		}
 	}
 
@@ -129,30 +130,42 @@ export class DisjointSet<E, K> {
 	/// explainEquality returns a sequences of keys linking the two values in
 	/// the same component.
 	explainEquality(a: E, b: E): K[] {
+		if (a === b) {
+			return [];
+		}
+
+		const fastReason = this.neighbors.get(a)?.get(b);
+		if (fastReason !== undefined) {
+			return [fastReason];
+		}
+
 		// Perform BFS on the outgoing edges graph.
-		const q: BFS<E, K>[] = [{ n: a, parent: null }];
+		const q: BFS<E>[] = [{ n: a, parent: null }];
 		for (let i = 0; i < q.length; i++) {
 			const top = q[i];
-			if (top.n === b) {
-				let keys = [];
-				let c = top;
-				while (c.parent) {
-					keys.push(c.key);
-					c = c.parent;
-				}
-				return keys;
-			}
-			for (const e of this.outgoingEdges.get(top.n)!) {
+			for (const next of this.outgoingEdges.get(top.n)!.keys()) {
 				// The outgoingEdges graph is strictly a tree, so we can avoid
 				// using a set for visited edges by simply skipping edges that
 				// go directly backward.
-				const isBackEdge = e.next === top.parent?.n;
+				const isBackEdge = next === top.parent?.n;
 				if (!isBackEdge) {
-					q.push({
-						n: e.next,
+					const edge = {
+						n: next,
 						parent: top,
-						key: e.key,
-					});
+					};
+
+					if (next === b) {
+						let keys = [];
+						let c: BFS<E> = edge;
+						while (c.parent) {
+							const key = this.outgoingEdges.get(c.parent.n)!.get(c.n)!;
+							keys.push(key);
+							c = c.parent;
+						}
+						return keys;
+					}
+
+					q.push(edge);
 				}
 			}
 		}
@@ -169,15 +182,23 @@ export class DisjointSet<E, K> {
 		this.init(b);
 		const ra = this.representative(a);
 		const rb = this.representative(b);
+
+		if (!this.neighbors.get(a)!.has(b)) {
+			this.neighbors.get(a)!.set(b, key);
+			this.neighbors.get(b)!.set(a, key);
+		}
+
 		if (ra == rb) {
 			return false;
 		}
-		this.outgoingEdges.get(a)!.push({ next: b, key: key });
-		this.outgoingEdges.get(b)!.push({ next: a, key: key });
+		this.outgoingEdges.get(a)!.set(b, key);
+		this.outgoingEdges.get(b)!.set(a, key);
 
 		let child: E;
 		let parent: E;
-		if (this.ranks.get(ra)! < this.ranks.get(rb)!) {
+		const rankA = this.ranks.get(ra)!;
+		const rankB = this.ranks.get(rb)!;
+		if (rankA < rankB) {
 			child = ra;
 			parent = rb;
 		} else {
@@ -186,7 +207,7 @@ export class DisjointSet<E, K> {
 		}
 
 		this.parents.set(child, parent);
-		if (this.ranks.get(child) === this.ranks.get(parent)) {
+		if (rankA === rankB) {
 			this.ranks.set(parent, this.ranks.get(parent)! + 1);
 		}
 		return true;

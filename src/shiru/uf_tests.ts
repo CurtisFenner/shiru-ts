@@ -267,7 +267,7 @@ export const tests = {
 			},
 		];
 
-		const result = solver.refuteAssumptions(query);
+		const result = solver.refuteUsingTheory(query);
 		assert(result, "is equal to", {
 			tag: "inconsistent",
 			inconsistencies: [new Set([100, 200, 300])],
@@ -383,7 +383,7 @@ export const tests = {
 			});
 		}
 
-		const result = solver.refuteAssumptions(assumptions);
+		const result = solver.refuteUsingTheory(assumptions);
 		assert(result, "is equal to", {
 			tag: "inconsistent",
 			inconsistencies: [
@@ -456,7 +456,7 @@ export const tests = {
 				reason: 300,
 			},
 		];
-		const result4 = solver.refuteAssumptions(query);
+		const result4 = solver.refuteUsingTheory(query);
 		assert(result4, "is equal to", {
 			tag: "inconsistent",
 			inconsistencies: [new Set([300, 400])],
@@ -495,7 +495,7 @@ export const tests = {
 				reason: 300,
 			},
 		];
-		const result4 = solver.refuteAssumptions(query);
+		const result4 = solver.refuteUsingTheory(query);
 		assert(result4, "is equal to", {
 			tag: "inconsistent",
 			inconsistencies: [new Set([100, 200, 300])],
@@ -518,7 +518,7 @@ export const tests = {
 			},
 		];
 
-		const result1 = solver.refuteAssumptions(query1);
+		const result1 = solver.refuteUsingTheory(query1);
 		assert(result1, "is equal to", {
 			tag: "model",
 			model: { model: {} },
@@ -537,7 +537,7 @@ export const tests = {
 			},
 		];
 
-		const result2 = solver.refuteAssumptions(query2);
+		const result2 = solver.refuteUsingTheory(query2);
 		assert(result2, "is equal to", {
 			tag: "inconsistent",
 			inconsistencies: [new Set([100, 200])],
@@ -591,7 +591,7 @@ export const tests = {
 
 		const n1 = solver.createConstant(1);
 
-		const refutation = solver.refuteAssumptions([
+		const refutation = solver.refuteUsingTheory([
 			{
 				constraint: solver.createApplication(ltF, [n1, n1]),
 				assignment: true,
@@ -659,7 +659,7 @@ export const tests = {
 			},
 		}, "<");
 
-		const refutation = solver.refuteAssumptions([
+		const refutation = solver.refuteUsingTheory([
 			{
 				constraint: solver.createApplication(ltF, []),
 				assignment: true,

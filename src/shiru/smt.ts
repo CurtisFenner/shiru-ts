@@ -63,20 +63,36 @@ export abstract class SMTSolver<E, Counterexample> {
 			solver.addClause(clause);
 		}
 
-		let progress = 0;
+		// Add all the clauses to the SATSolver.
+		for (const clause of this.clauses) {
+			if (clause.length === 0) {
+				return "refuted";
+			}
+			const maxTerm = Math.max(...clause.map(x => x > 0 ? x : -x));
+			solver.initTerms(maxTerm);
+			solver.addClause(clause);
+		}
+
+		// Before attempting a full CDCL(T) search loop, perform BCP to get a
+		// partial assignment and ask the theory solver if it is satisfiable.
+		const initial = solver.fastPartialSolve();
+		if (initial === "unsatisfiable") {
+			return "refuted";
+		}
+		const partialAssignment = solver.getAssignment();
+		const unassigned = [];
+		const partialAssignmentMap = solver.getAssignmentMap();
+		for (let term = 1; term < partialAssignmentMap.length; term += 1) {
+			if (partialAssignmentMap[term] === 0) {
+				unassigned.push(term);
+			}
+		}
+		const additional = this.learnAdditional(partialAssignment, unassigned);
+		if (additional === "unsatisfiable") {
+			return "refuted";
+		}
 
 		while (true) {
-			while (progress < this.clauses.length) {
-				const clause = this.clauses[progress];
-				if (clause.length === 0) {
-					return "refuted";
-				}
-				const maxTerm = Math.max(...clause.map(x => x > 0 ? x : -x));
-				solver.initTerms(maxTerm);
-				solver.addClause(clause);
-				progress += 1;
-			}
-
 			const booleanModel = solver.solve();
 			if (booleanModel === "unsatisfiable") {
 				return "refuted";
@@ -87,7 +103,7 @@ export abstract class SMTSolver<E, Counterexample> {
 				// clauses which merely preserve satisfiability and not logical
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
-				const theoryClauses = this.rejectModel(booleanModel);
+				const theoryClauses = this.rejectBooleanModel(booleanModel);
 				if (Array.isArray(theoryClauses)) {
 					// Completely undo the assignment.
 					// TODO: theoryClauses should contain an asserting clause,
@@ -114,11 +130,25 @@ export abstract class SMTSolver<E, Counterexample> {
 		}
 	}
 
-	/// rejectModel returns new clause(s) to add to the SAT solver which
-	/// rejects this concrete assignment.
-	/// The returned clause(s) should be an asserting clause in reference to the
-	/// concrete assignment.
-	protected abstract rejectModel(concrete: sat.Literal[]): Counterexample | sat.Literal[][];
+	/**
+	 * `rejectBooleanModel` use a theory-solver to produce new clauses to add
+	 * to the SAT solver which reject this concrete assignment.
+	 *
+	 * The returned clauses should include an asserting clause in reference to
+	 * the concrete assignment.
+	 */
+	protected abstract rejectBooleanModel(
+		concrete: sat.Literal[],
+	): Counterexample | sat.Literal[][];
+
+	/**
+	 * `learnAdditional(partialAssignment, unassigned)` uses a theory-solver to
+	 * produce additional facts about the given `unassigned` terms.
+	 */
+	protected abstract learnAdditional(
+		partialAssignment: sat.Literal[],
+		unassigned: sat.Literal[],
+	): sat.Literal[] | "unsatisfiable";
 
 	/// clausify returns a set of clauses to add to the underlying SAT solver.
 	/// This modifies state, associating literals (and other internal variables)

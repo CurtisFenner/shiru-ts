@@ -19,7 +19,6 @@ function swap<T>(array: T[], a: number, b: number) {
 /// `Literal[]`: A partial assignment that satisfies this instance.
 export type SATResult = "unsatisfiable" | Literal[];
 
-
 /// `UnitLiteralQueue` is a helper data structure to maintain a queue of unit
 /// literals.
 class UnitLiteralQueue {
@@ -57,6 +56,12 @@ class UnitLiteralQueue {
 		return this.unitLiterals.size;
 	}
 }
+
+type PropagationConflict = {
+	literal: Literal,
+	literalAntecedent: ClauseID,
+	negativeLiteralAntecedent: ClauseID,
+};
 
 /// `SATSolver` solves the satisfiability problem on Boolean formulas in
 /// conjunctive-normal-form (an "and of ors").
@@ -123,31 +128,74 @@ export class SATSolver {
 		return this.assignmentStack.slice(0);
 	}
 
-	/// solve solves this instance.
+	/**
+	 * `getAssignmentMap()` returns a mapping from terms to their assignments
+	 * (`-1` is negative, `0` is unassigned, and `1` is positive).
+	 *
+	 * Note that because there is no term `0`, entry `[0]` is not-defined (and
+	 * may not be a number).
+	 */
+	getAssignmentMap(): (-1 | 0 | 1)[] {
+		return this.assignments.slice(0);
+	}
+
+	/**
+	 * `fastPartialSolve()` partially solves this instance.
+	 *
+	 * `fastPartialSolve()` returns `"unsatisfiable"` if this instance has been
+	 * refuted.
+	 *
+	 * Otherwise, it returns a partial assignment. If this instance is
+	 * satisfiable, this partial assignment is necessarily a subset of any
+	 * satisfying assignment.
+	 *
+	 * This method mutates this SATSolver instance to include new assignments,
+	 * but does not increase the decision level.
+	 *
+	 * **Requires** that the current decision level is zero.
+	 */
+	fastPartialSolve(): SATResult {
+		if (this.decisionLevel !== 0) {
+			throw new Error("SATSolver.fastPartialSolve: requires that the current decision level is 0");
+		}
+
+		const unitLiterals = this.extractUnitClauses();
+		if (unitLiterals === "unsatisfiable") {
+			return "unsatisfiable";
+		}
+
+		const initialConflict = this.propagate(unitLiterals);
+		if (initialConflict !== null) {
+			return "unsatisfiable";
+		}
+
+		return this.getAssignment();
+	}
+
+	/**
+	 * `solve()` searches for a satisfying assignment (given the current
+	 * partial assignment).
+	 *
+	 * `solve()` returns `"unsatisfiable"` when the solver has proven that this
+	 * instance has no satisfying assignment which contains the partial
+	 * assignment the solver had at the time `solve()` was invoked.
+	 *
+	 * **Requires** that the current decision level is 0.
+	 */
 	solve(): SATResult {
 		if (this.decisionLevel > 0) {
 			throw new Error("SATSolver.solve() requires decision level must be at 0");
 		} else if (this.assignments.length === 0) {
 			throw new Error("SATSolver.solve() requires at least one term");
-		} else if (this.assignmentStack.length !== 0) {
-			throw new Error("SATSolver.solve() requires no assignments have been made.");
 		}
 
 		// Find initial unit clauses (and later, pure literals).
-		let unitLiterals = new UnitLiteralQueue();
-		for (let i = 0; i < this.clauses.length; i++) {
-			const clause = this.clauses[i];
-			if (clause.length === 1) {
-				const literal = clause[0];
-				const conflict = unitLiterals.pushOrFindConflict(literal, i);
-				if (conflict !== null) {
-					// There are two contradicting unit-clauses.
-					return "unsatisfiable";
-				}
-			}
+		this.decisionLevel = 0;
+		const unitLiterals = this.extractUnitClauses();
+		if (unitLiterals === "unsatisfiable") {
+			return "unsatisfiable";
 		}
 
-		this.decisionLevel = 0;
 		const initialConflict = this.propagate(unitLiterals);
 		if (initialConflict !== null) {
 			return "unsatisfiable";
@@ -217,77 +265,28 @@ export class SATSolver {
 					break;
 				}
 				const conflictClause = this.diagnoseConflict(conflict);
-				let maxDecisionLevel = 0;
-				let conflictClauseTermSet = [];
-				for (let i = 0; i < conflictClause.length; i++) {
-					const conflictLiteral = conflictClause[i];
-					const conflictTerm = conflictLiteral > 0 ? conflictLiteral : -conflictLiteral;
-					maxDecisionLevel = Math.max(maxDecisionLevel, this.termDecisionLevel[conflictTerm]);
-					conflictClauseTermSet[conflictTerm] = true;
-				}
-				if (maxDecisionLevel == 0) {
-					// If the conflict-clause is all of terms prior to the
-					// first decision (including an empty conflict clause),
-					// this instance has been refuted.
-					return "unsatisfiable";
-				}
-
-				// Find the earliest decision level at which the conflict
-				// clause becomes a unit clause.
-				let countUnfalsified = conflictClause.length;
-				let decisionLevelBecomingUnit = 0;
-				for (let i = 0; i < this.assignmentStack.length; i++) {
-					const literal = this.assignmentStack[i];
-					const term = literal > 0 ? literal : -literal;
-					if (conflictClauseTermSet[term]) {
-						countUnfalsified -= 1;
-						if (countUnfalsified === 1) {
-							// UNIT CLAUSE.
-							decisionLevelBecomingUnit = this.termDecisionLevel[term];
-							break;
-						}
-					}
-				}
 
 				// Rewind at least one decision in the conflict clause.
-				this.rollbackToDecisionLevel(decisionLevelBecomingUnit);
+				const assertingLiteral = this.rollbackForConflictClause(conflictClause);
+				if (assertingLiteral === "unsatisfiable") {
+					return "unsatisfiable";
+				}
 
 				// Then, add the clause, bearing in mind it SHOULD be a unit
 				// clause (asserting clause), which should expand
 				// propagation within a PREVIOUS decision level.
 				const conflictClauseID = this.addClause(conflictClause);
 
-				// Find the unit literal in the conflict clause.
-				let assertingLiteral = null;
-				for (let conflictLiteral of conflictClause) {
-					const conflictTerm = conflictLiteral > 0 ? conflictLiteral : -conflictLiteral;
-					const sign = this.assignments[conflictTerm];
-					if (sign * conflictLiteral > 0) {
-						throw new Error("invariant violation: conflictClause is satisfied by the current assignment");
-					} else if (sign === 0) {
-						// Unassigned literal.
-						if (assertingLiteral === null) {
-							assertingLiteral = conflictLiteral;
-						} else {
-							throw new Error("invariant violation: conflictClause is not an asserting clause (too many unassigned literals)");
-						}
-					}
-				}
-
-				if (assertingLiteral === null) {
-					throw new Error("invariant violation: conflictClause is not an asserting clause (contradiction)");
-				}
-
 				unitLiterals.clear();
 				unitLiterals.pushOrFindConflict(assertingLiteral, conflictClauseID);
 
 				// Use "cVSIDS" strategy for clause ordering.
-				for (let term = 0; term < termWeights.length; term++) {
-					if (conflictClauseTermSet[term]) {
-						termWeights[term] += 1;
-					} else {
-						termWeights[term] *= 0.99;
-					}
+				for (const literal of conflictClause) {
+					const term = literal > 0 ? +literal : -literal;
+					termWeights[term] += 1;
+				}
+				for (let i = 0; i < termWeights.length; i++) {
+					termWeights[i] *= 0.99;
 				}
 				ordering.sort(termWeightComparator);
 
@@ -301,6 +300,102 @@ export class SATSolver {
 		}
 
 		return this.getAssignment();
+	}
+
+	/**
+	 * `rollbackForConflictClause(conflictClause)` examines the given conflict
+	 * clause and rolls back to a point at which the clause is not falsified by
+	 * the current assignment.
+	 *
+	 * `findRollbackLevel(conflictClause)` returns `"unsatisfiable"` when even
+	 * assignments made before the first decision must be rolled back for this
+	 * clause to be satisfiable.
+	 *
+	 * **Requires** that
+	 *   + every literal in conflictClause must be falsified by the
+	 *     current assignment.
+	 *   + only a single variable may have the latest decision level, unless the
+	 *     latest decision level is 0.
+	 *   + the literal with the latest decision level must be a decision
+	 *     variable, unless the latest decision level is 0.
+	 */
+	rollbackForConflictClause(
+		conflictClause: Literal[],
+	): Literal | "unsatisfiable" {
+		let maxDecisionLevel = 0;
+		let assertingLiteral = -1;
+
+		// Find the term set after the most recent decision.
+		let multiple = false;
+		for (let i = 0; i < conflictClause.length; i++) {
+			const conflictLiteral = conflictClause[i];
+			const conflictTerm = conflictLiteral > 0 ? conflictLiteral : -conflictLiteral;
+
+			const termDecisionLevel = this.termDecisionLevel[conflictTerm];
+			if (termDecisionLevel > maxDecisionLevel) {
+				// Identify any term that will be unassigned if this latest
+				// decision is undone.
+				maxDecisionLevel = termDecisionLevel;
+				multiple = false;
+				assertingLiteral = conflictLiteral;
+			} else if (termDecisionLevel === maxDecisionLevel) {
+				// Used to verify the precondition that there is only a single
+				// literal at the latest (non-zero) decision level.
+				multiple = true;
+			}
+		}
+
+		if (maxDecisionLevel == 0) {
+			// If the conflict-clause is all of terms prior to the
+			// first decision (including an empty conflict clause),
+			// this instance has been refuted.
+			return "unsatisfiable";
+		} else if (multiple) {
+			throw new Error("SATSolver.rollbackForConflictClause: Expected exactly 1 literal in the latest decision level.");
+		} else {
+			this.rollbackToDecisionLevel(maxDecisionLevel - 1);
+			return assertingLiteral;
+		}
+	}
+
+	/**
+	 * `extractUnitClauses()` finds all clauses that are unit clauses given the
+	 * current partial assignment.
+	 *
+	 * `extractUnitClauses()` returns `"unsatisfiable"` when two conflicting
+	 * unit clauses were found.
+	 */
+	extractUnitClauses(): UnitLiteralQueue | "unsatisfiable" {
+		let unitLiterals = new UnitLiteralQueue();
+		for (let i = 0; i < this.clauses.length; i++) {
+			const clause = this.clauses[i];
+
+			let satisfied = false;
+			let lastUnfalsifiedLiteral = 0;
+			let unfalsifiedCount = 0;
+			for (let k = 0; k < clause.length; k++) {
+				const literal = clause[k];
+				const term = literal > 0 ? +literal : -literal;
+				const assignment = this.assignments[term];
+				if (assignment === 0) {
+					lastUnfalsifiedLiteral = literal;
+					unfalsifiedCount += 1;
+				} else if (literal * assignment > 0) {
+					satisfied = true;
+					break;
+				}
+			}
+
+			if (!satisfied && unfalsifiedCount === 1) {
+				const literal = lastUnfalsifiedLiteral;
+				const conflict = unitLiterals.pushOrFindConflict(literal, i);
+				if (conflict !== null) {
+					// There are two contradicting unit-clauses.
+					return "unsatisfiable";
+				}
+			}
+		}
+		return unitLiterals;
 	}
 
 	/// Adds a clause to this CNF-SAT instance.
@@ -395,7 +490,6 @@ export class SATSolver {
 				}
 			}
 
-
 			const w = watches[i];
 			if (!satisfied) {
 				const unwatchedUnfalsified = unfalsifiedLiterals.filter(x => w.indexOf(x) < 0);
@@ -431,16 +525,20 @@ export class SATSolver {
 		}
 	}
 
-	/// Assigns the literals in the `unitLiterals` queue, and then performs
-	/// boolean-constraint-propagation, resulting in more assignments
-	/// to newly created unit clauses.
-	/// RETURNS a conflict when boolean-constraint-propagation results in a
-	/// conflict: see `UnitLiteralQueue.pushOrFindConflict`.
-	/// RETURNS `null` when the queue was completely drained without
-	/// encountering a conflict.
+	/**
+	 * `propagate(unitLiterals)` assigns the literals in the `unitLiterals`
+	 * queue, and then performs boolean-constraint-propagation, resulting in
+	 * additional assignments to newly created unit clauses.
+	 *
+	 * `propgate` returns a conflict when boolean-constraint-propagation results
+	 * in a conflict: see `UnitLiteralQueue.pushOrFindConflict`.
+	 *
+	 * `propagate` returns `null` when the queue was completely drained without
+	 * encountering a conflict.
+	 */
 	propagate(
 		unitLiterals: UnitLiteralQueue,
-	): { literal: Literal, literalAntecedent: ClauseID, negativeLiteralAntecedent: ClauseID } | null {
+	): PropagationConflict | null {
 		for (let [unitLiteral, antecedent] of unitLiterals) {
 			// Invariant: the literal "not unitLiteral" is not in
 			// `unitLiterals`.
@@ -580,13 +678,7 @@ export class SATSolver {
 		];
 	}
 
-	private diagnoseConflict(
-		conflict: {
-			literal: Literal,
-			literalAntecedent: ClauseID,
-			negativeLiteralAntecedent: ClauseID,
-		},
-	): Literal[] {
+	private diagnoseConflict(conflict: PropagationConflict): Literal[] {
 		// This method is called when a "conflict" is detected:
 		// boolean-constraint-propagation results in a unit clause "literal"
 		// and "not literal".

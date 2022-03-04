@@ -46,7 +46,14 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 		this.variables[configuration[0]] = configuration[1];
 	}
 
-	rejectModel(concrete: number[]): number[][] | Record<string, number> {
+	protected learnAdditional(
+		partialAssignment: number[],
+		unassigned: number[],
+	): number[] | "unsatisfiable" {
+		return [];
+	}
+
+	rejectBooleanModel(concrete: number[]): number[][] | Record<string, number> {
 		let environments: Record<string, number>[] = [{}];
 		for (let v in this.variables) {
 			const domain = this.variables[v];

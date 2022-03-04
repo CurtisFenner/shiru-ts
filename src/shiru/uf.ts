@@ -149,12 +149,16 @@ export class UFSolver<Reason> {
 	trueObject = this.createConstant(true);
 	falseObject = this.createConstant(false);
 
-	/// refuteAssumptions(assumptions) returns a set of facts which the solver
-	/// has determined are inconsistent, or a model ("counterexample") when the
-	/// facts appear to be consistent.
-	/// refuteAssumptions() is _sound_ with respect to refutation; when
-	/// "inconsistent" is returned, the assumptions are definitely inconsistent.
-	refuteAssumptions(
+	/**
+	 * `refuteUsingTheory(assumptions)` returns a set of facts which the solver
+	 * has determined are inconsistent, or a model ("counterexample") when the
+	 * facts appear to be consistent.
+	 *
+	 * `refuteUsingTheory` is _sound with respect to refutation_; when
+	 * `"inconsistent"` is returned, the theory-solver has proven that the
+	 * assumptions are definitely inconsistent.
+	 */
+	refuteUsingTheory(
 		assumptions: Assumption<Reason>[],
 	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample } {
 		this.egraph.reset();
@@ -518,7 +522,33 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return (match && match[1]) || String(object);
 	}
 
-	rejectModel(literals: number[]): UFCounterexample | number[][] {
+	protected learnAdditional(
+		partialAssignment: number[],
+		unassigned: number[],
+	): number[] | "unsatisfiable" {
+		const assumptions: Assumption<ReasonSatLiteral>[] = [];
+		for (const literal of partialAssignment) {
+			const term = literal > 0 ? +literal : -literal;
+			const constraint = this.objectByTerm.get(term)!;
+			assumptions.push({
+				constraint,
+				assignment: literal > 0,
+				reason: literal,
+			});
+		}
+
+		const result = this.solver.refuteUsingTheory(assumptions);
+
+		if (result.tag === "inconsistent") {
+			return "unsatisfiable";
+		}
+
+		// TODO: Make the solver report the truths of unassigned constraints
+		//  and return them here.
+		return [];
+	}
+
+	rejectBooleanModel(literals: number[]): UFCounterexample | number[][] {
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of literals) {
 			const term = literal > 0 ? +literal : -literal;
@@ -530,7 +560,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			});
 		}
 
-		const result = this.solver.refuteAssumptions(assumptions);
+		const result = this.solver.refuteUsingTheory(assumptions);
 		if (result.tag === "inconsistent") {
 			const learnedClauses = [];
 			for (const inconsistent of result.inconsistencies) {

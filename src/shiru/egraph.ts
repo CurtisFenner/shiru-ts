@@ -3,7 +3,8 @@ import { DefaultMap, DisjointSet, TrieMap } from "./data";
 export type EObject = symbol & { __brand: "EObject" };
 
 export type EClassDescription<Term> = {
-	members: { id: EObject, term: Term, operands: EObject[] }[]
+	members: { id: EObject, term: Term, operands: EObject[] }[],
+	representative: EObject,
 };
 
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
@@ -31,6 +32,18 @@ export class EGraph<Term, Tag, Reason> {
 		}
 	}
 
+	/**
+	 * `getDefinition(id)` returns the `term` and `operands` passed to
+	 * `add(term, operands)` to create the given object.
+	 */
+	getDefinition(id: EObject): { term: Term, operands: EObject[] } {
+		const definition = this.objectDefinition.get(id);
+		if (definition === undefined) {
+			throw new Error("EGraph.getDefinition: object `" + String(id) + "` not defined");
+		}
+		return { term: definition.term, operands: definition.operands };
+	}
+
 	getTagged(tag: Tag, id: EObject): Array<{ id: EObject, term: Term, operands: EObject[] }> {
 		const out = [];
 		const representative = this.ds.representative(id);
@@ -43,6 +56,20 @@ export class EGraph<Term, Tag, Reason> {
 
 	debugSymbolNames = true;
 	private uniqueObjectCount = 1;
+
+	/**
+	 * `hasStructure(term, operands)` searches for an object with the given
+	 * definition, returning it if it was already created using
+	 * `add(term, operands)`. The search is based on object identity, and not by
+	 * equalities tracked by this `EGraph`.
+	 * 
+	 * `hasStructure` returns `null` when `add(term, operands)` has not already
+	 * been invoked with the given term and operand objects.
+	 */
+	hasStructure(term: Term, operands: EObject[]): EObject | null {
+		const tuple: [Term, ...EObject[]] = [term, ...operands];
+		return this.tuples.get(tuple) || null;
+	}
 
 	add(term: Term, operands: EObject[], tag?: Tag, hint?: string): EObject {
 		const tuple: [Term, ...EObject[]] = [term, ...operands];
@@ -212,7 +239,7 @@ export class EGraph<Term, Tag, Reason> {
 			const representative = this.ds.representative(id);
 			let eclass = mapping.get(representative);
 			if (eclass === undefined) {
-				eclass = { members: [] };
+				eclass = { members: [], representative };
 				mapping.set(representative, eclass);
 			}
 			if (duplicate) {

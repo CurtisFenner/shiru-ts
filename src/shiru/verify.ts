@@ -30,7 +30,7 @@ function verifyInterface(
 	interfaceName: string,
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
 ): FailedVerification[] {
-	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
+	const state = new VerificationState(program, interfaceSignaturesByImplFn);
 	const trait = program.interfaces[interfaceName];
 
 	// Create the type scope for the interface's subjects.
@@ -127,20 +127,149 @@ function indexInterfaceSignaturesByImplFn(
 	return map;
 }
 
-const foreignInterpeters = {
-	"Int+": {
-		f(a: unknown | null, b: unknown | null): unknown | null {
-			if (a === null || b === null) {
-				return null;
-			} else if (typeof a !== "bigint") {
-				throw new Error("foreignInterpreters['Int+']: got non bigint `" + a + "`");
-			} else if (typeof b !== "bigint") {
-				throw new Error("foreignInterpreters['Int+']: got non bigint `" + b + "`");
-			}
-			return (a as bigint) + (b as bigint);
+function getForeignInterpreters(
+	state: VerificationState,
+): Record<string, {
+	interpreter?: (...args: (unknown | null)[]) => unknown | null,
+	generalInterpreter?: (
+		matcher: uf.EMatcher<number>,
+		id: uf.ValueID,
+		operands: uf.ValueID[],
+	) => "change" | "no-change",
+}> {
+	return {
+		"Int-unary": {
+			interpreter(a: unknown): unknown | null {
+				if (a === null) {
+					return null;
+				} else if (typeof a !== "bigint") {
+					return null;
+				} else {
+					return -(a as bigint);
+				}
+			},
 		},
-	},
-};
+		"Int+": {
+			interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				if (a === null || b === null) {
+					return null;
+				} else if (typeof a !== "bigint") {
+					return null;
+				} else if (typeof b !== "bigint") {
+					return null;
+				}
+
+				return (a as bigint) + (b as bigint);
+			},
+
+			generalInterpreter(
+				matcher: uf.EMatcher<number>,
+				id: uf.ValueID,
+				operands: uf.ValueID[],
+			): "change" | "no-change" {
+				const sum = state.foreign.get("Int+")[0];
+				const left = operands[0];
+				const right = operands[1];
+
+				let change: "change" | "no-change" = "no-change";
+
+				// Resolve commutativity by swapping all sums.
+				const swapped = matcher.hasApplication(sum, [right, left]);
+				if (swapped !== null) {
+					let freshCommutative = matcher.merge(id, swapped, new Set());
+					if (freshCommutative) {
+						change = "change";
+					}
+				}
+
+				// Resolve associativity by canonicalizing all left sums to
+				// be left-leaning.
+				const rightSums = matcher.matchAsApplication(right, sum);
+				for (const rightSum of rightSums) {
+					const a = rightSum.operands[0];
+					const b = rightSum.operands[1];
+
+					const leftASum = matcher.hasApplication(sum, [left, a]);
+					if (leftASum !== null) {
+						const leftLeaning = matcher.hasApplication(sum, [
+							leftASum, b,
+						]);
+
+						if (leftLeaning !== null) {
+							const freshAssociative = matcher.merge(id, leftLeaning, rightSum.reason);
+							if (freshAssociative) {
+								change = "change";
+							}
+						}
+					}
+				}
+
+				return change;
+			}
+		},
+		"Int<": {
+			interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				if (a === null || b === null) {
+					return null;
+				} else if (typeof a !== "bigint") {
+					return null;
+				} else if (typeof b !== "bigint") {
+					return null;
+				}
+				return (a as bigint) < (b as bigint);
+			},
+
+			generalInterpreter(
+				matcher: uf.EMatcher<number>,
+				id: uf.ValueID,
+				operands: uf.ValueID[],
+			): "change" | "no-change" {
+				const sum = state.foreign.get("Int+")[0];
+				const lt = state.foreign.get("Int<")[0];
+				const left = operands[0];
+				const right = operands[1];
+
+				const leftSums = matcher.matchAsApplication(left, sum);
+				const rightSums = matcher.matchAsApplication(right, sum);
+
+				// TODO: Improve performance by indexing sums by their terms
+				// instead of doing a quadratic scan when many are equal.
+				// Search for the pattern 
+				// a + k1 < b + k2 where k1 = k2.
+				let change: "change" | "no-change" = "no-change";
+				for (const leftSum of leftSums) {
+					for (const rightSum of rightSums) {
+						const kQuery = matcher.query(leftSum.operands[1], rightSum.operands[1]);
+						if (kQuery !== null) {
+							// Equate this with `a < b`, using the reason
+							// which is why
+							// left == (a+k1) and right == (b+k2)
+							// and k1 == k2.
+							const newLt = matcher.hasApplication(lt, [
+								leftSum.operands[0],
+								rightSum.operands[0],
+							]);
+							if (newLt === null) {
+								continue;
+							}
+							const reason = new Set([
+								...leftSum.reason,
+								...rightSum.reason,
+								...kQuery,
+							]);
+							const fresh = matcher.merge(id, newLt, reason);
+							if (fresh) {
+								change = "change";
+							}
+						}
+					}
+				}
+
+				return change;
+			},
+		},
+	};
+}
 
 function assumeStaticPreconditions(
 	program: ir.Program,
@@ -354,7 +483,7 @@ function verifyFunction(
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
 ): FailedVerification[] {
 	const interfaceSignatures = interfaceSignaturesByImplFn.get(fName as ir.FunctionID);
-	const state = new VerificationState(program, foreignInterpeters, interfaceSignaturesByImplFn);
+	const state = new VerificationState(program, interfaceSignaturesByImplFn);
 
 	const f = program.functions[fName];
 
@@ -676,7 +805,7 @@ class EnumMap {
 
 class VerificationState {
 	private program: ir.Program;
-	private foreignInterpreters: Record<string, uf.Semantics["interpreter"]>;
+	private foreignInterpreters: Record<string, Pick<uf.Semantics<number>, "interpreter" | "generalInterpreter">>;
 
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
@@ -713,7 +842,8 @@ class VerificationState {
 		for (const r of fn.return_types) {
 			out.push(this.smt.createFunction(r, {
 				eq: fn.semantics?.eq,
-				interpreter: this.foreignInterpreters[op],
+				interpreter: this.foreignInterpreters[op]?.interpreter,
+				generalInterpreter: this.foreignInterpreters[op]?.generalInterpreter,
 			}, op));
 		}
 		return out;
@@ -835,11 +965,9 @@ class VerificationState {
 
 	constructor(
 		program: ir.Program,
-		foreignInterpeters: Record<string, uf.Semantics["interpreter"]>,
 		interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
 	) {
 		this.program = program;
-		this.foreignInterpreters = foreignInterpeters;
 		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
 		this.recordMap = new RecordMap(this.program, this.smt);
 		this.enumMap = new EnumMap(this.program, this.smt);
@@ -849,6 +977,8 @@ class VerificationState {
 		this.smt.addConstraint([
 			this.smt.createConstant(ir.T_BOOLEAN, true),
 		]);
+
+		this.foreignInterpreters = getForeignInterpreters(this);
 	}
 
 	negate(bool: uf.ValueID): uf.ValueID {

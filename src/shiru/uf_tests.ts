@@ -571,21 +571,19 @@ export const tests = {
 		const solver = new uf.UFSolver<string>();
 
 		const ltF = solver.createFn({
-			interpreter: {
-				f(...args: (unknown | null)[]): unknown | null {
-					if (args.length !== 2) {
-						throw new Error("unexpected");
-					}
-					const a = args[0];
-					const b = args[1];
-					if (a === null || b === null) {
-						return null;
-					}
-					if (typeof a !== "number" || typeof b !== "number") {
-						throw new Error("unexpected");
-					}
-					return a < b;
-				},
+			interpreter(...args: (unknown | null)[]): unknown | null {
+				if (args.length !== 2) {
+					throw new Error("unexpected");
+				}
+				const a = args[0];
+				const b = args[1];
+				if (a === null || b === null) {
+					return null;
+				}
+				if (typeof a !== "number" || typeof b !== "number") {
+					throw new Error("unexpected");
+				}
+				return a < b;
 			},
 		}, "<");
 
@@ -610,21 +608,19 @@ export const tests = {
 			smt.createConstant(ir.T_BOOLEAN, true),
 		]);
 		const ltF = smt.createFunction(ir.T_BOOLEAN, {
-			interpreter: {
-				f(...args: (unknown | null)[]): unknown | null {
-					if (args.length !== 2) {
-						throw new Error("unexpected");
-					}
-					const a = args[0];
-					const b = args[1];
-					if (a === null || b === null) {
-						return null;
-					}
-					if (typeof a !== "number" || typeof b !== "number") {
-						throw new Error("unexpected");
-					}
-					return a < b;
-				},
+			interpreter(...args: (unknown | null)[]): unknown | null {
+				if (args.length !== 2) {
+					throw new Error("unexpected");
+				}
+				const a = args[0];
+				const b = args[1];
+				if (a === null || b === null) {
+					return null;
+				}
+				if (typeof a !== "number" || typeof b !== "number") {
+					throw new Error("unexpected");
+				}
+				return a < b;
 			},
 		}, "<");
 
@@ -652,10 +648,8 @@ export const tests = {
 		const solver = new uf.UFSolver<string>();
 
 		const ltF = solver.createFn({
-			interpreter: {
-				f(...args: (unknown | null)[]): unknown | null {
-					return false;
-				},
+			interpreter(...args: (unknown | null)[]): unknown | null {
+				return false;
 			},
 		}, "<");
 

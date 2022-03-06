@@ -839,21 +839,19 @@ export const tests = {
 		const eqF = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 		const negF = smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 		const ltF = smt.createFunction(ir.T_BOOLEAN, {
-			interpreter: {
-				f(...args: (unknown | null)[]): unknown | null {
-					if (args.length !== 2) {
-						throw new Error("unexpected");
-					}
-					const a = args[0];
-					const b = args[1];
-					if (a === null || b === null) {
-						return null;
-					}
-					if (typeof a !== "number" || typeof b !== "number") {
-						throw new Error("unexpected");
-					}
-					return a < b;
-				},
+			interpreter(...args: (unknown | null)[]): unknown | null {
+				if (args.length !== 2) {
+					throw new Error("unexpected");
+				}
+				const a = args[0];
+				const b = args[1];
+				if (a === null || b === null) {
+					return null;
+				}
+				if (typeof a !== "number" || typeof b !== "number") {
+					throw new Error("unexpected");
+				}
+				return a < b;
 			},
 		}, "<");
 
@@ -908,6 +906,61 @@ export const tests = {
 				specDescribe(!testCase.less, "!testCase.less", "case(" + JSON.stringify(testCase) + ")"),
 			);
 		}
+	},
+	"add-zero-is-identify"() {
+		const source = `
+		package example;
+		record Main {
+			fn zeroIsRightIdentity(a: Int): Boolean
+			ensures a + 0 == a {
+				return true;
+			}
+			fn zeroIsLeftIdentity(a: Int): Boolean
+			ensures 0 + a == a {
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"int-subtract-then-add-is-identity"() {
+		const source = `
+		package example;
+		record Main {
+			fn subtractThenAddIsIdentity(n: Int, k: Int): Boolean
+			ensures (n - k) + k == n {
+				assert (n - k) + k == ((n + 0) - k) + k;
+				assert (n - k) + k == (n + (0 - k)) + k;
+				assert (0 - k) + k == k + (0 - k);
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"int-addition-associative"() {
+		const source = `
+		package example;
+		record Main {
+			fn isAssociative(a: Int, b: Int, c: Int): Boolean
+			ensures (a + b) + c == a + (b + c) {
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
 	},
 };
 

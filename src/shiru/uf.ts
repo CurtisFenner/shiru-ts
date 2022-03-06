@@ -31,7 +31,7 @@ type ReasonSatLiteral = number;
 
 export type ValueID = egraph.EObject & { __uf: "uf.ValueID" };
 
-export interface Semantics {
+export interface Semantics<Reason> {
 	/// An `eq` function respects congruence: a == b implies f(a) == f(b).
 	eq?: true,
 
@@ -47,9 +47,13 @@ export interface Semantics {
 	/// is anti-reflexive.
 	transitiveAcyclic?: true,
 
-	interpreter?: {
-		f(...args: (unknown | null)[]): unknown | null,
-	},
+	interpreter?: (...args: (unknown | null)[]) => unknown | null,
+
+	generalInterpreter?: (
+		matcher: EMatcher<Reason>,
+		id: ValueID,
+		operands: ValueID[],
+	) => "change" | "no-change",
 }
 
 function transitivitySearch<Reason>(
@@ -91,9 +95,117 @@ interface UFInconsistency<Reason> {
 	inconsistencies: Set<Reason>[],
 }
 
+export class EMatcher<Reason> {
+	private membersByClassAndTerm = new Map<egraph.EObject, Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>>();
+
+	constructor(
+		private solver: UFSolver<Reason>,
+		private egraph: egraph.EGraph<FnID | VarID, "constant", Reason>,
+		eclasses: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
+	) {
+		for (const { members, representative } of eclasses.values()) {
+			const map = new Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>();
+			for (const member of members) {
+				let byTerm = map.get(member.term);
+				if (byTerm === undefined) {
+					byTerm = { members: [], representative };
+					map.set(member.term, byTerm);
+				}
+				byTerm.members.push(member);
+			}
+			this.membersByClassAndTerm.set(representative, map);
+		}
+	}
+
+	hasApplication(f: FnID | VarID, operands: ValueID[]): ValueID | null {
+		return this.egraph.hasStructure(f, operands) as ValueID;
+	}
+
+	query(a: ValueID, b: ValueID): Set<Reason> | null {
+		return this.egraph.query(a, b);
+	}
+
+	merge(a: ValueID, b: ValueID, reason: Set<Reason>): boolean {
+		// TODO: Currently, this EMatcher's state is not updated when a merge is
+		//  performed, meaning that `matchAsApplication` does not return some
+		//  matches that it could.
+		return this.egraph.merge(a, b, reason);
+	}
+
+	evaluateConstant(value: ValueID): { constant: unknown, reason: Set<Reason> } | null {
+		return this.solver.evaluateConstant(value);
+	}
+
+	createConstant(constant: unknown): ValueID {
+		const id = this.solver.createConstant(constant);
+		const representative = this.egraph.getRepresentative(id);
+		if (!this.membersByClassAndTerm.has(representative)) {
+			// If this is a new object, it must be tracked by this EMatcher so
+			// that subsequent calls to `matchAsApplication` behave correctly.
+			const map = new Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>();
+			const definition = this.egraph.getDefinition(id);
+			map.set(definition.term, {
+				representative,
+				members: [
+					{
+						id,
+						term: definition.term,
+						operands: definition.operands,
+					},
+				],
+			});
+			this.membersByClassAndTerm.set(representative, map);
+		}
+		return id;
+	}
+
+	/**
+	 * `matchAsApplication(obj, term)` searches for objects within the matched
+	 * `EGraph` which are equal to `obj` and with the given `term` in its
+	 * definition.
+	 *
+	 * Note: For now, this does not reflect equalities generated with `merge`
+	 * since the creation of this `EMatcher`.
+	 */	matchAsApplication(
+		obj: ValueID,
+		term: FnID,
+	): Array<{
+		id: ValueID,
+		term: FnID,
+		operands: ValueID[],
+		reason: Set<Reason>,
+	}> {
+		const eclass = this.membersByClassAndTerm.get(this.egraph.getRepresentative(obj));
+		if (eclass === undefined) {
+			throw new Error("matchAsApplication: obj (" + String(obj) + ") is not contained in this membersByClassAndTerm index");
+		}
+
+		const byTerm = eclass.get(term);
+		if (byTerm === undefined) {
+			return [];
+		}
+
+		const out = [];
+		for (let i = 0; i < byTerm.members.length; i++) {
+			const member = byTerm.members[i];
+			const reason = this.egraph.query(obj, member.id);
+			if (reason === null) {
+				throw new Error("matchAsApplication: membersByClassAndItem index does not match egraph.query result");
+			}
+			out.push({
+				id: member.id as ValueID,
+				term,
+				operands: member.operands as ValueID[],
+				reason,
+			});
+		}
+		return out;
+	}
+}
+
 export class UFSolver<Reason> {
 	private values = new Map<ValueID, Value>();
-	private fns = new Map<FnID, Semantics>();
+	private fns = new Map<FnID, Semantics<Reason>>();
 	private egraph = new egraph.EGraph<VarID | FnID, "constant", Reason>();
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
@@ -110,13 +222,17 @@ export class UFSolver<Reason> {
 		return object;
 	}
 
-	createFn(semantics: Semantics, debugName: string): FnID {
+	createFn(semantics: Semantics<Reason>, debugName: string): FnID {
 		const fnID = Symbol(debugName || "unknown-fn") as FnID;
 		if (semantics.transitiveAcyclic && !semantics.transitive) {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
 		this.fns.set(fnID, semantics);
 		return fnID;
+	}
+
+	hasApplication(fn: FnID, args: ValueID[]): ValueID | null {
+		return this.egraph.hasStructure(fn, args) as ValueID | null;
 	}
 
 	createApplication(fn: FnID, args: ValueID[]): ValueID {
@@ -137,7 +253,7 @@ export class UFSolver<Reason> {
 		return value;
 	}
 
-	getFnSemantics(fnID: FnID): Semantics {
+	getFnSemantics(fnID: FnID): Semantics<Reason> {
 		const semantics = this.fns.get(fnID);
 		if (semantics === undefined) {
 			throw new Error("UFSolver.getFnSemantics: no such fn");
@@ -268,10 +384,12 @@ export class UFSolver<Reason> {
 		return "no-change";
 	}
 
-	/// `evaluateConstant` returns a constant (as it was passed to
-	/// `createConstant`) that is equal to the given value under the current
-	/// constraints.
-	private evaluateConstant(value: ValueID): { constant: unknown, reason: Set<Reason> } | null {
+	/**
+	 * `evaluateConstant` returns a constant (as it was passed to
+	 * `createConstant`) that is equal to the given value under the current
+	 * constraints.
+	 */
+	evaluateConstant(value: ValueID): { constant: unknown, reason: Set<Reason> } | null {
 		const constants = this.egraph.getTagged("constant", value);
 		if (constants.length === 0) {
 			return null;
@@ -287,38 +405,32 @@ export class UFSolver<Reason> {
 		};
 	}
 
-	/// `propagateFnInterpreters()` adds additional constants and equalities by
-	/// using the `interpreter` semantics of functions.
+	/**
+	 * `propagateFnInterpreters()` adds additional constants and equalities by
+	 * using the `interpreter` and `generalInterpreter` semantics of functions.
+	 */
 	private propagateFnInterpreters(): "change" | "no-change" {
 		let madeChanges = false;
 		while (true) {
 			let iterationMadeChanges = false;
-			for (const [eclass, { members }] of this.egraph.getClasses()) {
+			const eclasses = this.egraph.getClasses();
+			const matcher = new EMatcher(this, this.egraph, eclasses);
+			for (const { members } of eclasses.values()) {
 				for (const member of members) {
 					const semantics = this.fns.get(member.term as FnID);
 					if (semantics !== undefined) {
-						const interpreter = semantics.interpreter;
-						if (interpreter !== undefined) {
-							const reason = new Set<Reason>();
-							const args = [];
-							for (const operand of member.operands) {
-								const ec = this.evaluateConstant(operand as ValueID);
-								if (ec !== null) {
-									args.push(ec.constant);
-									for (const s of ec.reason) {
-										reason.add(s);
-									}
-								} else {
-									args.push(null);
-								}
+						const simpleInterpreter = semantics.interpreter;
+						if (simpleInterpreter !== undefined) {
+							const changeMade = this.propagateSimpleInterpreter(matcher, member, simpleInterpreter);
+							if (changeMade === "change") {
+								iterationMadeChanges = true;
 							}
-							const r = interpreter.f(...args);
-							if (r !== null) {
-								const constant = this.createConstant(r);
-								const changed = this.egraph.merge(constant, member.id, reason);
-								if (changed) {
-									iterationMadeChanges = true;
-								}
+						}
+						const generalInterpreter = semantics.generalInterpreter;
+						if (generalInterpreter !== undefined) {
+							const changeMade = generalInterpreter(matcher, member.id as ValueID, member.operands as ValueID[]);
+							if (changeMade === "change") {
+								iterationMadeChanges = true;
 							}
 						}
 					}
@@ -330,6 +442,57 @@ export class UFSolver<Reason> {
 			madeChanges = true;
 		}
 		return madeChanges ? "change" : "no-change";
+	}
+
+	private propagateGeneralInterpreter(
+		matcher: EMatcher<Reason>,
+		member: { id: egraph.EObject, operands: egraph.EObject[] },
+		interpreter: (
+			matcher: EMatcher<Reason>,
+			id: ValueID,
+			operands: ValueID[],
+		) => "change" | "no-change",
+	): "change" | "no-change" {
+		return interpreter(matcher, member.id as ValueID, member.operands as ValueID[]);
+	}
+
+	private propagateSimpleInterpreter(
+		matcher: EMatcher<Reason>,
+		member: { id: egraph.EObject, operands: egraph.EObject[] },
+		interpreter: (...args: unknown[]) => unknown,
+	): "change" | "no-change" {
+		return this.propagateGeneralInterpreter(matcher, member, (
+			matcher: EMatcher<Reason>,
+			id: ValueID,
+			operands: ValueID[],
+		): "change" | "no-change" => {
+			const reason = new Set<Reason>();
+			const args = [];
+			for (const operand of operands) {
+				// Search for a constant value among the objects equal to the
+				// operand.
+				const operandConstant = matcher.evaluateConstant(operand as ValueID);
+				if (operandConstant !== null) {
+					args.push(operandConstant.constant);
+					for (const r of operandConstant.reason) {
+						reason.add(r);
+					}
+				} else {
+					args.push(null);
+				}
+			}
+
+			// Call the interpreter with the known constant values.
+			const result = interpreter(...args);
+			if (result !== null) {
+				const resultConstant = matcher.createConstant(result);
+				const changed = matcher.merge(resultConstant, id, reason);
+				if (changed) {
+					return "change";
+				}
+			}
+			return "no-change";
+		});
 	}
 
 	private findTransitivityContradictions(): null | Set<Reason> {
@@ -482,7 +645,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return this.solver.createConstant(c);
 	}
 
-	createFunction(returnType: ir.Type, semantics: Semantics, debugName: string): FnID {
+	createFunction(
+		returnType: ir.Type,
+		semantics: Semantics<ReasonSatLiteral>,
+		debugName: string,
+	): FnID {
 		return this.solver.createFn(semantics, debugName);
 	}
 

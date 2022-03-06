@@ -345,6 +345,19 @@ export class SATSolver {
 			}
 		}
 
+		// Find the second highest decision level; after that decision, this
+		// clause is a unit clause.
+		let secondHighestDecisionLevel = 0;
+		for (let i = 0; i < conflictClause.length; i++) {
+			const conflictLiteral = conflictClause[i];
+			const conflictTerm = conflictLiteral > 0 ? conflictLiteral : -conflictLiteral;
+
+			const termDecisionLevel = this.termDecisionLevel[conflictTerm];
+			if (termDecisionLevel < maxDecisionLevel && termDecisionLevel > secondHighestDecisionLevel) {
+				secondHighestDecisionLevel = termDecisionLevel;
+			}
+		}
+
 		if (maxDecisionLevel == 0) {
 			// If the conflict-clause is all of terms prior to the
 			// first decision (including an empty conflict clause),
@@ -353,7 +366,7 @@ export class SATSolver {
 		} else if (multiple) {
 			throw new Error("SATSolver.rollbackForConflictClause: Expected exactly 1 literal in the latest decision level.");
 		} else {
-			this.rollbackToDecisionLevel(maxDecisionLevel - 1);
+			this.rollbackToDecisionLevel(secondHighestDecisionLevel);
 			return assertingLiteral;
 		}
 	}
@@ -403,7 +416,6 @@ export class SATSolver {
 	/// contained literals.
 	/// A clause is satisfied when at least one of its literals is satisfied.
 	addClause(unprocessedClause: Literal[]): ClauseID {
-
 		// Check for tautological clauses and for redundant literals.
 		let hasUnassigned = false;
 		const clause: Literal[] = [];
@@ -636,7 +648,7 @@ export class SATSolver {
 				// `this.assignments` is not yet updated; thus the only
 				// falsified literal is the one being deleted; so this is a
 				// conflicting unit-clause.
-				throw new Error(`This assignment falsifies the clause #${watchingClauseID}.`
+				throw new Error(`SATSolver.assign: This assignment falsifies the clause #${watchingClauseID}.`
 					+ `\n(adding assignment ${assignedLiteral} to stack [${this.assignmentStack}];`
 					+ `\nwatchingClause =#${watchingClauseID} ${watchingClause})`);
 			} else if (unfalsfiedCount == 2) {

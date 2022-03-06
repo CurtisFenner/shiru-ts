@@ -319,4 +319,42 @@ export const tests = {
 		const solution = sat.solve();
 		assert(Array.isArray(solution), "is equal to", true);
 	},
+	"unknown-crash"() {
+		const clauses = [
+			// First, make a free decision of +1.
+			// Then, make a free decision of +2.
+			// Assignment stack is now [+1, +2].
+			[-2, -99],
+			[-2, 99],
+			// Learn clause [-2] as a result of the above conflict.
+			// Rollback.
+			// NOTE: you must rollback to decision level 0, NOT 1,
+			// since this new learned clause is a unit clause in level 0.
+			// Now propagate using -2 as asserting literal.
+			[2, -1, 98],
+			[2, -1, -98],
+			// Learn clause [-1] as a result of the above conflict.
+
+			// Artificially boost the termweight of 1 so that it is the first
+			// decision variable.
+			[1, 31],
+			[1, 32],
+			[1, 33],
+			[1, 34],
+			[1, 35],
+			[1, 36],
+			[2, 37],
+			[2, 38],
+			[2, 39],
+		];
+
+		const sat = new SATSolver();
+		for (const clause of clauses) {
+			sat.initTerms(Math.max(...clause.map(x => Math.abs(x))));
+			sat.addClause(clause);
+		}
+
+		const solution = sat.solve();
+		assert(Array.isArray(solution), "is equal to", true);
+	},
 };

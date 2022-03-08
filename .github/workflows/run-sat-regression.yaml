@@ -1,0 +1,21 @@
+name: Run SAT regression tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install dependencies
+      run: yarn install --frozen-lockfile
+    - name: Build
+      run: yarn build
+    - name: Install minisat
+      run: sudo apt-get install -y minisat
+    - name: Run regression test
+      run: yarn test-satchecker

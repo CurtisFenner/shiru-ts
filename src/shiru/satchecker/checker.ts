@@ -3,7 +3,6 @@ import { solveDimacs } from "../dimacs";
 import { Histogram } from "./histogram";
 import { generateInstance as generateRandom3CNF } from "./random3cnf";
 
-
 function runSync(command: string, input?: string): string {
 	if (input !== undefined) {
 		return child_process.execSync(command, { input }).toString("utf8");
@@ -24,7 +23,11 @@ export function minisat(dimacs: string): "UNSATISFIABLE" | "SATISFIABLE" {
 		}
 	}
 	const lines = stdout.toString().trim().split("\n");
-	return lines[lines.length - 1].trim() as any;
+	const result = lines[lines.length - 1].trim();
+	if (result !== "UNSATISFIABLE" && result !== "SATISFIABLE") {
+		throw new Error("minisat: unexpected minisat output last line `" + result + "`");
+	}
+	return result;
 }
 
 function shiru(dimacs: string): "UNSATISFIABLE" | "SATISFIABLE" {
@@ -93,11 +96,19 @@ const unsatHisto = new Histogram(25, 10);
 
 function compareSolvers(instance: string) {
 	const before = Date.now();
-	const shiruResult = shiru(instance);
+	let shiruResult;
+	try {
+		shiruResult = shiru(instance);
+	} catch (e) {
+		console.log("Error instance:");
+		console.log(instance);
+		throw e;
+	}
 	const after = Date.now();
 
 	if (after - before > 1000) {
-		console.error("Slow instance:", instance);
+		console.error("Slow instance (" + (after - before) + " ms):");
+		console.log(instance);
 	}
 
 	const miniResult = minisat(instance);
@@ -133,10 +144,26 @@ function fuzzSolvers() {
 
 if (require.main === module) {
 	const before = Date.now();
-	const NUM_FUZZES = 1_000;
+
+	let NUM_FUZZES: number | null = null;
+	const commands = process.argv;
+	if (commands.length === 3) {
+		NUM_FUZZES = parseInt(commands[2]);
+	} else if (commands.length === 2) {
+		NUM_FUZZES = 1_000;
+	}
+
+	if (NUM_FUZZES === null || NUM_FUZZES !== NUM_FUZZES || NUM_FUZZES < 1) {
+		console.error("USAGE:");
+		console.error("\t<node> <checker.js> <instance count=1000>");
+		console.error("\t\tgenerates the given number of 3-sat instances and compares Shiru's result with minisat's.");
+
+		process.exit(1);
+	}
+
 	for (let i = 0; i < NUM_FUZZES; i++) {
 		fuzzSolvers();
-		if (i % 10 == 9) {
+		if (i % 10 == 9 || i + 1 >= NUM_FUZZES) {
 			console.log("");
 			satHisto.print("Satisfiable Instances", (lo, hi, last) => {
 				if (last) {

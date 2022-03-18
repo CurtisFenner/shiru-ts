@@ -962,6 +962,111 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"logical-operations-short-circuit-okay"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn evil(): Boolean
+			requires false {
+				return false;
+			}
+
+			fn andLeftFalse(): Boolean {
+				return false and Main.evil();
+			}
+
+			fn orLeftTrue(): Boolean {
+				return true or Main.evil();
+			}
+
+			fn impliesLeftFalse(): Boolean {
+				return false implies Main.evil();
+			}
+		}
+		`;
+
+		// All of these operations have a short-circuit move which means the
+		// precondition need not hold.
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"logical-operations-short-circuit-invalid"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn evil(): Boolean
+			requires false {
+				return false;
+			}
+
+			fn andLeftFalse(): Boolean {
+				return true and Main.evil();
+			}
+
+			fn orLeftTrue(): Boolean {
+				return false or Main.evil();
+			}
+
+			fn impliesLeftFalse(): Boolean {
+				return true implies Main.evil();
+			}
+		}
+		`;
+
+		// None of these can be shortcircuited.
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 155, length: 11 },
+				preconditionLocation: { fileID: "test-file", offset: 71, length: 5 },
+			},
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 224, length: 11 },
+				preconditionLocation: { fileID: "test-file", offset: 71, length: 5 },
+			},
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 303, length: 11 },
+				preconditionLocation: { fileID: "test-file", offset: 71, length: 5 },
+			},
+		]);
+	},
+	"do-not-shortcircuit-implies-on-right"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn evil(): Boolean
+			requires false {
+				return false;
+			}
+
+			fn impliesRightTrue(): Boolean {
+				return Main.evil() implies true;
+			}
+		}
+		`;
+
+		// implies is only shortcircuited on the left operand, not the right.
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-precondition",
+				callLocation: { fileID: "test-file", offset: 150, length: 11 },
+				preconditionLocation: { fileID: "test-file", offset: 71, length: 5 },
+			},
+		]);
+	},
 };
 
 function lexicographicComparison<T>(left: T[], right: T[]): -1 | 0 | 1 {

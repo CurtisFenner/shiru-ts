@@ -220,7 +220,16 @@ export function parseSource(blob: string, fileID: string) {
 }
 
 export type BooleanLiteralToken = KeywordToken & { keyword: "true" | "false" };
-export type BinaryLogicalToken = KeywordToken & { keyword: "and" | "or" | "implies" };
+
+// Keyword strings which are infix binary operators.
+const infixOperatorKeywordSet = {
+	and: true,
+	or: true,
+	implies: true,
+} as const;
+
+export type InfixOperatorKeywordToken =
+	KeywordToken & { keyword: keyof typeof infixOperatorKeywordSet };
 
 const tokens = {
 	packageIden: tokenParser("iden"),
@@ -236,7 +245,7 @@ const tokens = {
 		return null;
 	}),
 	typeKeyword: tokenParser("type-keyword"),
-	operator: tokenParser("operator"),
+	symbolInfixOperator: tokenParser("operator"),
 	stringLiteral: tokenParser("string-literal"),
 	numberLiteral: tokenParser("number-literal"),
 	booleanLiteral: new TokenParser((token: Token) => {
@@ -247,13 +256,11 @@ const tokens = {
 		}
 		return token as BooleanLiteralToken;
 	}),
-	logicalOperator: new TokenParser((token: Token) => {
-		if (token.tag !== "keyword") {
-			return null;
-		} else if (token.keyword !== "and" && token.keyword !== "or" && token.keyword !== "implies") {
-			return null;
+	infixKeyword: new TokenParser((token: Token) => {
+		if (token.tag === "keyword" && token.keyword in infixOperatorKeywordSet) {
+			return token as InfixOperatorKeywordToken;
 		}
-		return token as BinaryLogicalToken;
+		return null;
 	}),
 	returnKeyword: keywordParser("return"),
 };
@@ -270,6 +277,7 @@ const keywords = {
 	import: keywordParser("import"),
 	is: keywordParser("is"),
 	interface: keywordParser("interface"),
+	not: keywordParser("not"),
 	package: keywordParser("package"),
 	proof: keywordParser("proof"),
 	record: keywordParser("record"),
@@ -533,21 +541,25 @@ export interface ExpressionAccessMethod {
 export interface ExpressionAccessField {
 	tag: "field",
 	fieldName: IdenToken,
-}
-
-export interface ExpressionOperand {
-	atom: ExpressionAtom,
-	accesses: ExpressionAccess[],
-	suffixIs: ExpressionSuffixIs | null,
 
 	location: SourceLocation,
 }
 
-export interface ExpressionOperationLogical {
-	tag: "logical",
-	operator: BinaryLogicalToken,
+export interface ExpressionOperand {
+	prefixes: ExpressionPrefixOperator[],
+	atom: ExpressionAtom,
+	accesses: ExpressionAccess[],
+	suffixes: ExpressionSuffixOperator[],
+
+	location: SourceLocation,
+}
+
+export interface ExpressionOperation {
+	operator: ExpressionInfixOperator,
 	right: ExpressionOperand,
 }
+
+export type ExpressionInfixOperator = InfixOperatorKeywordToken | OperatorToken;
 
 export interface ExpressionSuffixIs {
 	tag: "is",
@@ -557,13 +569,11 @@ export interface ExpressionSuffixIs {
 	location: SourceLocation,
 }
 
-export type ExpressionOperation = ExpressionOperationBinary | ExpressionOperationLogical;
+export type ExpressionSuffixOperator = ExpressionSuffixIs;
 
-export interface ExpressionOperationBinary {
-	tag: "binary",
-	operator: OperatorToken,
-	right: ExpressionOperand,
-}
+export type ExpressionPrefixNot = KeywordToken & { keyword: "not" };
+
+export type ExpressionPrefixOperator = ExpressionPrefixNot;
 
 export interface ExpressionParenthesized {
 	tag: "paren",
@@ -598,7 +608,6 @@ export interface ExpressionConstraint {
 
 	location: SourceLocation,
 }
-
 
 export interface ExpressionRecordLiteral {
 	tag: "record-literal",
@@ -637,14 +646,18 @@ type ASTs = {
 	ExpressionAtom: ExpressionAtom,
 	ExpressionConstraint: ExpressionConstraint,
 	ExpressionConstraintCall: ExpressionConstraintCall,
+	ExpressionInfixOperator: ExpressionInfixOperator,
+	ExpressionInfixKeyword: InfixOperatorKeywordToken,
+	ExpressionInfixSymbol: OperatorToken,
 	ExpressionOperand: ExpressionOperand,
 	ExpressionOperation: ExpressionOperation,
-	ExpressionOperationBinary: ExpressionOperationBinary,
-	ExpressionOperationLogical: ExpressionOperationLogical,
 	ExpressionParenthesized: ExpressionParenthesized,
+	ExpressionPrefixNot: ExpressionPrefixNot,
+	ExpressionPrefixOperator: ExpressionPrefixOperator,
 	ExpressionRecordLiteral: ExpressionRecordLiteral,
 	ExpressionRecordFieldInit: ExpressionRecordFieldInit,
 	ExpressionSuffixIs: ExpressionSuffixIs,
+	ExpressionSuffixOperator: ExpressionSuffixOperator,
 	ExpressionTypeCall: ExpressionTypeCall,
 	Field: Field,
 	Fn: Fn,
@@ -798,6 +811,9 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `)` at", atHead,
 				"to complete a function call beginning at", atReference("_open"))),
 	})),
+	ExpressionInfixOperator: choice(() => grammar, "ExpressionInfixSymbol", "ExpressionInfixKeyword"),
+	ExpressionInfixKeyword: tokens.infixKeyword,
+	ExpressionInfixSymbol: tokens.symbolInfixOperator,
 	ExpressionTypeCall: new StructParser(() => ({
 		t: grammar.Type,
 		tag: new ConstParser("type-call"),
@@ -834,27 +850,17 @@ export const grammar: ParsersFor<Token, ASTs> = {
 				"Expected an expression after `=` in a new-expression argument list at", atHead)),
 	})),
 	ExpressionOperand: new StructParser(() => ({
+		prefixes: new RepeatParser(grammar.ExpressionPrefixOperator),
 		atom: grammar.ExpressionAtom,
 		accesses: new RepeatParser(grammar.ExpressionAccess),
-		suffixIs: grammar.ExpressionSuffixIs.otherwise(null),
+		suffixes: new RepeatParser(grammar.ExpressionSuffixOperator),
 	})),
-	ExpressionOperation: choice(() => grammar, "ExpressionOperationBinary", "ExpressionOperationLogical"),
-	ExpressionOperationBinary: new RecordParser(() => ({
+	ExpressionOperation: new RecordParser(() => ({
 		tag: new ConstParser("binary"),
-		operator: tokens.operator,
+		operator: grammar.ExpressionInfixOperator,
 		right: grammar.ExpressionOperand
 			.required(parseProblem("Expected an operand at", atHead,
 				"after the binary operator at", atReference("operator")))
-	})),
-	ExpressionOperationLogical: new RecordParser(() => ({
-		tag: new ConstParser("logical"),
-		operator: tokens.logicalOperator,
-		right: grammar.ExpressionOperand,
-	})),
-	ExpressionSuffixIs: new StructParser(() => ({
-		tag: new ConstParser("is"),
-		operator: keywords.is,
-		variant: tokens.iden,
 	})),
 	ExpressionParenthesized: new StructParser(() => ({
 		_open: punctuation.roundOpen,
@@ -864,6 +870,14 @@ export const grammar: ParsersFor<Token, ASTs> = {
 			.required(parseProblem("Expected a `)` at", atHead,
 				"to complete a grouping that began at", atReference("_open"))),
 	})),
+	ExpressionPrefixNot: keywords.not,
+	ExpressionPrefixOperator: choice(() => grammar, "ExpressionPrefixNot"),
+	ExpressionSuffixIs: new StructParser(() => ({
+		tag: new ConstParser("is"),
+		operator: keywords.is,
+		variant: tokens.iden,
+	})),
+	ExpressionSuffixOperator: choice(() => grammar, "ExpressionSuffixIs"),
 	Field: new StructParser(() => ({
 		_var: keywords.var,
 		name: tokens.iden

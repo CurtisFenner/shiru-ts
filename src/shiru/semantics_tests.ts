@@ -1271,4 +1271,25 @@ export const tests = {
 			],
 		});
 	},
+	"attempt-to-add-boolean-to-int"() {
+		const source = `
+		package example;
+
+		record R {
+			fn main(): Int {
+				return 1 + true;
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"The operator `+` with type `Int` on the left side expects a value with type `Int` on the right side, but one of type `Boolean` was given at",
+				{ fileID: "test-file", offset: 69, length: 4 },
+			],
+		});
+	},
 };

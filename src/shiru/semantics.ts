@@ -1707,7 +1707,6 @@ function compileFieldAccess(
 
 	const instantiation = ir.typeArgumentsMap(baseEntity.typeScope.typeVariableList, base.type.type_arguments);
 
-
 	const fieldDeclaration = baseEntity.tag === "enum"
 		? baseEntity.variants[access.fieldName.name]
 		: baseEntity.fields[access.fieldName.name];
@@ -1810,81 +1809,65 @@ function compileSuffixIs(
 	return { values: [destination], location };
 }
 
-function compileOperand(
-	e: grammar.ExpressionOperand,
+function compileExpressionAccess(
+	value: ValueInfo,
+	access: grammar.ExpressionAccess,
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
-	context: FunctionContext): ValueInfo {
-	let value = compileExpressionAtom(e.atom, ops, stack, typeScope, context);
-	for (const access of e.accesses) {
-		if (value.values.length !== 1) {
-			throw new diagnostics.MultiExpressionGroupedErr({
-				location: value.location,
-				valueCount: value.values.length,
-				grouping: access.tag,
+	context: FunctionContext,
+): ValueInfo {
+	if (value.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: value.location,
+			valueCount: value.values.length,
+			grouping: access.tag,
+		});
+	}
+	const base = value.values[0];
+
+	if (access.tag === "field") {
+		return compileFieldAccess(base, access, value.location, ops, stack, context);
+	} else if (access.tag === "method") {
+		if (base.type.tag !== "type-compound") {
+			// TODO: Support method calls on type parameters.
+			throw new diagnostics.MethodAccessOnNonCompoundErr({
+				accessedType: displayType(base.type),
+				accessedLocation: access.methodName.location,
 			});
 		}
-		const base = value.values[0];
 
-		if (access.tag === "field") {
-			value = compileFieldAccess(base, access, value.location, ops, stack, context);
-		} else if (access.tag === "method") {
-			if (base.type.tag !== "type-compound") {
-				// TODO: Support method calls on type parameters.
-				throw new diagnostics.MethodAccessOnNonCompoundErr({
-					accessedType: displayType(base.type),
-					accessedLocation: access.methodName.location,
-				});
-			}
-
-			const programContext = context.sourceContext.programContext;
-			const baseEntity = programContext.getDataEntity(base.type.base);
-			const fn = baseEntity.fns[access.methodName.name];
-			if (fn === undefined) {
-				throw new diagnostics.NoSuchFnErr({
-					baseType: displayType(base.type),
-					methodName: access.methodName.name,
-					methodNameLocation: access.methodName.location,
-				});
-			}
-
-			const location = ir.locationSpan(value.location, access.location);
-
-			const args = [value];
-			for (const arg of access.args) {
-				args.push(compileExpression(arg, ops, stack, typeScope, context));
-			}
-
-			const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
-			for (let i = 0; i < fn.entityTypeVariables.length; i++) {
-				typeArgumentMapping.set(fn.entityTypeVariables[i], base.type.type_arguments[i]);
-			}
-			if (fn.signatureTypeVariables.length !== 0) {
-				throw new Error("TODO: Handle member-scoped type arguments.");
-			}
-
-			value = compileCall(ops, stack, args, fn, typeArgumentMapping, location, null);
-		} else {
-			const _: never = access;
-			throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
-		}
-	}
-
-	if (e.suffixIs) {
-		if (value.values.length !== 1) {
-			throw new diagnostics.MultiExpressionGroupedErr({
-				location: value.location,
-				valueCount: value.values.length,
-				grouping: "is",
+		const programContext = context.sourceContext.programContext;
+		const baseEntity = programContext.getDataEntity(base.type.base);
+		const fn = baseEntity.fns[access.methodName.name];
+		if (fn === undefined) {
+			throw new diagnostics.NoSuchFnErr({
+				baseType: displayType(base.type),
+				methodName: access.methodName.name,
+				methodNameLocation: access.methodName.location,
 			});
 		}
-		const base = value.values[0];
 
-		value = compileSuffixIs(base, e.suffixIs, value.location, ops, stack, context);
+		const location = ir.locationSpan(value.location, access.location);
+
+		const args = [value];
+		for (const arg of access.args) {
+			args.push(compileExpression(arg, ops, stack, typeScope, context));
+		}
+
+		const typeArgumentMapping: Map<ir.TypeVariableID, ir.Type> = new Map();
+		for (let i = 0; i < fn.entityTypeVariables.length; i++) {
+			typeArgumentMapping.set(fn.entityTypeVariables[i], base.type.type_arguments[i]);
+		}
+		if (fn.signatureTypeVariables.length !== 0) {
+			throw new Error("TODO: Handle member-scoped type arguments.");
+		}
+
+		return compileCall(ops, stack, args, fn, typeArgumentMapping, location, null);
+	} else {
+		const _: never = access;
+		throw new Error("unhandled access tag `" + access["tag"] + "` in compileOperand");
 	}
-
-	return value;
 }
 
 type ResolvedOperator = ResolvedOperatorForeign | ResolvedOperatorProofEquality;
@@ -1898,189 +1881,6 @@ interface ResolvedOperatorForeign {
 interface ResolvedOperatorProofEquality {
 	tag: "proof-equal-op",
 	wrap: null | "negate",
-}
-
-const operatorPrecedence = {
-	precedences: {
-		"implies": 10,
-		"and": 10,
-		"or": 10,
-		"==": 20,
-		"<": 20,
-		">": 20,
-		"<=": 20,
-		">=": 20,
-		"!=": 20,
-		"_default": 30,
-	} as Record<string, number>,
-	associativities: {
-		implies: "right",
-		and: "left",
-		or: "left",
-		"<": "left",
-		"<=": { group: "<" },
-		">": "left",
-		">=": { group: ">=" },
-	} as Record<string, "left" | "right" | { group: string }>,
-};
-
-interface OperatorTreeLeaf {
-	tag: "leaf",
-	left: number,
-	right: number,
-
-	operand: grammar.ExpressionOperand,
-	location: ir.SourceLocation,
-}
-
-interface OperatorTreeJoin {
-	index: number,
-
-	opToken: lexer.OperatorToken | grammar.BinaryLogicalToken,
-	associativity: "none" | "left" | "right",
-
-	/// Only operations with the same `associates` can associate without
-	/// parenthesization.
-	associates: string,
-
-	precedence: number,
-}
-
-interface OperatorTreeBranch {
-	tag: "branch",
-	left: number,
-	right: number,
-
-	join: OperatorTreeJoin,
-	leftBranch: OperatorTree,
-	rightBranch: OperatorTree,
-
-	location: ir.SourceLocation,
-}
-
-type OperatorTree = OperatorTreeLeaf | OperatorTreeBranch;
-
-function checkTreeCompatible(subtree: OperatorTree, parent: OperatorTreeJoin) {
-	if (subtree.tag === "leaf") {
-		// An operand is valid as a child of any operation.
-		return;
-	} else if (subtree.join.precedence < parent.precedence) {
-		throw new Error("checkTreeCompatible: unreachable");
-	} else if (subtree.join.precedence > parent.precedence) {
-		// A child with strictly greater precedence is valid.
-		return;
-	} else if (subtree.join.associates !== parent.associates) {
-		// A child with equal precedence but different associativity is invalid.
-		throw new diagnostics.OperationRequiresParenthesizationErr({
-			op1: {
-				str: subtree.join.opToken.tag === "keyword"
-					? subtree.join.opToken.keyword
-					: subtree.join.opToken.operator,
-				location: subtree.join.opToken.location,
-			},
-			op2: {
-				str: parent.opToken.tag === "keyword"
-					? parent.opToken.keyword
-					: parent.opToken.operator,
-				location: parent.opToken.location,
-			},
-			reason: "unordered",
-		});
-	} else if (parent.associativity === "none") {
-		throw new diagnostics.OperationRequiresParenthesizationErr({
-			op1: {
-				str: subtree.join.opToken.tag === "keyword"
-					? subtree.join.opToken.keyword
-					: subtree.join.opToken.operator,
-				location: subtree.join.opToken.location,
-			},
-			op2: {
-				str: parent.opToken.tag === "keyword"
-					? parent.opToken.keyword
-					: parent.opToken.operator,
-				location: parent.opToken.location,
-			},
-			reason: "non-associative",
-		});
-	}
-}
-
-function applyOrderOfOperations(
-	operators: (lexer.OperatorToken | grammar.BinaryLogicalToken)[],
-	operands: grammar.ExpressionOperand[],
-): OperatorTree {
-	if (operators.length !== operands.length - 1) {
-		throw new Error();
-	}
-
-	let joins: OperatorTreeJoin[] = [];
-	for (let i = 0; i < operators.length; i++) {
-		const operator = operators[i];
-		const opStr = operator.tag === "keyword" ? operator.keyword : operator.operator;
-
-		let precedence = operatorPrecedence.precedences[opStr];
-		if (precedence === undefined) {
-			precedence = operatorPrecedence.precedences._default;
-		}
-
-		let associativity: { group: string } | "left" | "right" | "none" = { group: opStr };
-		let associates: string = opStr;
-		while (typeof associativity !== "string") {
-			associates = associativity.group;
-			associativity = operatorPrecedence.associativities[associativity.group] || "none";
-		}
-
-		joins.push({
-			index: i,
-			opToken: operator,
-			associativity, precedence, associates,
-		});
-	}
-
-	joins.sort((a, b) => {
-		if (a.precedence !== b.precedence) {
-			return b.precedence - a.precedence;
-		} else if (a.associativity !== b.associativity) {
-			return a.associativity.localeCompare(b.associativity);
-		} else if (a.associativity === "right") {
-			return b.index - a.index;
-		} else {
-			return b.index - a.index;
-		}
-	});
-
-	const branches: OperatorTree[] = [];
-	for (let i = 0; i < operands.length; i++) {
-		branches.push({
-			tag: "leaf",
-			left: i,
-			right: i,
-			operand: operands[i],
-			location: operands[i].location,
-		});
-	}
-	let branch = branches[0];
-	for (let join of joins) {
-		const toLeft = join.index;
-		const toRight = join.index + 1;
-		const left = branches[toLeft];
-		const right = branches[toRight];
-		branch = {
-			tag: "branch",
-			join,
-			leftBranch: left, rightBranch: right,
-			left: left.left,
-			right: right.right,
-			location: ir.locationSpan(left.location, right.location),
-		};
-
-		checkTreeCompatible(left, join);
-		checkTreeCompatible(right, join);
-
-		branches[branch.left] = branch;
-		branches[branch.right] = branch;
-	}
-	return branch;
 }
 
 function expectOneBooleanForContract(
@@ -2112,8 +1912,6 @@ function expectOneBooleanForContract(
 
 function expectOneBooleanForLogical(
 	values: ValueInfo,
-	typeScope: TypeScope,
-	context: FunctionContext,
 	op: { opStr: string, location: ir.SourceLocation },
 ): ir.VariableDefinition {
 	if (values.values.length !== 1) {
@@ -2136,116 +1934,6 @@ function expectOneBooleanForLogical(
 		});
 	}
 	return value;
-}
-
-/// compileLogicalExpressionTree compiles a binary operation like
-/// `implies` or `and`.
-function compileLogicalExpressionTree(
-	tree: OperatorTreeBranch & { join: { opToken: { tag: "keyword" } } },
-	ops: ir.Op[],
-	stack: VariableStack,
-	typeScope: TypeScope,
-	context: FunctionContext,
-): ValueInfo {
-	const left = compileExpressionTree(tree.leftBranch, ops, stack, typeScope, context);
-
-	// Compile a logical binary operation.
-	const opStr = tree.join.opToken.keyword;
-
-	const leftValue = expectOneBooleanForLogical(left, typeScope, context, {
-		opStr: tree.join.opToken.keyword,
-		location: tree.join.opToken.location,
-	});
-
-	const destination = {
-		variable: stack.uniqueID("logical"),
-		type: ir.T_BOOLEAN,
-		location: tree.location,
-	};
-
-	const trueOps: ir.Op[] = [];
-	const falseOps: ir.Op[] = [];
-
-	let trueSource: { tag: "variable", variable: ir.VariableID };
-	let falseSource: { tag: "variable", variable: ir.VariableID };
-
-	if (opStr === "or") {
-		trueSource = { tag: "variable", variable: leftValue.variable };
-
-		stack.openBlock(false);
-
-		const right = compileExpressionTree(tree.rightBranch, falseOps, stack, typeScope, context);
-		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-			opStr: "or",
-			location: tree.join.opToken.location,
-		});
-		falseSource = { tag: "variable", variable: rightValue.variable };
-
-		for (const _ in stack.closeBlock()) {
-			throw new Error("ICE: unexpected local assignment in logical");
-		}
-	} else if (opStr === "and") {
-		falseSource = { tag: "variable", variable: leftValue.variable };
-
-		stack.openBlock(false);
-
-		const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
-		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-			opStr: "and",
-			location: tree.join.opToken.location,
-		});
-		trueSource = { tag: "variable", variable: rightValue.variable };
-
-		for (const _ in stack.closeBlock()) {
-			throw new Error("ICE: unexpected local assignment in logical");
-		}
-	} else if (opStr === "implies") {
-		const trueConst = {
-			variable: stack.uniqueID("falseimplies"),
-			type: ir.T_BOOLEAN,
-			location: ir.NONE,
-		};
-		falseOps.push({
-			tag: "op-const",
-			type: "Boolean",
-			boolean: true,
-			destination: trueConst,
-		});
-		falseSource = { tag: "variable", variable: trueConst.variable };
-
-		stack.openBlock(false);
-
-		const right = compileExpressionTree(tree.rightBranch, trueOps, stack, typeScope, context);
-		const rightValue = expectOneBooleanForLogical(right, typeScope, context, {
-			opStr: "implies",
-			location: tree.join.opToken.location,
-		});
-		trueSource = { tag: "variable", variable: rightValue.variable };
-
-		for (const _ in stack.closeBlock()) {
-			throw new Error("ICE: unexpected local assignment in logical");
-		}
-	} else {
-		const _: never = opStr;
-		throw new Error("Unhandled logical operator `" + opStr + "`");
-	}
-
-	const branch: ir.OpBranch = {
-		tag: "op-branch",
-		condition: leftValue.variable,
-		trueBranch: { ops: trueOps },
-		falseBranch: { ops: falseOps },
-		destinations: [
-			{
-				destination,
-				trueSource,
-				falseSource,
-			},
-		],
-	};
-	ops.push(branch);
-
-	return { values: [destination], location: tree.location };
 }
 
 /// Throws `MultiExpressionGroupedErr` if `lhs` does not have exactly 1 value.
@@ -2289,180 +1977,556 @@ function resolveArithmeticOperator(
 	});
 }
 
-function compileArithmeticExpressionTree(
-	leftBranch: OperatorTree,
-	rightBranch: OperatorTree,
-	opToken: lexer.OperatorToken,
+const infixOperatorPrecedence = {
+	precedences: {
+		"implies": 10,
+		"and": 10,
+		"or": 10,
+		"==": 20,
+		"<": 20,
+		">": 20,
+		"<=": 20,
+		">=": 20,
+		"!=": 20,
+		"_default": 30,
+	} as Record<string, number>,
+	associativities: {
+		"implies": "right",
+		"and": "left",
+		"or": "left",
+		"<": "left",
+		"<=": { group: "<" },
+		">": "left",
+		">=": { group: ">=" },
+	} as Record<string, "left" | "right" | { group: string }>,
+};
+
+type OperatorPacketElement = { tag: "prefix", prefix: grammar.ExpressionPrefixOperator }
+	| { tag: "suffix", suffix: grammar.ExpressionSuffixOperator }
+	| { tag: "infix", infix: grammar.ExpressionInfixOperator };
+
+function getOperatorPacketPrecedence(
+	packet: OperatorPacketElement[],
+	side: "left" | "right",
+): {
+	precedence: number,
+	grouping: string | null,
+	associates: "left" | "right" | null,
+	element: OperatorPacketElement,
+} {
+	if (packet.length === 0) {
+		return {
+			precedence: 0,
+			grouping: null,
+			associates: null,
+			element: null as any,
+		};
+	}
+	const operator = side === "left" ? packet[packet.length - 1] : packet[0];
+	if (operator.tag === "prefix") {
+		const prefix = operator.prefix;
+		if (prefix.tag === "keyword") {
+			if (prefix.keyword === "not") {
+				return {
+					precedence: infixOperatorPrecedence.precedences.or,
+					grouping: null,
+					associates: null,
+					element: operator,
+				};
+			}
+			const _: never = prefix.keyword;
+			throw new Error("getOperatorPacketPrecedence: unexpected prefix keyword `" + prefix.keyword + "`");
+		}
+		const _: never = prefix.tag;
+		throw new Error("getOperatorPacketPrecedence: unexpected prefix tag `" + prefix.tag + "`");
+	} else if (operator.tag === "infix") {
+		const infix = operator.infix;
+		const key = infix.tag === "keyword" ? infix.keyword : infix.operator;
+		const precedence = infixOperatorPrecedence.precedences[key] || infixOperatorPrecedence.precedences._default;
+		let associates: "left" | "right" | { group: string } | undefined = infixOperatorPrecedence.associativities[key];
+		let grouping = associates === undefined
+			? null
+			: typeof associates === "string"
+				? key
+				: associates.group;
+		while (typeof associates !== "string" && associates !== undefined) {
+			associates = infixOperatorPrecedence.associativities[associates.group];
+		}
+
+		return {
+			precedence,
+			grouping,
+			associates: associates || null,
+			element: operator,
+		};
+	} else if (operator.tag === "suffix") {
+		const suffix = operator.suffix;
+		if (suffix.tag === "is") {
+			return {
+				precedence: infixOperatorPrecedence.precedences["=="],
+				grouping: null,
+				associates: null,
+				element: operator,
+			};
+		}
+
+		const _: never = suffix["tag"];
+		throw new Error("getOperatorPacketPrecedence: unexpected suffix tag `" + suffix["tag"] + "`");
+	}
+	const _: never = operator;
+	throw new Error("getOperatorPacketPrecedence: unexpected tag `" + operator["tag"] + "`");
+}
+
+type Operand = {
+	// left and right index into the operatorPackets array.
+	left: number,
+	right: number,
+
+	location: ir.SourceLocation,
+
+	operand: {
+		tag: "leaf",
+		leaf: {
+			atom: grammar.ExpressionAtom,
+			accesses: grammar.ExpressionAccess[],
+		},
+	} | {
+		tag: "operation",
+		operator: { tag: "infix", infix: grammar.ExpressionInfixOperator }
+		| { tag: "prefix"; prefix: grammar.ExpressionPrefixOperator; }
+		| { tag: "suffix"; suffix: grammar.ExpressionSuffixOperator; },
+		operands: Operand[],
+	},
+};
+
+function compileOperandLeaf(
+	operand: {
+		tag: "leaf",
+		leaf: {
+			atom: grammar.ExpressionAtom,
+			accesses: grammar.ExpressionAccess[],
+		},
+	},
+	ops: ir.Op[],
+	stack: VariableStack,
+	typeScope: TypeScope,
+	context: FunctionContext,
+): ValueInfo {
+	let value = compileExpressionAtom(operand.leaf.atom, ops, stack, typeScope, context);
+	for (const access of operand.leaf.accesses) {
+		value = compileExpressionAccess(value, access, ops, stack, typeScope, context);
+	}
+	return value;
+}
+
+function compileUnaryOperator(
+	operation: OperatorPacketElement & { tag: "suffix" | "prefix" },
+	ops: ir.Op[],
+	operand: { subops: ir.Op[], subresult: ValueInfo },
+	stack: VariableStack,
+	location: ir.SourceLocation,
+	context: FunctionContext,
+): ValueInfo {
+	if (operation.tag === "prefix") {
+		const prefix = operation.prefix;
+		if (prefix.keyword === "not") {
+			ops.push(...operand.subops);
+			const value = expectOneBooleanForLogical(operand.subresult, { opStr: "not", location: prefix.location });
+			return {
+				values: [compileNegation(ops, stack, location, value.variable)],
+				location,
+			};
+		}
+
+		throw new Error("compileUnaryOperator: unknown prefix `" + prefix.keyword + "`");
+	} else {
+		const suffix = operation.suffix;
+		if (suffix.tag === "is") {
+			if (operand.subresult.values.length !== 1) {
+				throw new diagnostics.MultiExpressionGroupedErr({
+					location: operand.subresult.location,
+					valueCount: operand.subresult.values.length,
+					grouping: "is",
+				});
+			}
+
+			ops.push(...operand.subops);
+			return compileSuffixIs(
+				operand.subresult.values[0], suffix, operand.subresult.location, ops, stack, context);
+		}
+		const _: never = suffix.tag;
+		throw new Error("compileUnaryOperator: unknown suffix tag `" + suffix.tag + "`");
+	}
+}
+
+function compileNegation(
+	ops: ir.Op[],
+	stack: VariableStack,
+	location: ir.SourceLocation,
+	value: ir.VariableID,
+): ir.VariableDefinition {
+	const negation: ir.VariableDefinition = {
+		variable: stack.uniqueID("negation"),
+		type: ir.T_BOOLEAN,
+		location,
+	};
+	const booleanConstant = {
+		variable: stack.uniqueID("boolean"),
+		type: ir.T_BOOLEAN,
+		location: ir.NONE,
+	};
+	ops.push({
+		tag: "op-branch",
+		condition: value,
+		trueBranch: {
+			ops: [
+				{
+					tag: "op-const",
+					destination: booleanConstant,
+					type: "Boolean",
+					boolean: false,
+				},
+			],
+		},
+		falseBranch: {
+			ops: [
+				{
+					tag: "op-const",
+					destination: booleanConstant,
+					type: "Boolean",
+					boolean: true,
+				},
+			],
+		},
+		destinations: [
+			{
+				destination: negation,
+				trueSource: { tag: "variable", variable: booleanConstant.variable },
+				falseSource: { tag: "variable", variable: booleanConstant.variable },
+			},
+		],
+	});
+	return negation;
+}
+
+function compileAndShortCircuit(
+	ops: ir.Op[],
+	stack: VariableStack,
+	left: ir.VariableID,
+	leftCompute: ir.Op[],
+	right: ir.VariableID,
+	rightCompute: ir.Op[],
+	location: ir.SourceLocation,
+): ValueInfo {
+	ops.push(...leftCompute);
+	const conjunction: ir.VariableDefinition = {
+		variable: stack.uniqueID("conjunction"),
+		type: ir.T_BOOLEAN,
+		location,
+	};
+	ops.push({
+		tag: "op-branch",
+		condition: left,
+		trueBranch: { ops: rightCompute },
+		falseBranch: { ops: [] },
+		destinations: [
+			{
+				destination: conjunction,
+				trueSource: { tag: "variable", variable: right },
+				falseSource: { tag: "variable", variable: left },
+			}
+		],
+	});
+	return {
+		values: [conjunction],
+		location,
+	};
+}
+
+function compileImpliesShortCircuit(
+	ops: ir.Op[],
+	stack: VariableStack,
+	left: ir.VariableID,
+	leftCompute: ir.Op[],
+	right: ir.VariableID,
+	rightCompute: ir.Op[],
+	location: ir.SourceLocation,
+): ValueInfo {
+	ops.push(...leftCompute);
+	const implication: ir.VariableDefinition = {
+		variable: stack.uniqueID("implication"),
+		type: ir.T_BOOLEAN,
+		location,
+	};
+	const vacuous: ir.VariableDefinition = {
+		variable: stack.uniqueID("vacuous"),
+		type: ir.T_BOOLEAN,
+		location: ir.NONE,
+	};
+	ops.push({
+		tag: "op-branch",
+		condition: left,
+		trueBranch: { ops: rightCompute },
+		falseBranch: {
+			ops: [
+				{
+					tag: "op-const",
+					destination: vacuous,
+					type: "Boolean",
+					boolean: true,
+				},
+			]
+		},
+		destinations: [
+			{
+				destination: implication,
+				trueSource: { tag: "variable", variable: right },
+				falseSource: { tag: "variable", variable: vacuous.variable },
+			}
+		],
+	});
+	return {
+		values: [implication],
+		location,
+	};
+}
+
+function compileOrShortCircuit(
+	ops: ir.Op[],
+	stack: VariableStack,
+	left: ir.VariableID,
+	leftCompute: ir.Op[],
+	right: ir.VariableID,
+	rightCompute: ir.Op[],
+	location: ir.SourceLocation,
+): ValueInfo {
+	ops.push(...leftCompute);
+	const disjunction: ir.VariableDefinition = {
+		variable: stack.uniqueID("disjunction"),
+		type: ir.T_BOOLEAN,
+		location,
+	};
+	ops.push({
+		tag: "op-branch",
+		condition: left,
+		trueBranch: { ops: [] },
+		falseBranch: { ops: rightCompute },
+		destinations: [
+			{
+				destination: disjunction,
+				trueSource: { tag: "variable", variable: left },
+				falseSource: { tag: "variable", variable: right },
+			}
+		],
+	});
+	return {
+		values: [disjunction],
+		location,
+	};
+}
+
+function compileBinaryOperator(
+	operation: grammar.ExpressionInfixOperator,
+	ops: ir.Op[],
+	stack: VariableStack,
+	left: { subops: ir.Op[], subresult: ValueInfo },
+	right: { subops: ir.Op[], subresult: ValueInfo },
+	location: ir.SourceLocation,
+	context: FunctionContext,
+): ValueInfo {
+	const opStr = operation.tag === "keyword" ? operation.keyword : operation.operator;
+
+	// Check that each operand is a single value.
+	if (left.subresult.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: left.subresult.location,
+			valueCount: left.subresult.values.length,
+			grouping: "op",
+			op: opStr,
+		});
+	} else if (right.subresult.values.length !== 1) {
+		throw new diagnostics.MultiExpressionGroupedErr({
+			location: right.subresult.location,
+			valueCount: right.subresult.values.length,
+			grouping: "op",
+			op: opStr,
+		});
+	}
+
+	const leftResult = left.subresult.values[0];
+	const rightResult = right.subresult.values[0];
+	let destination: ir.VariableDefinition;
+	if (operation.tag === "operator") {
+		ops.push(...left.subops);
+		ops.push(...right.subops);
+		const resolvedOperator = resolveArithmeticOperator(leftResult, operation);
+		resolvedOperator.wrap
+
+		let expectedLhsType: ir.Type;
+		let expectedRhsType: ir.Type;
+		if (resolvedOperator.tag === "foreign-op") {
+			const signature = context.sourceContext.programContext.foreignSignatures[resolvedOperator.foreignID];
+			if (signature === undefined) {
+				throw new Error(
+					"resolveArithmeticOperator produced a bad foreign signature (`" + resolvedOperator
+					+ "`) for `" + displayType(leftResult.type)
+					+ "` `" + opStr + "`");
+			} else if (signature.parameters.length !== 2) {
+				throw new Error(
+					"Foreign signature `" + resolvedOperator + "` cannot be used as"
+					+ "an operator since it doesn't take exactly 2 parameters");
+			} else if (signature.return_types.length !== 1) {
+				throw new Error(
+					"Foreign signature `" + resolvedOperator
+					+ "` cannot be used as an operator since it produces "
+					+ signature.return_types.length + " values");
+			}
+
+			expectedLhsType = signature.parameters[0].type;
+			expectedRhsType = signature.parameters[1].type;
+
+			destination = {
+				variable: stack.uniqueID("operation-foreign"),
+				type: signature.return_types[0],
+				location,
+			};
+			ops.push({
+				tag: "op-foreign",
+				operation: resolvedOperator.foreignID,
+				arguments: [leftResult.variable, rightResult.variable],
+				destinations: [destination],
+			});
+		} else if (resolvedOperator.tag === "proof-equal-op") {
+			expectedLhsType = leftResult.type;
+			expectedRhsType = expectedLhsType;
+
+			destination = {
+				variable: stack.uniqueID("proofeq"),
+				type: ir.T_BOOLEAN,
+				location,
+			};
+			ops.push({
+				tag: "op-proof-eq",
+				left: leftResult.variable,
+				right: rightResult.variable,
+				destination,
+			});
+
+			if (!stack.isInProofBlock()) {
+				throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
+					operation: operation.operator,
+					location: operation.location,
+				});
+			}
+		} else {
+			const _: never = resolvedOperator;
+			throw new Error("compileArithmeticExpressionTree: unhandled operator type");
+		}
+
+		if (!ir.equalTypes(expectedRhsType, rightResult.type)) {
+			throw new diagnostics.OperatorTypeMismatchErr({
+				lhsType: displayType(leftResult.type),
+				operator: opStr,
+				givenRhsType: displayType(rightResult.type),
+				expectedRhsType: displayType(expectedRhsType),
+				rhsLocation: right.subresult.location,
+			});
+		}
+
+		if (resolvedOperator.wrap === "negate") {
+			// Negate the result.
+			destination = compileNegation(ops, stack, location, destination.variable);
+		}
+	} else {
+		if (operation.keyword === "and") {
+			const leftValue = expectOneBooleanForLogical(left.subresult, { opStr: "and", location: operation.location });
+			const rightValue = expectOneBooleanForLogical(right.subresult, { opStr: "and", location: operation.location });
+			return compileAndShortCircuit(ops, stack, leftValue.variable, left.subops, rightValue.variable, right.subops, location);
+		} else if (operation.keyword === "implies") {
+			const leftValue = expectOneBooleanForLogical(left.subresult, { opStr: "implies", location: operation.location });
+			const rightValue = expectOneBooleanForLogical(right.subresult, { opStr: "implies", location: operation.location });
+			return compileImpliesShortCircuit(ops, stack, leftValue.variable, left.subops, rightValue.variable, right.subops, location);
+		} else if (operation.keyword === "or") {
+			const leftValue = expectOneBooleanForLogical(left.subresult, { opStr: "or", location: operation.location });
+			const rightValue = expectOneBooleanForLogical(right.subresult, { opStr: "or", location: operation.location });
+			return compileOrShortCircuit(ops, stack, leftValue.variable, left.subops, rightValue.variable, right.subops, location);
+		}
+
+		const _: never = operation.keyword;
+		throw new Error("compileBinaryOperator: unknown keyword operator `" + operation.keyword + "`");
+	}
+
+	return {
+		values: [destination],
+		location,
+	};
+}
+
+function compileOperandJoin(
+	operand: {
+		tag: "operation",
+		operator: OperatorPacketElement,
+		operands: Operand[],
+	},
 	location: ir.SourceLocation,
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
 	context: FunctionContext,
 ): ValueInfo {
-	// Compile an arithmetic operation.
-	const left = compileExpressionTree(leftBranch, ops, stack, typeScope, context);
-	const right = compileExpressionTree(rightBranch, ops, stack, typeScope, context);
-	const opStr = opToken.operator;
-
-	if (left.values.length !== 1) {
-		throw new diagnostics.MultiExpressionGroupedErr({
-			location: left.location,
-			valueCount: left.values.length,
-			grouping: "op",
-			op: opStr,
-		});
-	} else if (right.values.length !== 1) {
-		throw new diagnostics.MultiExpressionGroupedErr({
-			location: right.location,
-			valueCount: right.values.length,
-			grouping: "op",
-			op: opStr,
+	const subexpressions = [];
+	for (const operation of operand.operands) {
+		const subops: ir.Op[] = [];
+		const subresult = compileOperandTree(operation, subops, stack, typeScope, context);
+		subexpressions.push({
+			subops,
+			subresult,
 		});
 	}
 
-	const resolvedOperator = resolveArithmeticOperator(left.values[0], opToken);
-
-	let signatureReturnType: ir.Type;
-	let expectedLhsType: ir.Type;
-	let expectedRhsType: ir.Type;
-	if (resolvedOperator.tag === "foreign-op") {
-		const signature = context.sourceContext.programContext.foreignSignatures[resolvedOperator.foreignID];
-		if (signature === undefined) {
-			throw new Error(
-				"resolveArithmeticOperator produced a bad foreign signature (`" + resolvedOperator
-				+ "`) for `" + displayType(left.values[0].type)
-				+ "` `" + opStr + "`");
-		} else if (signature.parameters.length !== 2) {
-			throw new Error(
-				"Foreign signature `" + resolvedOperator + "` cannot be used as"
-				+ "an operator since it doesn't take exactly 2 parameters");
-		} else if (signature.return_types.length !== 1) {
-			throw new Error(
-				"Foreign signature `" + resolvedOperator
-				+ "` cannot be used as an operator since it produces "
-				+ signature.return_types.length + " values");
-		}
-
-		expectedLhsType = signature.parameters[0].type;
-		expectedRhsType = signature.parameters[1].type;
-		signatureReturnType = signature.return_types[0];
-	} else if (resolvedOperator.tag === "proof-equal-op") {
-		expectedLhsType = left.values[0].type;
-		expectedRhsType = expectedLhsType;
-		signatureReturnType = ir.T_BOOLEAN;
-
-		if (!stack.isInProofBlock()) {
-			throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
-				operation: opToken.operator,
-				location: opToken.location,
-			});
-		}
+	if (operand.operator.tag === "infix") {
+		return compileBinaryOperator(
+			operand.operator.infix, ops, stack,
+			subexpressions[0], subexpressions[1], location, context);
 	} else {
-		const _: never = resolvedOperator;
-		throw new Error("compileArithmeticExpressionTree: unhandled operator type");
+		return compileUnaryOperator(operand.operator, ops, subexpressions[0], stack, location, context);
 	}
-
-	if (!ir.equalTypes(expectedRhsType, right.values[0].type)) {
-		throw new diagnostics.OperatorTypeMismatchErr({
-			lhsType: displayType(left.values[0].type),
-			operator: opStr,
-			givenRhsType: displayType(right.values[0].type),
-			expectedRhsType: displayType(expectedRhsType),
-			rhsLocation: right.location,
-		});
-	}
-
-	let operatorResult = {
-		variable: stack.uniqueID("arithmetic"),
-		type: signatureReturnType,
-		location,
-	};
-
-	if (resolvedOperator.tag === "foreign-op") {
-		ops.push({
-			tag: "op-foreign",
-			operation: resolvedOperator.foreignID,
-			arguments: [left.values[0].variable, right.values[0].variable],
-			destinations: [operatorResult],
-		});
-	} else if (resolvedOperator.tag === "proof-equal-op") {
-		ops.push({
-			tag: "op-proof-eq",
-			left: left.values[0].variable,
-			right: right.values[0].variable,
-			destination: operatorResult,
-		});
-	} else {
-		const _: never = resolvedOperator;
-		throw new Error("TODO");
-	}
-
-	if (resolvedOperator.wrap === "negate") {
-		const negatedResult = {
-			variable: stack.uniqueID("negatearithmetic"),
-			type: ir.T_BOOLEAN,
-			location,
-		};
-		const booleanConstant = {
-			variable: stack.uniqueID("negatearithmetic"),
-			type: ir.T_BOOLEAN,
-			location,
-		};
-		ops.push({
-			tag: "op-branch",
-			condition: operatorResult.variable,
-			trueBranch: {
-				ops: [
-					{
-						tag: "op-const",
-						destination: booleanConstant,
-						type: "Boolean",
-						boolean: false,
-					},
-				],
-			},
-			falseBranch: {
-				ops: [
-					{
-						tag: "op-const",
-						destination: booleanConstant,
-						type: "Boolean",
-						boolean: true,
-					},
-				],
-			},
-			destinations: [
-				{
-					destination: negatedResult,
-					trueSource: { tag: "variable", variable: booleanConstant.variable },
-					falseSource: { tag: "variable", variable: booleanConstant.variable },
-				},
-			],
-		});
-
-		operatorResult = negatedResult;
-	}
-
-	return {
-		values: [operatorResult],
-		location,
-	};
 }
 
-function compileExpressionTree(
-	tree: OperatorTree,
+function compileOperandTree(
+	operand: Operand,
 	ops: ir.Op[],
 	stack: VariableStack,
 	typeScope: TypeScope,
 	context: FunctionContext,
 ): ValueInfo {
-	if (tree.tag === "leaf") {
-		return compileOperand(tree.operand, ops, stack, typeScope, context);
-	} else if (tree.join.opToken.tag === "keyword") {
-		return compileLogicalExpressionTree(tree as any, ops, stack, typeScope, context);
+	if (operand.operand.tag === "leaf") {
+		return compileOperandLeaf(operand.operand, ops, stack, typeScope, context);
 	} else {
-		return compileArithmeticExpressionTree(
-			tree.leftBranch, tree.rightBranch, tree.join.opToken, tree.location, ops, stack, typeScope, context);
+		return compileOperandJoin(operand.operand, operand.location, ops, stack, typeScope, context);
+	}
+}
+
+function operatorToString(
+	operator: { tag: "infix", infix: grammar.ExpressionInfixOperator }
+		| { tag: "prefix"; prefix: grammar.ExpressionPrefixOperator; }
+		| { tag: "suffix"; suffix: grammar.ExpressionSuffixOperator; },
+): { str: string, location: ir.SourceLocation } {
+	if (operator.tag === "infix") {
+		return {
+			str: operator.infix.tag === "keyword" ? operator.infix.keyword : operator.infix.operator,
+			location: operator.infix.location,
+		};
+	} else if (operator.tag === "prefix") {
+		return {
+			str: operator.prefix.keyword,
+			location: operator.prefix.location,
+		};
+	} {
+		return {
+			str: operator.suffix.operator.keyword,
+			location: operator.suffix.location,
+		};
 	}
 }
 
@@ -2473,10 +2537,173 @@ function compileExpression(
 	typeScope: TypeScope,
 	context: FunctionContext,
 ): ValueInfo {
-	const operands = [e.left, ...e.operations.map(x => x.right)];
-	const operators = e.operations.map(x => x.operator);
-	const tree = applyOrderOfOperations(operators, operands);
-	return compileExpressionTree(tree, ops, stack, typeScope, context);
+	const leafs = [e.left];
+	const operands: Operand[] = [{
+		left: 0,
+		right: 1,
+		operand: {
+			tag: "leaf",
+			leaf: {
+				atom: e.left.atom,
+				accesses: e.left.accesses,
+			},
+		},
+		location: ir.locationsSpan([e.left.atom, ...e.left.accesses]),
+	}];
+	for (let i = 0; i < e.operations.length; i++) {
+		const obj = e.operations[i];
+		leafs.push(obj.right);
+		operands.push({
+			left: i + 1,
+			right: i + 2,
+			operand: {
+				tag: "leaf",
+				leaf: {
+					atom: obj.right.atom,
+					accesses: obj.right.accesses,
+				},
+			},
+			location: ir.locationsSpan([obj.right.atom, ...obj.right.accesses]),
+		});
+	}
+
+	// Group adjacent operations into (suffixes, infix, prefixes) "packets".
+	const operatorPackets: OperatorPacketElement[][] = [];
+	const initialPacket: OperatorPacketElement[] = [];
+	for (const prefix of e.left.prefixes) {
+		initialPacket.push({ tag: "prefix", prefix });
+	}
+	operatorPackets.push(initialPacket);
+	for (let i = 1; i < leafs.length; i++) {
+		const left = leafs[i - 1];
+		const infix = e.operations[i - 1].operator;
+		const right = leafs[i];
+		const packet: OperatorPacketElement[] = [];
+		for (const suffix of left.suffixes) {
+			packet.push({ tag: "suffix", suffix });
+		}
+		packet.push({ tag: "infix", infix });
+		for (const prefix of right.prefixes) {
+			packet.push({ tag: "prefix", prefix });
+		}
+		operatorPackets.push(packet);
+	}
+	const finalPacket: OperatorPacketElement[] = [];
+	for (const suffix of leafs[leafs.length - 1].suffixes) {
+		finalPacket.push({ tag: "suffix", suffix });
+	}
+	operatorPackets.push(finalPacket);
+
+	while (operatorPackets.flat().length !== 0) {
+		// Find operators which are higher precedence than their neighbors.
+		const pointing = new DefaultMap<OperatorPacketElement, Operand[]>(() => []);
+		for (const operand of operands) {
+			const leftPacket = operatorPackets[operand.left];
+			const rightPacket = operatorPackets[operand.right];
+
+			const leftOperator = getOperatorPacketPrecedence(leftPacket, "left");
+			const rightOperator = getOperatorPacketPrecedence(rightPacket, "right");
+			if (leftOperator.precedence === rightOperator.precedence) {
+				if (leftOperator.grouping === rightOperator.grouping && leftOperator.grouping !== null) {
+					if (leftOperator.associates !== rightOperator.associates) {
+						throw new Error("compileExpression: unexpected variation in associates");
+					} else if (leftOperator.associates === "left") {
+						// Combine with the operator on the left.
+						pointing.get(leftOperator.element).push(operand);
+					} else {
+						// Combine with the operator on the right.
+						pointing.get(rightOperator.element).push(operand);
+					}
+				}
+			} else if (leftOperator.precedence < rightOperator.precedence) {
+				// Combine with the operator on the right.
+				pointing.get(rightOperator.element).push(operand);
+			} else {
+				// Combine with the operator on the left.
+				pointing.get(leftOperator.element).push(operand);
+			}
+		}
+
+		const replacements = new Map<Operand, Operand | null>();
+		for (const [operator, operands] of pointing) {
+			if (operator.tag === "infix") {
+				if (operands.length === 2) {
+					// Both operands combine to this operator.
+					const lhs = operands[0];
+					const rhs = operands[1];
+
+					replacements.set(lhs, {
+						left: lhs.left,
+						right: rhs.right,
+						operand: {
+							tag: "operation",
+							operator,
+							operands: [lhs, rhs],
+						},
+						location: ir.locationSpan(lhs.location, rhs.location),
+					});
+					replacements.set(rhs, null);
+
+					// Remove the operator from its packet.
+					const removed = operatorPackets[rhs.left].pop();
+					if (removed !== operator) {
+						throw new Error("compileExpression: unexpected operator in packet");
+					}
+				}
+			} else {
+				const operand = operands[0];
+				replacements.set(operand, {
+					left: operand.left,
+					right: operand.right,
+					operand: {
+						tag: "operation",
+						operator,
+						operands: [operand],
+					},
+					location: operator.tag === "prefix"
+						? ir.locationSpan(operator.prefix.location, operand.location)
+						: ir.locationSpan(operand.location, operator.suffix.location),
+				});
+
+				// Remove the operator from its packet.
+				const removed = operator.tag === "prefix"
+					? operatorPackets[operand.left].pop()
+					: operatorPackets[operand.right].shift();
+				if (removed !== operator) {
+					throw new Error("compileExpression: unexpected operator in packet");
+				}
+			}
+		}
+
+		if (replacements.size === 0) {
+			for (const operand of operands) {
+				const leftOps = operatorPackets[operand.left];
+				const rightOps = operatorPackets[operand.right];
+				if (leftOps.length !== 0 && rightOps.length !== 0) {
+					const first = leftOps[leftOps.length - 1];
+					const second = rightOps[0];
+					throw new diagnostics.OperationRequiresParenthesizationErr({
+						op1: operatorToString(first),
+						op2: operatorToString(second),
+						reason: "unordered",
+					});
+				}
+			}
+			throw new Error("compileExpression: unexpected lone unconsumed operator packet");
+		}
+
+		// Replace operands with their combined operands.
+		for (const operand of operands.splice(0)) {
+			const replacement = replacements.get(operand);
+			if (replacement === undefined) {
+				operands.push(operand);
+			} else if (replacement !== null) {
+				operands.push(replacement);
+			}
+		}
+	}
+
+	return compileOperandTree(operands[0], ops, stack, typeScope, context);
 }
 
 /// `displayType` formats the given IR `Type` as a string of (fully qualified)
@@ -2713,7 +2940,6 @@ function compileIfClause(
 	for (const key in falseAssignments) {
 		throw new Error("TODO");
 	}
-
 
 	ops.push({
 		tag: "op-branch",

@@ -435,7 +435,19 @@ function* interpretOp(
 		const conditionValue = frame.load(op.condition);
 		const condition = isTruthy(conditionValue);
 		const branch = condition ? op.trueBranch : op.falseBranch;
-		const result = yield* interpretBlock(branch, frame, context);
+		const destinations = new Map<ir.VariableDefinition, Value>();
+		const result = yield* interpretBlock(branch, frame, context, () => {
+			for (const phi of op.destinations) {
+				const source = condition ? phi.trueSource : phi.falseSource;
+				if (source !== "undef") {
+					destinations.set(phi.destination, frame.load(source.variable));
+				}
+			}
+		});
+
+		for (const [destination, value] of destinations) {
+			frame.define(destination, value);
+		}
 		return result;
 	} else if (op.tag === "op-dynamic-call") {
 		const args = op.arguments.map(arg => frame.load(arg));

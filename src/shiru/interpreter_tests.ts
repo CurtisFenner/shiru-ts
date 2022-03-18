@@ -1048,7 +1048,6 @@ export const tests = {
 		enum Either {
 			var bool: Boolean;
 			var int: Int;
-
 		}
 
 		record Main {
@@ -1058,7 +1057,6 @@ export const tests = {
 			}
 		}
 		`;
-
 
 		const ast = grammar.parseSource(source, "test-file");
 		const program = semantics.compileSources({ ast });
@@ -1085,6 +1083,72 @@ export const tests = {
 				sort: "int",
 				int: BigInt(3),
 			}
+		]);
+	},
+	"logical-operations"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn andTable(): Boolean, Boolean, Boolean, Boolean {
+				return false and false,
+					false and true,
+					true and false,
+					true and true;
+			}
+
+			fn impliesTable(): Boolean, Boolean, Boolean, Boolean {
+				return false implies false,
+					false implies true,
+					true implies false,
+					true implies true;
+			}
+
+			fn orTable(): Boolean, Boolean, Boolean, Boolean {
+				return false or false,
+					false or true,
+					true or false,
+					true or true;
+			}
+
+			fn notTable(): Boolean, Boolean {
+				return not false, not true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+
+		const inputs: Value[] = [];
+		const andTable = interpret("example.Main.andTable" as ir.FunctionID, inputs, program, {});
+		assert(andTable, "is equal to", [
+			{ sort: "boolean", boolean: false },
+			{ sort: "boolean", boolean: false },
+			{ sort: "boolean", boolean: false },
+			{ sort: "boolean", boolean: true },
+		]);
+
+		const impliesTable = interpret("example.Main.impliesTable" as ir.FunctionID, inputs, program, {});
+		assert(impliesTable, "is equal to", [
+			{ sort: "boolean", boolean: true },
+			{ sort: "boolean", boolean: true },
+			{ sort: "boolean", boolean: false },
+			{ sort: "boolean", boolean: true },
+		]);
+
+		const orTable = interpret("example.Main.orTable" as ir.FunctionID, inputs, program, {});
+		assert(orTable, "is equal to", [
+			{ sort: "boolean", boolean: false },
+			{ sort: "boolean", boolean: true },
+			{ sort: "boolean", boolean: true },
+			{ sort: "boolean", boolean: true },
+		]);
+
+		const notTable = interpret("example.Main.notTable" as ir.FunctionID, inputs, program, {});
+		assert(notTable, "is equal to", [
+			{ sort: "boolean", boolean: true },
+			{ sort: "boolean", boolean: false },
 		]);
 	},
 };

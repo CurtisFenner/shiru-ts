@@ -1953,6 +1953,8 @@ function resolveArithmeticOperator(
 			return { tag: "foreign-op", foreignID: "Int==" as ir.FunctionID, wrap: "negate" };
 		} else if (opStr === "<") {
 			return { tag: "foreign-op", foreignID: "Int<" as ir.FunctionID, wrap: null };
+		} else if (opStr === "<=") {
+			return { tag: "foreign-op", foreignID: "Int<=" as ir.FunctionID, wrap: null };
 		}
 	}
 
@@ -1982,6 +1984,7 @@ const infixOperatorPrecedence = {
 		"implies": 10,
 		"and": 10,
 		"or": 10,
+		"bounds": 20,
 		"==": 20,
 		"<": 20,
 		">": 20,
@@ -2355,8 +2358,8 @@ function compileBinaryOperator(
 
 	const leftResult = left.subresult.values[0];
 	const rightResult = right.subresult.values[0];
-	let destination: ir.VariableDefinition;
 	if (operation.tag === "operator") {
+		let destination: ir.VariableDefinition;
 		ops.push(...left.subops);
 		ops.push(...right.subops);
 		const resolvedOperator = resolveArithmeticOperator(leftResult, operation);
@@ -2437,6 +2440,11 @@ function compileBinaryOperator(
 			// Negate the result.
 			destination = compileNegation(ops, stack, location, destination.variable);
 		}
+
+		return {
+			values: [destination],
+			location,
+		};
 	} else {
 		if (operation.keyword === "and") {
 			const leftValue = expectOneBooleanForLogical(left.subresult, { opStr: "and", location: operation.location });
@@ -2450,16 +2458,39 @@ function compileBinaryOperator(
 			const leftValue = expectOneBooleanForLogical(left.subresult, { opStr: "or", location: operation.location });
 			const rightValue = expectOneBooleanForLogical(right.subresult, { opStr: "or", location: operation.location });
 			return compileOrShortCircuit(ops, stack, leftValue.variable, left.subops, rightValue.variable, right.subops, location);
+		} else if (operation.keyword === "bounds") {
+			ops.push(...left.subops);
+			ops.push(...right.subops);
+
+			const destination: ir.VariableDefinition = {
+				variable: stack.uniqueID("proofbounds"),
+				type: ir.T_BOOLEAN,
+				location,
+			};
+
+			ops.push({
+				tag: "op-proof-bounds",
+				smaller: rightResult.variable,
+				larger: leftResult.variable,
+				destination,
+			});
+
+			if (!stack.isInProofBlock()) {
+				throw new diagnostics.ProofMemberUsedOutsideProofContextErr({
+					operation: "bounds",
+					location: operation.location,
+				});
+			}
+
+			return {
+				values: [destination],
+				location,
+			};
 		}
 
 		const _: never = operation.keyword;
 		throw new Error("compileBinaryOperator: unknown keyword operator `" + operation.keyword + "`");
 	}
-
-	return {
-		values: [destination],
-		location,
-	};
 }
 
 function compileOperandJoin(

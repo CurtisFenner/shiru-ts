@@ -224,6 +224,7 @@ export type BooleanLiteralToken = KeywordToken & { keyword: "true" | "false" };
 // Keyword strings which are infix binary operators.
 const infixOperatorKeywordSet = {
 	and: true,
+	bounds: true,
 	or: true,
 	implies: true,
 } as const;

@@ -810,7 +810,7 @@ class VerificationState {
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
-	containsF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "bounds");
+	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
 
 	/// Generates a SMT function for each return of each Shiru fn.
 	/// The first parameters are the type arguments (type id).
@@ -844,6 +844,8 @@ class VerificationState {
 				eq: fn.semantics?.eq,
 				interpreter: this.foreignInterpreters[op]?.interpreter,
 				generalInterpreter: this.foreignInterpreters[op]?.generalInterpreter,
+				transitive: fn.semantics?.transitive,
+				transitiveAcyclic: fn.semantics?.transitiveAcyclic,
 			}, op));
 		}
 		return out;
@@ -989,9 +991,8 @@ class VerificationState {
 		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
-
-	isSmallerThan(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
-		return this.smt.createApplication(this.containsF, [left, right]);
+	isBoundedBy(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
+		return this.smt.createApplication(this.boundedByF, [left, right]);
 	}
 
 	pushVariableScope(variableHiding: boolean): symbol {
@@ -1186,7 +1187,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
-		state.smt.addUnscopedConstraint([state.isSmallerThan(fieldValue, object.value)]);
+		state.smt.addUnscopedConstraint([state.isBoundedBy(fieldValue, object.value)]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1225,7 +1226,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
-		state.smt.addUnscopedConstraint([state.isSmallerThan(variantValue, object.value)]);
+		state.smt.addUnscopedConstraint([state.isBoundedBy(variantValue, object.value)]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1300,6 +1301,57 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const rightObject = state.getValue(op.right);
 
 		state.defineVariable(op.destination, state.eq(leftObject.value, rightObject.value));
+		return;
+	} else if (op.tag === "op-proof-bounds") {
+		const smallerObject = state.getValue(op.smaller);
+		const largerObject = state.getValue(op.larger);
+
+		const smaller = smallerObject.value;
+		const larger = largerObject.value;
+
+		// Compare using the structural comparison.
+		const boundsComparison = state.isBoundedBy(smaller, larger);
+
+		if (ir.equalTypes(ir.T_INT, smallerObject.type) && ir.equalTypes(ir.T_INT, largerObject.type)) {
+			// Use a more specific definition for integers in terms of `Int<`:
+			// `a bounds b` means `b is strictly between -a and a`.
+			// For now, this will be restricted to the simpler condition
+			// `b between 0 and a`:
+			// `(0 < b < a) or (a < b < 0) or (a != 0 and b = 0).
+			const lessThanFns = state.foreign.get("Int<");
+			if (lessThanFns.length !== 1) {
+				throw new Error("verify: Expected `Int<` to have exactly one return");
+			}
+			const lessThanFn = lessThanFns[0];
+
+			const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+
+			// (smaller == 0 and larger != 0) implies cmp
+			// (smaller != 0 or larger == 0) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.eq(smaller, zero)),
+				state.eq(larger, zero),
+				boundsComparison,
+			]);
+
+			// (0 < smaller and smaller < larger) implies cmp
+			// (0 !< smaller or smaller !< larger) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
+				state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
+				boundsComparison,
+			]);
+
+			// (larger < smaller and smaller < 0) implies cmp
+			// (larger !< smaller or smaller !< 0) or cmp
+			state.smt.addUnscopedConstraint([
+				state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
+				state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
+				boundsComparison,
+			]);
+		}
+
+		state.defineVariable(op.destination, boundsComparison);
 		return;
 	}
 

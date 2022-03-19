@@ -1292,4 +1292,30 @@ export const tests = {
 			],
 		});
 	},
+	"attempt-bounds-on-ints-outside-proof-context"() {
+		const source = `
+		package example;
+
+		record R {
+			fn f(a: Int, b: Int): Int {
+				if a bounds b {
+					return 1;
+				} else {
+					return 2;
+				}
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"The operation `bounds` ",
+				"cannot be used outside a proof context as it is at",
+				{ fileID: "test-file", offset: 74, length: 6 },
+			],
+		});
+	},
 };

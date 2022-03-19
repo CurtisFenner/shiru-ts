@@ -125,13 +125,32 @@ export interface OpCopy {
 	copies: Copy[],
 }
 
-/// `OpProofEq` determines whether or not two objects are the same. This
-/// operation is only valid in proof contexts.
+/**
+ * `OpProofEq` determines whether or not two objects are the same.
+ * 
+ * This operation is only valid in proof contexts.
+ */
 export interface OpProofEq {
 	tag: "op-proof-eq",
 
 	left: VariableID,
 	right: VariableID,
+
+	destination: VariableDefinition,
+}
+
+/**
+ * `OpProofBounds` determines whether or not `smaller` is "smaller than"
+ * `larger`. This forms a well-founded transitive relation between any values,
+ * even of unrelated types.
+ * 
+ * This operation is only valid in proof contexts.
+ */
+export interface OpProofBounds {
+	tag: "op-proof-bounds",
+
+	smaller: VariableID,
+	larger: VariableID,
 
 	destination: VariableDefinition,
 }
@@ -326,7 +345,7 @@ export interface OpForeign {
 
 export type LeafOp = OpConst
 	| OpCopy
-	| OpProofEq
+	| OpProofEq | OpProofBounds
 	| OpNewRecord | OpNewEnum | OpField | OpVariant | OpIsVariant
 	| OpStaticCall | OpDynamicCall
 	| OpForeign

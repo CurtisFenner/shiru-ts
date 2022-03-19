@@ -3,7 +3,7 @@ import * as ir from "./ir";
 import * as semantics from "./semantics";
 import * as uf from "./uf";
 import * as verify from "./verify";
-import { assert, spec, specDescribe } from "./test";
+import { assert, specDescribe } from "./test";
 
 export const tests = {
 	"empty-verification"() {
@@ -1066,6 +1066,108 @@ export const tests = {
 				preconditionLocation: { fileID: "test-file", offset: 71, length: 5 },
 			},
 		]);
+	},
+	"arithmetic-bounds"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn nonZeroBoundsZero(n: Int): Boolean 
+			requires n != 0
+			ensures n bounds 0 {
+				return true;
+			}
+
+			fn positiveBoundsSmallerPositive(smaller: Int, larger: Int): Boolean 
+			requires 0 < smaller
+			requires smaller < larger
+			ensures larger bounds smaller {
+				return true;
+			}
+
+			fn additionPreservesInequality(a: Int, b: Int, k: Int): Boolean
+			// this requires an ordered ring (or group) axiom:
+			// forall c. a < b ifandonlyif a + c < b + c
+			ensures (a < b) == (a + k < b + k) {
+				//assert a < b implies 0 < b - a;
+				return true;
+			}
+
+			fn addThenSubtractIsIdentity(n: Int, k: Int): Boolean
+			ensures (n + k) - k == n {
+				// v = -k
+				// assume k + v == 0.
+				// learn (n + k) + v == n + (k + v)
+				assert (n + k) - k == n + (k - k);
+				assert k - k == 0;
+				return true;
+			}
+
+			fn subtractThenAddIsIdentity(n: Int, k: Int): Boolean
+			ensures (n - k) + k == n {
+				assert (n - k) + k == ((n + 0) - k) + k;
+				assert (n - k) + k == (n + (0 - k)) + k;
+				assert (0 - k) + k == k + (0 - k);
+				return true;
+			}
+
+			fn intBoundsPositivePredecessor(n: Int): Boolean
+			requires 0 < n
+			ensures n bounds n - 1 {
+				return true;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"peano-axioms"() {
+		const source = `
+		package example;
+
+		record Main {
+			fn zeroIsNatural(): Boolean
+			ensures 0 <= 0 {
+				return true;
+			}
+
+			fn successorIsNatural(n: Int): Boolean
+			requires 0 <= n
+			ensures 0 <= n + 1 {
+				return true;
+			}
+
+			fn successorIsInjection(a: Int, b: Int, pa: Int, pb: Int): Boolean
+			requires a == pa + 1
+			requires b == pb + 1
+			requires pa == pb 
+			ensures a == b {
+				return true;
+			}
+
+			fn successorIsNonZero(n: Int): Boolean
+			requires 0 <= n
+			ensures n + 1 != 0 {
+				return true;
+			}
+
+			fn predecessorOfNonZeroIsNatural(n: Int): Boolean
+			requires 0 < n
+			ensures 0 <= n - 1 {
+				return true;
+			}
+
+			// TODO: State the axiom of induction.
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
 	},
 };
 

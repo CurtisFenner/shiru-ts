@@ -100,6 +100,7 @@ export const KEYWORDS = {
 	"and": true,
 	"any": true,
 	"assert": true,
+	"bounds": true,
 	"case": true,
 	"class": true,
 	"do": true,

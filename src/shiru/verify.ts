@@ -1,37 +1,65 @@
+import * as builtin from "./builtin";
 import { DefaultMap } from "./data";
 import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
 import { displayType } from "./semantics";
 import * as uf from "./uf";
 
+class GlobalContext {
+	program: ir.Program;
+	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
+
+	/**
+	 * Failure messages are accumulated in this list as failed verifications are
+	 * discovered.
+	 */
+	failedVerifications: FailedVerification[] = [];
+
+	constructor(program: ir.Program) {
+		this.program = program;
+		this.interfaceSignaturesByImplFn = indexInterfaceSignaturesByImplFn(program);
+	}
+
+	/**
+	 * Fetch the symbolic interpreter associated with the foreign operation, if
+	 * any.
+	 */
+	getForeignInterpreters(
+		operation: string,
+		state: VerificationState,
+	): Pick<uf.Semantics<number>, "interpreter" | "generalInterpreter"> | undefined {
+		const definition = builtin.foreignOperations[operation];
+		if (definition === undefined) {
+			throw new Error("GlobalContext.getForeignInterpreters: unknown operation `" + operation + "`");
+		}
+
+		return definition.getInterpreter && definition.getInterpreter(id => state.foreign.get(id));
+	}
+}
+
 export function verifyProgram(
 	program: ir.Program,
 ): FailedVerification[] {
-	const problems = [];
-
-	// Index impls by their interface signatures.
-	const interfaceSignaturesByImplFn = indexInterfaceSignaturesByImplFn(program);
-
+	const context = new GlobalContext(program);
 	// Verify each interface signature.
 	for (const i in program.interfaces) {
-		problems.push(...verifyInterface(program, i, interfaceSignaturesByImplFn));
+		verifyInterface(context, program.interfaces[i]);
 	}
 
 	// Verify each function body.
 	for (let f in program.functions) {
-		problems.push(...verifyFunction(program, f, interfaceSignaturesByImplFn));
+		const impls = context.interfaceSignaturesByImplFn.get(f as ir.FunctionID);
+		verifyFunction(context, program.functions[f], impls);
 	}
 
-	return problems;
+	return context.failedVerifications;
 }
 
 function verifyInterface(
-	program: ir.Program,
-	interfaceName: string,
-	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
-): FailedVerification[] {
-	const state = new VerificationState(program, interfaceSignaturesByImplFn);
-	const trait = program.interfaces[interfaceName];
+	context: GlobalContext,
+	trait: ir.IRInterface,
+): void {
+	const state = new VerificationState(context);
 
 	// Create the type scope for the interface's subjects.
 	const interfaceTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
@@ -67,7 +95,7 @@ function verifyInterface(
 		// Verify that preconditions explicitly state their own preconditions,
 		// and assume that they hold for postconditions.
 		for (const precondition of signature.preconditions) {
-			traverseBlock(program, new Map(), precondition.block, state, {
+			traverseBlock(context, new Map(), precondition.block, state, {
 				// Return ops within a precondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
@@ -88,7 +116,7 @@ function verifyInterface(
 			for (let i = 0; i < symbolicReturned.length; i++) {
 				local.set(postcondition.returnedValues[i], symbolicReturned[i]);
 			}
-			traverseBlock(program, local, postcondition.block, state, {
+			traverseBlock(context, local, postcondition.block, state, {
 				// Return ops within a postcondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
@@ -102,8 +130,6 @@ function verifyInterface(
 	}
 
 	state.popTypeScope();
-
-	return state.failedVerifications;
 }
 
 interface IndexedImpl {
@@ -127,152 +153,8 @@ function indexInterfaceSignaturesByImplFn(
 	return map;
 }
 
-function getForeignInterpreters(
-	state: VerificationState,
-): Record<string, {
-	interpreter?: (...args: (unknown | null)[]) => unknown | null,
-	generalInterpreter?: (
-		matcher: uf.EMatcher<number>,
-		id: uf.ValueID,
-		operands: uf.ValueID[],
-	) => "change" | "no-change",
-}> {
-	return {
-		"Int-unary": {
-			interpreter(a: unknown): unknown | null {
-				if (a === null) {
-					return null;
-				} else if (typeof a !== "bigint") {
-					return null;
-				} else {
-					return -(a as bigint);
-				}
-			},
-		},
-		"Int+": {
-			interpreter(a: unknown | null, b: unknown | null): unknown | null {
-				if (a === null || b === null) {
-					return null;
-				} else if (typeof a !== "bigint") {
-					return null;
-				} else if (typeof b !== "bigint") {
-					return null;
-				}
-
-				return (a as bigint) + (b as bigint);
-			},
-
-			generalInterpreter(
-				matcher: uf.EMatcher<number>,
-				id: uf.ValueID,
-				operands: uf.ValueID[],
-			): "change" | "no-change" {
-				const sum = state.foreign.get("Int+")[0];
-				const left = operands[0];
-				const right = operands[1];
-
-				let change: "change" | "no-change" = "no-change";
-
-				// Resolve commutativity by swapping all sums.
-				const swapped = matcher.hasApplication(sum, [right, left]);
-				if (swapped !== null) {
-					let freshCommutative = matcher.merge(id, swapped, new Set());
-					if (freshCommutative) {
-						change = "change";
-					}
-				}
-
-				// Resolve associativity by canonicalizing all left sums to
-				// be left-leaning.
-				const rightSums = matcher.matchAsApplication(right, sum);
-				for (const rightSum of rightSums) {
-					const a = rightSum.operands[0];
-					const b = rightSum.operands[1];
-
-					const leftASum = matcher.hasApplication(sum, [left, a]);
-					if (leftASum !== null) {
-						const leftLeaning = matcher.hasApplication(sum, [
-							leftASum, b,
-						]);
-
-						if (leftLeaning !== null) {
-							const freshAssociative = matcher.merge(id, leftLeaning, rightSum.reason);
-							if (freshAssociative) {
-								change = "change";
-							}
-						}
-					}
-				}
-
-				return change;
-			}
-		},
-		"Int<": {
-			interpreter(a: unknown | null, b: unknown | null): unknown | null {
-				if (a === null || b === null) {
-					return null;
-				} else if (typeof a !== "bigint") {
-					return null;
-				} else if (typeof b !== "bigint") {
-					return null;
-				}
-				return (a as bigint) < (b as bigint);
-			},
-
-			generalInterpreter(
-				matcher: uf.EMatcher<number>,
-				id: uf.ValueID,
-				operands: uf.ValueID[],
-			): "change" | "no-change" {
-				const sum = state.foreign.get("Int+")[0];
-				const lt = state.foreign.get("Int<")[0];
-				const left = operands[0];
-				const right = operands[1];
-
-				const leftSums = matcher.matchAsApplication(left, sum);
-				const rightSums = matcher.matchAsApplication(right, sum);
-
-				// TODO: Improve performance by indexing sums by their terms
-				// instead of doing a quadratic scan when many are equal.
-				// Search for the pattern 
-				// a + k1 < b + k2 where k1 = k2.
-				let change: "change" | "no-change" = "no-change";
-				for (const leftSum of leftSums) {
-					for (const rightSum of rightSums) {
-						const kQuery = matcher.query(leftSum.operands[1], rightSum.operands[1]);
-						if (kQuery !== null) {
-							// Equate this with `a < b`, using the reason
-							// which is why
-							// left == (a+k1) and right == (b+k2)
-							// and k1 == k2.
-							const newLt = matcher.hasApplication(lt, [
-								leftSum.operands[0],
-								rightSum.operands[0],
-							]);
-							if (newLt === null) {
-								continue;
-							}
-							const reason = new Set([
-								...leftSum.reason,
-								...rightSum.reason,
-								...kQuery,
-							]);
-							const fresh = matcher.merge(id, newLt, reason);
-							if (fresh) {
-								change = "change";
-							}
-						}
-					}
-				}
-
-				return change;
-			},
-		},
-	};
-}
-
 function assumeStaticPreconditions(
-	program: ir.Program,
+	global: GlobalContext,
 	signature: ir.FunctionSignature,
 	valueArguments: uf.ValueID[],
 	typeArguments: uf.ValueID[],
@@ -300,7 +182,7 @@ function assumeStaticPreconditions(
 
 	for (let i = 0; i < signature.preconditions.length; i++) {
 		const precondition = signature.preconditions[i];
-		traverseBlock(program, valueScope, precondition.block, state, {
+		traverseBlock(global, valueScope, precondition.block, state, {
 			// Return ops within a precondition block do not have their own
 			// postconditions.
 			verifyAtReturn: [],
@@ -318,14 +200,14 @@ function assumeStaticPreconditions(
 /// "for_any" type parameters, followed by the interface-signature's type
 /// parameters.
 function assumeConstraintPreconditions(
-	program: ir.Program,
+	global: GlobalContext,
 	valueArguments: uf.ValueID[],
 	implFnTypeArguments: uf.ValueID[],
 	implementing: IndexedImpl,
 	state: VerificationState,
 ): void {
-	const impl = program.globalVTableFactories[implementing.implID];
-	const interfaceEntity = program.interfaces[impl.provides.interface];
+	const impl = global.program.globalVTableFactories[implementing.implID];
+	const interfaceEntity = global.program.interfaces[impl.provides.interface];
 	const interfaceSignature = interfaceEntity.signatures[implementing.memberID];
 
 	if (implFnTypeArguments.length !== impl.for_any.length + interfaceSignature.type_parameters.length) {
@@ -354,7 +236,7 @@ function assumeConstraintPreconditions(
 	const hidingVariableScope = state.pushVariableScope(true);
 
 	for (const precondition of interfaceSignature.preconditions) {
-		traverseBlock(program, variableScope, precondition.block, state, {
+		traverseBlock(global, variableScope, precondition.block, state, {
 			verifyAtReturn: [],
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
@@ -367,14 +249,14 @@ function assumeConstraintPreconditions(
 }
 
 function generateToVerifyFromConstraint(
-	program: ir.Program,
+	global: GlobalContext,
 	valueArguments: uf.ValueID[],
 	implFnTypeArguments: uf.ValueID[],
 	implementing: IndexedImpl,
 	state: VerificationState,
 ): VerifyAtReturn[] {
-	const impl = program.globalVTableFactories[implementing.implID];
-	const interfaceEntity = program.interfaces[impl.provides.interface];
+	const impl = global.program.globalVTableFactories[implementing.implID];
+	const interfaceEntity = global.program.interfaces[impl.provides.interface];
 	const interfaceSignature = interfaceEntity.signatures[implementing.memberID];
 
 	if (implFnTypeArguments.length !== impl.for_any.length + interfaceSignature.type_parameters.length) {
@@ -448,7 +330,7 @@ function generateToVerifyFromStatic(
 }
 
 function verifyPostconditionWellFormedness(
-	program: ir.Program,
+	global: GlobalContext,
 	signature: ir.FunctionSignature,
 	state: VerificationState,
 	verifyAtReturns: VerifyAtReturn[],
@@ -468,7 +350,7 @@ function verifyPostconditionWellFormedness(
 				valueArgs.set(k, v.symbolic);
 			}
 		}
-		assumePostcondition(program, valueArgs, verifyAtReturn.typeIDScope, verifyAtReturn.postcondition, state);
+		assumePostcondition(global, valueArgs, verifyAtReturn.typeIDScope, verifyAtReturn.postcondition, state);
 	}
 	state.smt.popScope();
 }
@@ -478,14 +360,11 @@ function verifyPostconditionWellFormedness(
 /// automatically assumed, and any postconditions should be automatically
 /// checked.
 function verifyFunction(
-	program: ir.Program,
-	fName: string,
-	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
-): FailedVerification[] {
-	const interfaceSignatures = interfaceSignaturesByImplFn.get(fName as ir.FunctionID);
-	const state = new VerificationState(program, interfaceSignaturesByImplFn);
-
-	const f = program.functions[fName];
+	global: GlobalContext,
+	f: ir.IRFunction,
+	impls: IndexedImpl[],
+): void {
+	const state = new VerificationState(global);
 
 	// Create the initial type scope, which maps each type parameter to an
 	// unknown symbolic type ID constant.
@@ -511,18 +390,18 @@ function verifyFunction(
 	}
 
 	// Execute and validate the function's preconditions.
-	assumeStaticPreconditions(program, f.signature, symbolicArguments, typeArguments, state);
+	assumeStaticPreconditions(global, f.signature, symbolicArguments, typeArguments, state);
 
 	const verifyAtReturns: VerifyAtReturn[] = [];
 
 	// Collect postconditions from an impl fn.
-	for (const interfaceSignatureReference of interfaceSignatures) {
+	for (const impl of impls) {
 		if (f.signature.preconditions.length !== 0) {
-			throw new Error("impl function `" + fName + "` must not impose explicit preconditions");
+			throw new Error("verifyFunction: impl function has explicit preconditions");
 		}
 
-		assumeConstraintPreconditions(program, symbolicArguments, typeArguments, interfaceSignatureReference, state);
-		verifyAtReturns.push(...generateToVerifyFromConstraint(program, symbolicArguments, typeArguments, interfaceSignatureReference, state));
+		assumeConstraintPreconditions(global, symbolicArguments, typeArguments, impl, state);
+		verifyAtReturns.push(...generateToVerifyFromConstraint(global, symbolicArguments, typeArguments, impl, state));
 	}
 
 	// Collect explicit postconditions from a fn.
@@ -530,11 +409,11 @@ function verifyFunction(
 
 	// Validate that the function's postconditions are well-formed, in that they
 	// explicitly guarantee their internal preconditions.
-	verifyPostconditionWellFormedness(program, f.signature, state, verifyAtReturns);
+	verifyPostconditionWellFormedness(global, f.signature, state, verifyAtReturns);
 
 	// Check the function's body (including that each return op guarantees the
 	// ensured postconditions).
-	traverseBlock(program, new Map(), f.body, state, {
+	traverseBlock(global, new Map(), f.body, state, {
 		verifyAtReturn: verifyAtReturns,
 	});
 
@@ -542,8 +421,6 @@ function verifyFunction(
 	if (!ir.opTerminates(lastOp)) {
 		throw new Error("ICE: verifyFunction invoked on a function which does not obviously terminate");
 	}
-
-	return state.failedVerifications;
 }
 
 /// Describes what value to bind to a parameter of a postcondition block.
@@ -629,7 +506,6 @@ class DynamicFunctionMap {
 				anys.push(ir.T_ANY);
 			}
 			const map = ir.typeArgumentsMap(typeParameters, anys);
-			const rs = signature.return_types.map(r => ir.typeSubstitute(r, map));
 			const fnIDs = [];
 			for (let i = 0; i < signature.return_types.length; i++) {
 				const returnType = ir.typeSubstitute(signature.return_types[i], map);
@@ -641,12 +517,58 @@ class DynamicFunctionMap {
 
 	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
 
-	/// Retrieves the single function identity across all implementations of the
-	/// interface.
-	/// Invocations of the function in the SMT engine take
-	/// value arguments ++ interface type arguments ++ signature type arguments.
-	get(interfaceID: ir.InterfaceID, signatureID: ir.FunctionID) {
-		return this.map.get(interfaceID).get(signatureID);
+	/**
+	 * Retreives the UF-theory representation of the given call of an interface
+	 * function.
+	 */
+	call(
+		interfaceID: ir.InterfaceID,
+		signatureID: ir.FunctionID,
+		args: { valueArgs: uf.ValueID[], interfaceTypeArgs: uf.ValueID[] },
+	): uf.ValueID[] {
+		const fnIDs = this.map.get(interfaceID).get(signatureID);
+		const out = [];
+		const allArgs = [...args.valueArgs, ...args.interfaceTypeArgs];
+		for (const fnID of fnIDs) {
+			out.push(this.smt.createApplication(fnID, allArgs));
+		}
+		return out;
+	}
+}
+
+class StaticFunctionMap {
+	private functions: DefaultMap<ir.FunctionID, uf.FnID[]> = new DefaultMap(fnID => {
+		const fn = this.program.functions[fnID];
+		if (fn === undefined) {
+			throw new Error("VerificationState.functions.get: undefined `" + fnID + "`");
+		}
+		const instantiation = new Map<ir.TypeVariableID, ir.Type>();
+		for (let i = 0; i < fn.signature.type_parameters.length; i++) {
+			instantiation.set(fn.signature.type_parameters[i], ir.T_ANY);
+		}
+
+		const out = [];
+		for (const r of fn.signature.return_types) {
+			// Use a more generic "Any" type.
+			const resultType = ir.typeSubstitute(r, instantiation);
+			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }, fnID));
+		}
+		return out;
+	});
+
+	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+
+	call(
+		fn: ir.FunctionID,
+		args: { valueArgs: uf.ValueID[], typeArgs: uf.ValueID[] },
+	): uf.ValueID[] {
+		const fnIDs = this.functions.get(fn);
+		const out = [];
+		const allArgs = [...args.valueArgs, ...args.typeArgs];
+		for (let i = 0; i < fnIDs.length; i++) {
+			out.push(this.smt.createApplication(fnIDs[i], allArgs));
+		}
+		return out;
 	}
 }
 
@@ -804,54 +726,36 @@ class EnumMap {
 }
 
 class VerificationState {
-	private program: ir.Program;
-	private foreignInterpreters: Record<string, Pick<uf.Semantics<number>, "interpreter" | "generalInterpreter">>;
+	private context: GlobalContext;
 
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
 
-	/// Generates a SMT function for each return of each Shiru fn.
-	/// The first parameters are the type arguments (type id).
-	functions: DefaultMap<ir.FunctionID, uf.FnID[]> = new DefaultMap(fnID => {
-		const fn = this.program.functions[fnID];
-		if (fn === undefined) {
-			throw new Error("VerificationState.functions.get: undefined `" + fnID + "`");
-		}
-		const instantiation = new Map<ir.TypeVariableID, ir.Type>();
-		for (let i = 0; i < fn.signature.type_parameters.length; i++) {
-			instantiation.set(fn.signature.type_parameters[i], ir.T_ANY);
-		}
-
-		const out = [];
-		for (const r of fn.signature.return_types) {
-			// Use a more generic "Any" type.
-			const resultType = ir.typeSubstitute(r, instantiation);
-			out.push(this.smt.createFunction(resultType, { eq: fn.signature.semantics?.eq }, fnID));
-		}
-		return out;
-	});
-
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
-		const fn = this.program.foreign[op];
-		if (fn === undefined) {
+		const signature = this.context.program.foreign[op];
+		if (signature === undefined) {
 			throw new Error("VerificationState.foreign.get: undefined `" + op + "`");
 		}
 		const out = [];
-		for (const r of fn.return_types) {
+		for (const r of signature.return_types) {
+			// TODO: Distinguish interpreters for multi-return foreign
+			// operations.
+			const interpreters = this.context.getForeignInterpreters(op, this);
 			out.push(this.smt.createFunction(r, {
-				eq: fn.semantics?.eq,
-				interpreter: this.foreignInterpreters[op]?.interpreter,
-				generalInterpreter: this.foreignInterpreters[op]?.generalInterpreter,
-				transitive: fn.semantics?.transitive,
-				transitiveAcyclic: fn.semantics?.transitiveAcyclic,
+				eq: signature.semantics?.eq,
+				interpreter: interpreters?.interpreter,
+				generalInterpreter: interpreters?.generalInterpreter,
+				transitive: signature.semantics?.transitive,
+				transitiveAcyclic: signature.semantics?.transitiveAcyclic,
 			}, op));
 		}
 		return out;
 	});
 
 	dynamicFunctions: DynamicFunctionMap;
+	staticFunctions: StaticFunctionMap;
 	recordMap: RecordMap;
 	enumMap: EnumMap;
 
@@ -944,7 +848,7 @@ class VerificationState {
 		} else if (t.tag === "type-compound") {
 			const args = t.type_arguments.map(x => this.getTypeID(x));
 			const base = t.base;
-			if (this.program.records[base] !== undefined) {
+			if (this.context.program.records[base] !== undefined) {
 				return this.recordMap.typeID(base as ir.RecordID, args);
 			} else {
 				return this.enumMap.typeID(base as ir.EnumID, args);
@@ -959,28 +863,19 @@ class VerificationState {
 	/// true to reach a position in the program.
 	private pathConstraints: uf.ValueID[] = [];
 
-	// Verification adds failure messages to this stack as they are encountered.
-	// Multiple failures can be returned.
-	failedVerifications: FailedVerification[] = [];
-
-	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
-
 	constructor(
-		program: ir.Program,
-		interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>,
+		context: GlobalContext,
 	) {
-		this.program = program;
-		this.dynamicFunctions = new DynamicFunctionMap(this.program, this.smt);
-		this.recordMap = new RecordMap(this.program, this.smt);
-		this.enumMap = new EnumMap(this.program, this.smt);
-		this.interfaceSignaturesByImplFn = interfaceSignaturesByImplFn;
+		this.context = context;
+		this.dynamicFunctions = new DynamicFunctionMap(context.program, this.smt);
+		this.staticFunctions = new StaticFunctionMap(context.program, this.smt);
+		this.recordMap = new RecordMap(context.program, this.smt);
+		this.enumMap = new EnumMap(context.program, this.smt);
 
 		// SMT requires at least one constraint.
 		this.smt.addConstraint([
 			this.smt.createConstant(ir.T_BOOLEAN, true),
 		]);
-
-		this.foreignInterpreters = getForeignInterpreters(this);
 	}
 
 	negate(bool: uf.ValueID): uf.ValueID {
@@ -1090,7 +985,7 @@ class VerificationState {
 }
 
 function traverseBlock(
-	program: ir.Program,
+	global: GlobalContext,
 	locals: Map<ir.VariableDefinition, uf.ValueID>,
 	block: ir.OpBlock,
 	state: VerificationState,
@@ -1105,7 +1000,7 @@ function traverseBlock(
 	}
 
 	for (let subop of block.ops) {
-		traverse(program, subop, state, context);
+		traverse(global, subop, state, context);
 	}
 
 	// Execute the final computation before exiting this scope.
@@ -1117,9 +1012,16 @@ function traverseBlock(
 	state.popVariableScope(variableScope);
 }
 
-// MUTATES the verification state parameter, to add additional clauses that are
-// ensured after the execution (and termination) of this operation.
-function traverse(program: ir.Program, op: ir.Op, state: VerificationState, context: VerificationContext): void {
+/*
+ * MUTATES the verification state parameter, to add additional clauses that are
+ * ensured after the execution (and termination) of this operation.
+ */
+function traverse(
+	global: GlobalContext,
+	op: ir.Op,
+	state: VerificationState,
+	context: VerificationContext,
+): void {
 	if (op.tag === "op-branch") {
 		const symbolicCondition: uf.ValueID = state.getValue(op.condition).value;
 
@@ -1130,7 +1032,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		}
 
 		state.pushPathConstraint(symbolicCondition);
-		traverseBlock(program, new Map(), op.trueBranch, state, context, () => {
+		traverseBlock(global, new Map(), op.trueBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
@@ -1144,7 +1046,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.popPathConstraint();
 
 		state.pushPathConstraint(state.negate(symbolicCondition));
-		traverseBlock(program, new Map(), op.falseBranch, state, context, () => {
+		traverseBlock(global, new Map(), op.falseBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
@@ -1218,7 +1120,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		const refutation = state.checkReachable(reason);
 		if (refutation !== "refuted") {
 			reason.enumType = displayType(baseType);
-			state.failedVerifications.push(reason);
+			global.failedVerifications.push(reason);
 		}
 
 		state.markPathUnreachable();
@@ -1251,7 +1153,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.smt.addUnscopedConstraint([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
-		return traverseBlock(program, new Map(), op.body, state, context);
+		return traverseBlock(global, new Map(), op.body, state, context);
 	} else if (op.tag === "op-return") {
 		if (context.verifyAtReturn.length !== 0) {
 			// Check that the postconditions from the context are satisfied by
@@ -1260,7 +1162,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			for (let i = 0; i < op.sources.length; i++) {
 				returnedValues.push(state.getValue(op.sources[i]).value);
 			}
-			checkVerifyAtReturns(program, state, returnedValues, context.verifyAtReturn, op.diagnostic_return_site);
+			checkVerifyAtReturns(global, state, returnedValues, context.verifyAtReturn, op.diagnostic_return_site);
 		}
 
 		// Subsequently, this path is treated as unreachable, since the function
@@ -1268,13 +1170,13 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 		state.markPathUnreachable();
 		return;
 	} else if (op.tag === "op-foreign") {
-		traverseForeignCall(program, op, state, context);
+		traverseForeignCall(global, op, state, context);
 		return;
 	} else if (op.tag === "op-static-call") {
-		traverseStaticCall(program, op, state);
+		traverseStaticCall(global, op, state);
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		traverseDynamicCall(program, op, state);
+		traverseDynamicCall(global, op, state);
 		return;
 	} else if (op.tag === "op-unreachable") {
 		// TODO: Better classify verification failures.
@@ -1289,7 +1191,7 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 			};
 
 		if (state.checkReachable(reason) !== "refuted") {
-			state.failedVerifications.push(reason);
+			global.failedVerifications.push(reason);
 		}
 
 		// Like a return statement, this path is subsequently treated as
@@ -1359,10 +1261,12 @@ function traverse(program: ir.Program, op: ir.Op, state: VerificationState, cont
 	throw new Error(`unhandled op ${op["tag"]}`);
 }
 
-/// checkPrecondition inspects the state and ensures that the precondition
-/// invoked with the given scope is satisfied.
+/**
+ * `checkPrecondition` inspects the state and ensures that the precondition
+ * invoked with the given arguments is satisfied.
+ */
 function checkPrecondition(
-	program: ir.Program,
+	global: GlobalContext,
 	valueArgs: Map<ir.VariableDefinition, uf.ValueID>,
 	typeArgs: Map<ir.TypeVariableID, uf.ValueID>,
 	precondition: ir.Precondition,
@@ -1374,13 +1278,13 @@ function checkPrecondition(
 	const hidingTypeScope = state.pushHidingTypeScope();
 	state.pushTypeScope(typeArgs);
 
-	traverseBlock(program, valueArgs, precondition.block, state, {
+	traverseBlock(global, valueArgs, precondition.block, state, {
 		// Return ops within a precondition do not have their own
 		// postconditions.
 		verifyAtReturn: [],
 	}, () => {
 		if (state.checkPossiblyFalseInPath(precondition.precondition, reason) !== "refuted") {
-			state.failedVerifications.push(reason);
+			global.failedVerifications.push(reason);
 		}
 	});
 
@@ -1388,10 +1292,13 @@ function checkPrecondition(
 	state.popHidingTypeScope(hidingTypeScope);
 }
 
-/// assumePostcondition modifies the state so that subsequent inspections can
-/// assume that this postcondition, invoked with the given scope, is satisfied.
+/**
+ * `assumePostCondition` modifies the `state` so that subsequent inspections can
+ * assume that this postcondition, invoked with the given arguments, is
+ * satisfied.
+ */
 function assumePostcondition(
-	program: ir.Program,
+	global: GlobalContext,
 	valueArgs: Map<ir.VariableDefinition, uf.ValueID>,
 	typeArgs: Map<ir.TypeVariableID, uf.ValueID>,
 	postcondition: ir.Postcondition,
@@ -1403,7 +1310,7 @@ function assumePostcondition(
 	state.pushTypeScope(typeArgs);
 	const postconditionScope = state.pushVariableScope(true);
 
-	traverseBlock(program, valueArgs, postcondition.block, state, {
+	traverseBlock(global, valueArgs, postcondition.block, state, {
 		// Return ops within a postcondition do not have their own postconditions.
 		verifyAtReturn: [],
 	}, () => {
@@ -1415,10 +1322,12 @@ function assumePostcondition(
 	state.popHidingTypeScope(hidingTypeScope);
 }
 
-/// checkVerifyAtReturns inspects the current state to determine whether or not
-/// each postcondition is satisfied by the given returned values.
+/**
+ * `checkVerifyAtReturns` inspects the current `state` to determine whether each
+ * postcondition is satisfied by the given returned values.
+ */
 function checkVerifyAtReturns(
-	program: ir.Program,
+	global: GlobalContext,
 	state: VerificationState,
 	returnedValues: uf.ValueID[],
 	verifyAtReturns: VerifyAtReturn[],
@@ -1441,7 +1350,7 @@ function checkVerifyAtReturns(
 		state.pushTypeScope(verifyAtReturn.typeIDScope);
 		const postconditionVariableScope = state.pushVariableScope(true);
 
-		traverseBlock(program, locals, verifyAtReturn.postcondition.block, state, {
+		traverseBlock(global, locals, verifyAtReturn.postcondition.block, state, {
 			// Return ops within a postcondition do not have their own
 			// postconditions.
 			verifyAtReturn: [],
@@ -1456,7 +1365,7 @@ function checkVerifyAtReturns(
 			// false.
 			const refutation = state.checkPossiblyFalseInPath(verifyAtReturn.postcondition.postcondition, reason);
 			if (refutation !== "refuted") {
-				state.failedVerifications.push(reason);
+				global.failedVerifications.push(reason);
 			}
 		});
 
@@ -1467,13 +1376,13 @@ function checkVerifyAtReturns(
 }
 
 function traverseStaticCall(
-	program: ir.Program,
+	global: GlobalContext,
 	op: ir.OpStaticCall,
 	state: VerificationState,
 ): void {
 	const fn = op.function;
-	const signature = program.functions[fn].signature;
-	if (state.interfaceSignaturesByImplFn.get(fn).length !== 0) {
+	const signature = global.program.functions[fn].signature;
+	if (global.interfaceSignaturesByImplFn.get(fn).length !== 0) {
 		throw new Error("impl functions cannot be invoked directly by static calls");
 	}
 
@@ -1511,18 +1420,18 @@ function traverseStaticCall(
 				preconditionLocation: precondition.location,
 			};
 
-			checkPrecondition(program, valueArgsMap, typeArgsMap, precondition, state, reason);
+			checkPrecondition(global, valueArgsMap, typeArgsMap, precondition, state, reason);
 		}
 
 		delete state.recursivePreconditions.blockedFunctions[fn];
 	}
 
-	const smtFns = state.functions.get(fn);
-	const results = [];
+	const results = state.staticFunctions.call(fn, {
+		valueArgs,
+		typeArgs,
+	});
 	for (let i = 0; i < op.destinations.length; i++) {
-		const result = state.smt.createApplication(smtFns[i], [...valueArgs, ...typeArgs]);
-		results.push(result);
-		state.defineVariable(op.destinations[i], result);
+		state.defineVariable(op.destinations[i], results[i]);
 	}
 
 	if (state.recursivePostconditions.blockedFunctions[fn] !== true) {
@@ -1539,7 +1448,7 @@ function traverseStaticCall(
 				valueArgsMap.set(variable, results[i]);
 			}
 
-			assumePostcondition(program, valueArgsMap, typeArgsMap, postcondition, state);
+			assumePostcondition(global, valueArgsMap, typeArgsMap, postcondition, state);
 		}
 
 		delete state.recursivePostconditions.blockedFunctions[fn];
@@ -1547,11 +1456,11 @@ function traverseStaticCall(
 }
 
 function traverseDynamicCall(
-	program: ir.Program,
+	global: GlobalContext,
 	op: ir.OpDynamicCall,
 	state: VerificationState,
 ): void {
-	const constraint = program.interfaces[op.constraint.interface];
+	const constraint = global.program.interfaces[op.constraint.interface];
 	const signature = constraint.signatures[op.signature_id];
 
 	const typeArgsMap = new Map<ir.TypeVariableID, uf.ValueID>();
@@ -1575,12 +1484,12 @@ function traverseDynamicCall(
 		throw new Error("TODO");
 	}
 
-	const smtFns = state.dynamicFunctions.get(op.constraint.interface, op.signature_id as ir.FunctionID);
-	const results = [];
+	const results = state.dynamicFunctions.call(op.constraint.interface, op.signature_id as ir.FunctionID, {
+		valueArgs,
+		interfaceTypeArgs: typeArgsList,
+	});
 	for (let i = 0; i < op.destinations.length; i++) {
-		const result = state.smt.createApplication(smtFns[i], [...valueArgs, ...typeArgsList]);
-		results.push(result);
-		state.defineVariable(op.destinations[i], result);
+		state.defineVariable(op.destinations[i], results[i]);
 	}
 
 	for (const postcondition of signature.postconditions) {
@@ -1593,12 +1502,12 @@ function traverseDynamicCall(
 }
 
 function traverseForeignCall(
-	program: ir.Program,
+	global: GlobalContext,
 	op: ir.OpForeign,
 	state: VerificationState,
 	context: VerificationContext,
 ): void {
-	const signature = program.foreign[op.operation];
+	const signature = global.program.foreign[op.operation];
 
 	for (let precondition of signature.preconditions) {
 		throw new Error("TODO: Check precondition of op-foreign");
@@ -1651,7 +1560,7 @@ function traverseForeignCall(
 				valueArgsMap.set(variable, results[i]);
 			}
 
-			assumePostcondition(program, valueArgsMap, typeArgsMap, postcondition, state);
+			assumePostcondition(global, valueArgsMap, typeArgsMap, postcondition, state);
 		}
 
 		delete state.recursivePostconditions.blockedFunctions[fnKey];

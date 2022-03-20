@@ -1,4 +1,5 @@
 import * as ir from "./ir";
+import * as uf from "./uf";
 
 function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 	return {
@@ -8,10 +9,20 @@ function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 	};
 }
 
-export function getBasicForeign(): Record<string, ir.FunctionSignature> {
-	return {
-		"Int==": {
-			// Equality
+export const foreignOperations: Record<string, {
+	signature: ir.FunctionSignature,
+	getInterpreter?(foreignFns: (name: string) => uf.FnID[]): {
+		interpreter?: (...args: (unknown | null)[]) => unknown | null,
+		generalInterpreter?: (
+			matcher: uf.EMatcher<number>,
+			id: uf.ValueID,
+			operands: uf.ValueID[],
+		) => "change" | "no-change",
+	},
+}> = {
+	// Integer equality function.
+	"Int==": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
@@ -24,9 +35,11 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 			semantics: {
 				eq: true,
 			},
-		},
-		"Boolean==": {
-			// Equality
+		}
+	},
+	// Boolean equality function.
+	"Boolean==": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_BOOLEAN),
 				varDef("right", ir.T_BOOLEAN),
@@ -39,8 +52,11 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 			semantics: {
 				eq: true,
 			},
-		},
-		"Int<": {
+		}
+	},
+	// Integer less-than function.
+	"Int<": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
@@ -96,7 +112,73 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				transitiveAcyclic: true,
 			},
 		},
-		"Int<=": {
+		getInterpreter(foreignFns) {
+			return {
+				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else if (typeof b !== "bigint") {
+						return null;
+					}
+					return (a as bigint) < (b as bigint);
+				},
+
+				generalInterpreter(
+					matcher: uf.EMatcher<number>,
+					id: uf.ValueID,
+					operands: uf.ValueID[],
+				): "change" | "no-change" {
+					const sum = foreignFns("Int+")[0];
+					const lt = foreignFns("Int<")[0];
+					const left = operands[0];
+					const right = operands[1];
+
+					const leftSums = matcher.matchAsApplication(left, sum);
+					const rightSums = matcher.matchAsApplication(right, sum);
+
+					// TODO: Improve performance by indexing sums by their terms
+					// instead of doing a quadratic scan when many are equal.
+					// Search for the pattern 
+					// a + k1 < b + k2 where k1 = k2.
+					let change: "change" | "no-change" = "no-change";
+					for (const leftSum of leftSums) {
+						for (const rightSum of rightSums) {
+							const kQuery = matcher.query(leftSum.operands[1], rightSum.operands[1]);
+							if (kQuery !== null) {
+								// Equate this with `a < b`, using the reason
+								// which is why
+								// left == (a+k1) and right == (b+k2)
+								// and k1 == k2.
+								const newLt = matcher.hasApplication(lt, [
+									leftSum.operands[0],
+									rightSum.operands[0],
+								]);
+								if (newLt === null) {
+									continue;
+								}
+								const reason = new Set([
+									...leftSum.reason,
+									...rightSum.reason,
+									...kQuery,
+								]);
+								const fresh = matcher.merge(id, newLt, reason);
+								if (fresh) {
+									change = "change";
+								}
+							}
+						}
+					}
+
+					return change;
+				},
+			};
+		},
+	},
+	// Integer less-than-or-equal function.
+	"Int<=": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
@@ -160,8 +242,10 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				transitive: true,
 			},
 		},
-		"Int+": {
-			// Addition
+	},
+	// Integer addition function.
+	"Int+": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
@@ -321,8 +405,70 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				},
 			],
 		},
-		"Int-": {
-			// Subtract
+		getInterpreter(foreignFns) {
+			return {
+				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else if (typeof b !== "bigint") {
+						return null;
+					}
+
+					return (a as bigint) + (b as bigint);
+				},
+
+				generalInterpreter(
+					matcher: uf.EMatcher<number>,
+					id: uf.ValueID,
+					operands: uf.ValueID[],
+				): "change" | "no-change" {
+					const sum = foreignFns("Int+")[0];
+					const left = operands[0];
+					const right = operands[1];
+
+					let change: "change" | "no-change" = "no-change";
+
+					// Resolve commutativity by swapping all sums.
+					const swapped = matcher.hasApplication(sum, [right, left]);
+					if (swapped !== null) {
+						let freshCommutative = matcher.merge(id, swapped, new Set());
+						if (freshCommutative) {
+							change = "change";
+						}
+					}
+
+					// Resolve associativity by canonicalizing all left sums to
+					// be left-leaning.
+					const rightSums = matcher.matchAsApplication(right, sum);
+					for (const rightSum of rightSums) {
+						const a = rightSum.operands[0];
+						const b = rightSum.operands[1];
+
+						const leftASum = matcher.hasApplication(sum, [left, a]);
+						if (leftASum !== null) {
+							const leftLeaning = matcher.hasApplication(sum, [
+								leftASum, b,
+							]);
+
+							if (leftLeaning !== null) {
+								const freshAssociative = matcher.merge(id, leftLeaning, rightSum.reason);
+								if (freshAssociative) {
+									change = "change";
+								}
+							}
+						}
+					}
+
+					return change;
+				}
+			};
+		},
+	},
+	// Integer subtraction function.
+	"Int-": {
+		signature: {
 			parameters: [
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
@@ -365,8 +511,10 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				},
 			],
 		},
-		"Int-unary": {
-			// Negate
+	},
+	// Integer additive inverse function.
+	"Int-unary": {
+		signature: {
 			parameters: [
 				varDef("value", ir.T_INT),
 			],
@@ -408,5 +556,18 @@ export function getBasicForeign(): Record<string, ir.FunctionSignature> {
 				},
 			],
 		},
-	};
-}
+		getInterpreter(foreignFns) {
+			return {
+				interpreter(a: unknown): unknown | null {
+					if (a === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else {
+						return -(a as bigint);
+					}
+				},
+			};
+		},
+	},
+};

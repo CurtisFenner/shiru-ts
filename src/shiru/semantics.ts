@@ -124,8 +124,6 @@ class ProgramContext {
 	/// given "canonical" name.of the entity.
 	private entitiesByCanonical: Record<string, NamedEntityDef> = {};
 
-	foreignSignatures: Record<string, ir.FunctionSignature> = {};
-
 	sourceContexts: Record<string, SourceContext> = {};
 
 	/// `uncheckedTypes` and `uncheckedConstraints` are initially `[]`, and
@@ -324,8 +322,6 @@ function collectInterfaceRecordEntity(
 // Collects the set of entities defined across all given sources.
 function collectAllEntities(sources: Record<string, grammar.Source>) {
 	const programContext = new ProgramContext();
-	programContext.foreignSignatures = builtin.getBasicForeign();
-
 	for (const sourceID in sources) {
 		const source = sources[sourceID];
 		const packageName = source.package.packageName.name;
@@ -1072,8 +1068,22 @@ class VariableStack {
 	private variables: Record<string, VariableStackInfo> = {};
 	private variableStack: string[] = [];
 	private blocks: VariableStackBlock[] = [];
+	private program: ir.Program;
 
 	private nextUnique = 1;
+
+	constructor(program: ir.Program) {
+		this.program = program;
+	}
+
+	getForeignSignature(foreignID: string): ir.FunctionSignature {
+		const signature = this.program.foreign[foreignID];
+		if (signature === undefined) {
+			throw new Error("VariableStack.getForeignSignature: no such operation `" + foreignID + "`");
+		}
+		return signature;
+	}
+
 	uniqueID(hint: string): ir.VariableID {
 		if (hint.indexOf("'") >= 0) {
 			throw new Error("hint must not contain `'`");
@@ -2368,13 +2378,8 @@ function compileBinaryOperator(
 		let expectedLhsType: ir.Type;
 		let expectedRhsType: ir.Type;
 		if (resolvedOperator.tag === "foreign-op") {
-			const signature = context.sourceContext.programContext.foreignSignatures[resolvedOperator.foreignID];
-			if (signature === undefined) {
-				throw new Error(
-					"resolveArithmeticOperator produced a bad foreign signature (`" + resolvedOperator
-					+ "`) for `" + displayType(leftResult.type)
-					+ "` `" + opStr + "`");
-			} else if (signature.parameters.length !== 2) {
+			const signature = stack.getForeignSignature(resolvedOperator.foreignID);
+			if (signature.parameters.length !== 2) {
 				throw new Error(
 					"Foreign signature `" + resolvedOperator + "` cannot be used as"
 					+ "an operator since it doesn't take exactly 2 parameters");
@@ -3047,6 +3052,7 @@ function compileBlock(
 }
 
 function compileFunctionSignature(
+	program: ir.Program,
 	signatureAST: grammar.FnSignature,
 	typeScope: TypeScope,
 	typeVariablesArePreBound: boolean,
@@ -3070,7 +3076,7 @@ function compileFunctionSignature(
 		postconditions: [],
 	};
 
-	const stack = new VariableStack();
+	const stack = new VariableStack(program);
 	for (const parameterAST of signatureAST.parameters.list) {
 		const t = compileType(parameterAST.t, typeScope, sourceContext, "check");
 		const parameterVariableID = parameterAST.name.name as ir.VariableID;
@@ -3158,9 +3164,8 @@ function compileMemberFunction(
 	fName: string,
 	sourceContext: SourceContext,
 	typeScope: TypeScope) {
-
 	const { signature, stack, context } = compileFunctionSignature(
-		def.ast.signature, typeScope, false, sourceContext);
+		program, def.ast.signature, typeScope, false, sourceContext);
 	const body = compileBlock(def.ast.body, stack, typeScope, context);
 
 	// Make the verifier prove that this function definitely does not exit
@@ -3295,7 +3300,7 @@ function compileImpl(
 		}
 		memberBindings.set(fnName.name, fnName.location);
 		const { signature, stack, context } = compileFunctionSignature(
-			fnAST.signature, impl.typeScope, false, sourceContext);
+			program, fnAST.signature, impl.typeScope, false, sourceContext);
 
 		checkImplMemberConformance(int, fnName, impl.constraint, signature, fnAST.signature);
 
@@ -3350,7 +3355,7 @@ function compileInterfaceEntity(
 	for (const fnName in entity.fns) {
 		const fn = entity.fns[fnName];
 		const signature = compileFunctionSignature(
-			fn.ast.signature, entity.typeScope, true, sourceContext);
+			program, fn.ast.signature, entity.typeScope, true, sourceContext);
 		compiled.signatures[fnName] = signature.signature;
 	}
 
@@ -3448,7 +3453,6 @@ function associateImplWithBase(
 	typeScope: TypeScopeI<null>,
 	implAST: grammar.ImplDefinition,
 ): void {
-
 	const headLocation = ir.locationSpan(implAST.impl.location, implAST.constraint.location);
 
 	// Check if an existing impl conflicts with this one.
@@ -3487,6 +3491,12 @@ function associateImplWithBase(
 		typeScope,
 		constraint,
 	});
+}
+
+function compileForeignSignatures(program: ir.Program): void {
+	for (const operation in builtin.foreignOperations) {
+		program.foreign[operation] = builtin.foreignOperations[operation].signature;
+	}
 }
 
 /// `compileSources` transforms the ASTs making up a Shiru program into a
@@ -3555,9 +3565,11 @@ export function compileSources(sources: Record<string, grammar.Source>): ir.Prog
 		interfaces: {},
 		records: {},
 		enums: {},
-		foreign: programContext.foreignSignatures,
+		foreign: {},
 		globalVTableFactories: {},
 	};
+
+	compileForeignSignatures(program);
 
 	for (let [canonicalEntityName, entity] of programContext.namedEntities()) {
 		compileEntity(program, programContext, canonicalEntityName, entity);

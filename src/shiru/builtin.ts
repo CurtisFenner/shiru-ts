@@ -54,6 +54,78 @@ export const foreignOperations: Record<string, {
 			},
 		}
 	},
+	"Boolean.not": {
+		signature: {
+			parameters: [
+				varDef("value", ir.T_BOOLEAN),
+			],
+			return_types: [ir.T_BOOLEAN],
+			type_parameters: [],
+			constraint_parameters: [],
+			preconditions: [],
+			postconditions: [
+				{
+					returnedValues: [varDef("returns", ir.T_BOOLEAN)],
+					postcondition: "post" as ir.VariableID,
+					block: {
+						ops: [
+							{
+								tag: "op-branch",
+								condition: "returns" as ir.VariableID,
+								trueBranch: {
+									ops: [
+										{
+											tag: "op-const",
+											type: "Boolean",
+											boolean: false,
+											destination: varDef("false", ir.T_BOOLEAN),
+										},
+										{
+											tag: "op-foreign",
+											operation: "Boolean==",
+											arguments: ["false", "returns"] as ir.VariableID[],
+											destinations: [varDef("cmp", ir.T_BOOLEAN)],
+										},
+									],
+								},
+								falseBranch: {
+									ops: [
+										{
+											tag: "op-const",
+											type: "Boolean",
+											boolean: true,
+											destination: varDef("true", ir.T_BOOLEAN),
+										},
+										{
+											tag: "op-foreign",
+											operation: "Boolean==",
+											arguments: ["true", "returns"] as ir.VariableID[],
+											destinations: [varDef("cmp", ir.T_BOOLEAN)],
+										},
+									],
+								},
+								destinations: [
+									{
+										trueSource: {
+											tag: "variable",
+											variable: "cmp" as ir.VariableID,
+										},
+										falseSource: {
+											tag: "variable",
+											variable: "cmp" as ir.VariableID,
+										},
+										destination: varDef("post", ir.T_BOOLEAN),
+									},
+								],
+							},
+						],
+					},
+					location: ir.NONE,
+				},
+			],
+			semantics: {},
+		},
+	},
 	// Integer less-than function.
 	"Int<": {
 		signature: {
@@ -101,6 +173,64 @@ export const foreignOperations: Record<string, {
 								left: "lessThanEqual" as ir.VariableID,
 								right: "returns" as ir.VariableID,
 								destination: varDef("post", ir.T_BOOLEAN),
+							},
+						],
+					},
+					location: ir.NONE,
+				},
+				{
+					// `<` forms a total order:
+					// (left < right) implies not (right < left)
+					// not (left < right) implies (right <= left).
+					returnedValues: [varDef("returns", ir.T_BOOLEAN)],
+					postcondition: "post" as ir.VariableID,
+					block: {
+						ops: [
+							{
+								tag: "op-branch",
+								condition: "returns" as ir.VariableID,
+								trueBranch: {
+									ops: [
+										{
+											tag: "op-foreign",
+											operation: "Int<",
+											arguments: [
+												"right" as ir.VariableID,
+												"left" as ir.VariableID,
+											],
+											destinations: [varDef("reverse", ir.T_BOOLEAN)],
+										},
+										{
+											tag: "op-foreign",
+											operation: "Boolean.not",
+											arguments: ["reverse" as ir.VariableID],
+											destinations: [varDef("notReverse", ir.T_BOOLEAN)],
+										},
+									],
+								},
+								falseBranch: {
+									ops: [
+										{
+											tag: "op-foreign",
+											operation: "Int<=",
+											arguments: ["right", "left"] as ir.VariableID[],
+											destinations: [varDef("post", ir.T_BOOLEAN)],
+										},
+									],
+								},
+								destinations: [
+									{
+										trueSource: {
+											tag: "variable",
+											variable: "notReverse" as ir.VariableID,
+										},
+										falseSource: {
+											tag: "variable",
+											variable: "post" as ir.VariableID,
+										},
+										destination: varDef("post", ir.T_BOOLEAN),
+									},
+								],
 							},
 						],
 					},

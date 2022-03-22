@@ -269,6 +269,9 @@ export const tests = {
 				if n < 0 {
 					return 0;
 				}
+				assert not (n < 0);
+				assert 0 <= n;
+				assert n bounds n - 1;
 				return R.dec(n - 1);
 			}
 		}
@@ -465,7 +468,8 @@ export const tests = {
 			}
 
 			fn tail(self: List[#T]): List[#T]
-			requires self is cons {
+			requires self is cons
+			ensures self bounds return {
 				return self.cons.tail;
 			}
 
@@ -882,6 +886,10 @@ export const tests = {
 			{ lefts: [2, 1], rights: [1, 2], less: false },
 			{ lefts: [], rights: [1], less: true },
 			{ lefts: [1], rights: [], less: false },
+			{ lefts: [1, 2, 3, 4], rights: [1], less: false },
+			{ lefts: [1], rights: [1, 2, 3, 4], less: true },
+			{ lefts: [1, 2, 3, 4], rights: [1, 9], less: true },
+			{ lefts: [1, 9], rights: [1, 2, 3, 4], less: false },
 		];
 
 		assert(lexicographicComparison([1, 2, 3], [4]), "is equal to", -1);

@@ -2010,7 +2010,7 @@ const infixOperatorPrecedence = {
 		"<": "left",
 		"<=": { group: "<" },
 		">": "left",
-		">=": { group: ">=" },
+		">=": { group: ">" },
 	} as Record<string, "left" | "right" | { group: string }>,
 };
 
@@ -2063,7 +2063,13 @@ function getOperatorPacketPrecedence(
 				? key
 				: associates.group;
 		while (typeof associates !== "string" && associates !== undefined) {
-			associates = infixOperatorPrecedence.associativities[associates.group];
+			const next: "left" | "right" | { group: string } = infixOperatorPrecedence.associativities[associates.group];
+
+			if (typeof next !== "string" && associates.group === next.group) {
+				throw new Error("getOperatorPacketPrecedence: infinite loop in associates group `" + next.group + "`");
+			}
+
+			associates = next;
 		}
 
 		return {
@@ -2373,7 +2379,6 @@ function compileBinaryOperator(
 		ops.push(...left.subops);
 		ops.push(...right.subops);
 		const resolvedOperator = resolveArithmeticOperator(leftResult, operation);
-		resolvedOperator.wrap
 
 		let expectedLhsType: ir.Type;
 		let expectedRhsType: ir.Type;

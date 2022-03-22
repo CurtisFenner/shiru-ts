@@ -116,6 +116,15 @@ export function formatVerificationFailure(
 				v.accessLocation,
 			],
 		};
+	} else if (v.tag === "failed-totality") {
+		return {
+			message: [
+				"The call at",
+				v.nonDecreasingCall,
+				"may result in an infinite cycle:",
+				...v.cycle,
+			],
+		};
 	} else {
 		const _: never = v;
 		throw new Error("unhandled `" + v["tag"] + "`");

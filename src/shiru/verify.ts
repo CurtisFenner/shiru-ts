@@ -1,13 +1,53 @@
 import * as builtin from "./builtin";
-import { DefaultMap } from "./data";
+import { DefaultMap, TrieMap } from "./data";
 import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
 import { displayType } from "./semantics";
 import * as uf from "./uf";
 
+class CallGraph<T> {
+	callsByStatic: DefaultMap<ir.FunctionID, CallGraphCall<T>[]> = new DefaultMap(_ => []);
+	callsByDynamic: DefaultMap<ir.InterfaceID, DefaultMap<string, CallGraphCall<T>[]>> = new DefaultMap(_ => new DefaultMap(_ => []));
+
+	addCall(from: CallGraphNode, call: CallGraphCall<T>) {
+		if (from.tag === "dynamic") {
+			this.callsByDynamic.get(from.interfaceID).get(from.memberID).push(call);
+		} else {
+			this.callsByStatic.get(from.functionID).push(call);
+		}
+	}
+}
+
+type CallGraphNode = { tag: "static", functionID: ir.FunctionID }
+	| { tag: "dynamic", interfaceID: ir.InterfaceID, memberID: string };
+
+interface CallGraphCall<T> {
+	/**
+	 * `caller` indicates Which function made the call.
+	 */
+	caller: CallGraphNode,
+
+	/**
+	 * `calling` indicates which function is being called.
+	 */
+	calling: CallGraphNode,
+
+	/**
+	 * `callLocation` indicates where in the source code the call is located.
+	 */
+	callLocation: ir.SourceLocation,
+
+	/**
+	 * Some data associated with this call.
+	 */
+	info: T,
+}
+
 class GlobalContext {
 	program: ir.Program;
 	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
+
+	decreasingCallGraph: CallGraph<"decreasing" | "non-decreasing"> = new CallGraph();
 
 	/**
 	 * Failure messages are accumulated in this list as failed verifications are
@@ -43,20 +83,24 @@ export function verifyProgram(
 	const context = new GlobalContext(program);
 	// Verify each interface signature.
 	for (const i in program.interfaces) {
-		verifyInterface(context, program.interfaces[i]);
+		verifyInterface(context, i as ir.InterfaceID, program.interfaces[i]);
 	}
 
 	// Verify each function body.
 	for (let f in program.functions) {
 		const impls = context.interfaceSignaturesByImplFn.get(f as ir.FunctionID);
-		verifyFunction(context, program.functions[f], impls);
+		verifyFunction(context, f as ir.FunctionID, program.functions[f], impls);
 	}
+
+	// Verify totality by inspecting the graph of non-decreasing calls.
+	context.failedVerifications.push(...verifyCallGraphTotality(context.decreasingCallGraph));
 
 	return context.failedVerifications;
 }
 
 function verifyInterface(
 	context: GlobalContext,
+	interfaceID: ir.InterfaceID,
 	trait: ir.IRInterface,
 ): void {
 	const state = new VerificationState(context);
@@ -72,8 +116,8 @@ function verifyInterface(
 
 	// Validate that the interface's contracts are well-formed, in that
 	// they explicitly guarantee their internal preconditions.
-	for (const member in trait.signatures) {
-		const signature = trait.signatures[member];
+	for (const memberID in trait.signatures) {
+		const signature = trait.signatures[memberID];
 
 		// Create the type scope for this member's type parameters.
 		const signatureTypeScope = new Map<ir.TypeVariableID, uf.ValueID>();
@@ -87,10 +131,21 @@ function verifyInterface(
 		const functionScope = state.pushVariableScope(true);
 
 		// Create symbolic values for the arguments.
+		const parameterTuple = [];
 		for (const parameter of signature.parameters) {
-			state.defineVariable(parameter,
-				state.smt.createVariable(parameter.type, parameter.variable));
+			const symbolicParameter = state.smt.createVariable(parameter.type, parameter.variable);
+			parameterTuple.push(symbolicParameter);
+			state.defineVariable(parameter, symbolicParameter);
 		}
+
+		const nonDecreasingCallSource: VerificationContext["nonDecreasingCallSource"] = {
+			source: {
+				tag: "dynamic",
+				interfaceID,
+				memberID,
+			},
+			limit: parameterTuple,
+		};
 
 		// Verify that preconditions explicitly state their own preconditions,
 		// and assume that they hold for postconditions.
@@ -99,6 +154,8 @@ function verifyInterface(
 				// Return ops within a precondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
+
+				nonDecreasingCallSource,
 			}, () => {
 				state.assumeGuaranteedInPath(precondition.precondition);
 			});
@@ -120,6 +177,8 @@ function verifyInterface(
 				// Return ops within a postcondition don't have their own
 				// postconditions.
 				verifyAtReturn: [],
+
+				nonDecreasingCallSource,
 			}, () => {
 				state.assumeGuaranteedInPath(postcondition.postcondition);
 			});
@@ -155,6 +214,7 @@ function indexInterfaceSignaturesByImplFn(
 
 function assumeStaticPreconditions(
 	global: GlobalContext,
+	callSource: CallGraphNode,
 	signature: ir.FunctionSignature,
 	valueArguments: uf.ValueID[],
 	typeArguments: uf.ValueID[],
@@ -186,6 +246,11 @@ function assumeStaticPreconditions(
 			// Return ops within a precondition block do not have their own
 			// postconditions.
 			verifyAtReturn: [],
+
+			nonDecreasingCallSource: {
+				source: callSource,
+				limit: valueArguments,
+			},
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
 		});
@@ -238,6 +303,10 @@ function assumeConstraintPreconditions(
 	for (const precondition of interfaceSignature.preconditions) {
 		traverseBlock(global, variableScope, precondition.block, state, {
 			verifyAtReturn: [],
+
+			// Any non-decreasing calls are attributed directly to the
+			// interface.
+			nonDecreasingCallSource: null,
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
 		});
@@ -361,6 +430,7 @@ function verifyPostconditionWellFormedness(
 /// checked.
 function verifyFunction(
 	global: GlobalContext,
+	functionID: ir.FunctionID,
 	f: ir.IRFunction,
 	impls: IndexedImpl[],
 ): void {
@@ -390,7 +460,15 @@ function verifyFunction(
 	}
 
 	// Execute and validate the function's preconditions.
-	assumeStaticPreconditions(global, f.signature, symbolicArguments, typeArguments, state);
+	const nonDecreasingCallSource: VerificationContext["nonDecreasingCallSource"] = {
+		source: {
+			tag: "static",
+			functionID,
+		},
+		limit: symbolicArguments,
+	};
+	assumeStaticPreconditions(
+		global, nonDecreasingCallSource.source, f.signature, symbolicArguments, typeArguments, state);
 
 	const verifyAtReturns: VerifyAtReturn[] = [];
 
@@ -415,6 +493,8 @@ function verifyFunction(
 	// ensured postconditions).
 	traverseBlock(global, new Map(), f.body, state, {
 		verifyAtReturn: verifyAtReturns,
+
+		nonDecreasingCallSource,
 	});
 
 	const lastOp = f.body.ops[f.body.ops.length - 1];
@@ -446,13 +526,24 @@ interface VerifyAtReturn {
 interface VerificationContext {
 	/// The post-conditions to verify at a ReturnStatement.
 	verifyAtReturn: VerifyAtReturn[],
+
+	/**
+	 * `nonDecreasingCallSource` indicates the function to attribute
+	 * non-decreasing calls to.
+	 * 
+	 * It is `null` when non-decreasingness ned not be checked (for example,
+	 * when traversing a recursive contract, or when checking the body of a
+	 * "partial" function).
+	 */
+	nonDecreasingCallSource: { source: CallGraphNode, limit: uf.ValueID[] } | null,
 }
 
 export type FailedVerification = FailedPreconditionVerification
 	| FailedAssertVerification
 	| FailedReturnVerification
 	| FailedPostconditionValidation
-	| FailedVariantVerification;
+	| FailedVariantVerification
+	| FailedTotality;
 
 export interface FailedPreconditionVerification {
 	tag: "failed-precondition",
@@ -481,6 +572,12 @@ export interface FailedVariantVerification {
 	variant: string,
 	enumType: string,
 	accessLocation: ir.SourceLocation,
+}
+
+export interface FailedTotality {
+	tag: "failed-totality",
+	nonDecreasingCall: ir.SourceLocation,
+	cycle: ir.SourceLocation[],
 }
 
 interface SignatureSet {
@@ -859,9 +956,13 @@ class VerificationState {
 		}
 	}
 
-	/// `pathConstraints` is the stack of conditional constraints that must be
-	/// true to reach a position in the program.
-	private pathConstraints: uf.ValueID[] = [];
+	/**
+	 * `pathConstraints` is the stack of conditional constraint-clauses that
+	 * must be true to reach the current position in the program.
+	 * 
+	 * Each clause is a disjunction of boolean-sorted constraints.
+	 */
+	private pathConstraints: uf.ValueID[][] = [];
 
 	constructor(
 		context: GlobalContext,
@@ -916,7 +1017,7 @@ class VerificationState {
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
-		this.pathConstraints.push(c);
+		this.pathConstraints.push([c]);
 	}
 
 	popPathConstraint() {
@@ -937,13 +1038,37 @@ class VerificationState {
 		return reply;
 	}
 
+	checkPossiblyNonDecreasingInPath(
+		left: uf.ValueID[],
+		right: uf.ValueID[],
+		reason: FailedVerification,
+	): uf.UFCounterexample | "refuted" {
+		const clausified = clausifyNotSmallerThan(this.smt, {
+			ltF: this.boundedByF,
+			eqF: this.eqF,
+			negF: this.notF,
+		}, left, right);
+
+		for (const clause of clausified) {
+			this.pathConstraints.push(clause);
+		}
+
+		const reply = this.checkReachable(reason);
+
+		for (const clause of clausified) {
+			this.pathConstraints.pop();
+		}
+
+		return reply;
+	}
+
 	/// `checkReachable` checks whether or not the conjunction of current path
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
-			this.smt.addConstraint([constraint]);
+			this.smt.addConstraint(constraint);
 		}
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
@@ -954,7 +1079,12 @@ class VerificationState {
 	/// constraints is considered not satisfiable in subsequent invocations of
 	/// the `smt` solver.
 	markPathUnreachable() {
-		const pathUnreachable = this.pathConstraints.map(e => this.negate(e));
+		const pathUnreachable = this.pathConstraints.map(e => {
+			if (e.length !== 1) {
+				throw new Error("VerificationState.markPathUnreachable: every path constraint must be a unit clause");
+			}
+			return this.negate(e[0]);
+		});
 		this.smt.addConstraint(pathUnreachable);
 	}
 
@@ -1173,10 +1303,10 @@ function traverse(
 		traverseForeignCall(global, op, state, context);
 		return;
 	} else if (op.tag === "op-static-call") {
-		traverseStaticCall(global, op, state);
+		traverseStaticCall(global, op, state, context);
 		return;
 	} else if (op.tag === "op-dynamic-call") {
-		traverseDynamicCall(global, op, state);
+		traverseDynamicCall(global, op, state, context);
 		return;
 	} else if (op.tag === "op-unreachable") {
 		// TODO: Better classify verification failures.
@@ -1282,6 +1412,10 @@ function checkPrecondition(
 		// Return ops within a precondition do not have their own
 		// postconditions.
 		verifyAtReturn: [],
+
+		// The non-decreasingness of a call within a precondition is check where
+		// the precondition is defined, rather than where it is invoked.
+		nonDecreasingCallSource: null,
 	}, () => {
 		if (state.checkPossiblyFalseInPath(precondition.precondition, reason) !== "refuted") {
 			global.failedVerifications.push(reason);
@@ -1313,6 +1447,10 @@ function assumePostcondition(
 	traverseBlock(global, valueArgs, postcondition.block, state, {
 		// Return ops within a postcondition do not have their own postconditions.
 		verifyAtReturn: [],
+
+		// The non-decreasingness of a call within a postcondition is checked
+		// where the postcondition is defined, rather than where it is invoked.
+		nonDecreasingCallSource: null,
 	}, () => {
 		state.assumeGuaranteedInPath(postcondition.postcondition);
 	});
@@ -1354,6 +1492,12 @@ function checkVerifyAtReturns(
 			// Return ops within a postcondition do not have their own
 			// postconditions.
 			verifyAtReturn: [],
+
+			// The non-decreasingness of calls within the postcondition must be
+			// established without specific access to the values being returned.
+			// It is checked along with the well-formedness of the
+			// postconditions, rather than at the return site.
+			nonDecreasingCallSource: null,
 		}, () => {
 			const reason: FailedVerification = {
 				tag: "failed-postcondition",
@@ -1379,6 +1523,7 @@ function traverseStaticCall(
 	global: GlobalContext,
 	op: ir.OpStaticCall,
 	state: VerificationState,
+	context: VerificationContext,
 ): void {
 	const fn = op.function;
 	const signature = global.program.functions[fn].signature;
@@ -1389,6 +1534,22 @@ function traverseStaticCall(
 	const valueArgs = [];
 	for (let i = 0; i < op.arguments.length; i++) {
 		valueArgs.push(state.getValue(op.arguments[i]).value);
+	}
+
+	if (context.nonDecreasingCallSource !== null) {
+		const refutation = state.checkPossiblyNonDecreasingInPath(valueArgs, context.nonDecreasingCallSource.limit, {
+			tag: "failed-totality",
+		} as any);
+
+		global.decreasingCallGraph.addCall(context.nonDecreasingCallSource.source, {
+			caller: context.nonDecreasingCallSource.source,
+			calling: {
+				tag: "static",
+				functionID: op.function,
+			},
+			callLocation: op.diagnostic_callsite,
+			info: refutation === "refuted" ? "decreasing" : "non-decreasing",
+		});
 	}
 
 	const typeArgs = [];
@@ -1459,6 +1620,7 @@ function traverseDynamicCall(
 	global: GlobalContext,
 	op: ir.OpDynamicCall,
 	state: VerificationState,
+	context: VerificationContext,
 ): void {
 	const constraint = global.program.interfaces[op.constraint.interface];
 	const signature = constraint.signatures[op.signature_id];
@@ -1479,6 +1641,23 @@ function traverseDynamicCall(
 	}
 
 	const valueArgs = op.arguments.map(v => state.getValue(v).value);
+
+	if (context.nonDecreasingCallSource !== null) {
+		const refutation = state.checkPossiblyNonDecreasingInPath(valueArgs, context.nonDecreasingCallSource.limit, {
+			tag: "failed-totality",
+		} as any);
+
+		global.decreasingCallGraph.addCall(context.nonDecreasingCallSource.source, {
+			caller: context.nonDecreasingCallSource.source,
+			calling: {
+				tag: "dynamic",
+				interfaceID: op.constraint.interface,
+				memberID: op.signature_id,
+			},
+			callLocation: op.diagnostic_callsite,
+			info: refutation === "refuted" ? "decreasing" : "non-decreasing",
+		});
+	}
 
 	for (const precondition of signature.preconditions) {
 		throw new Error("TODO");
@@ -1567,6 +1746,138 @@ function traverseForeignCall(
 	}
 }
 
+
+type CallGraphNodeKey = [boolean, "static", ir.FunctionID]
+	| [boolean, "dynamic", ir.InterfaceID, string];
+
+function verifyCallGraphExtractPath(
+	end: { node: CallGraphNode, hasNonDecreasing: boolean },
+	visited: TrieMap<CallGraphNodeKey, {
+		call: CallGraphCall<"decreasing" | "non-decreasing">,
+		parentKey: CallGraphNodeKey,
+	} | null>,
+): FailedVerification[] {
+	const failures: FailedVerification[] = [];
+	const calls: CallGraphCall<"decreasing" | "non-decreasing">[] = [];
+
+	if (!end.hasNonDecreasing) {
+		throw new Error("verifyCallGraphExtractPath: unexpected query for no non-decreasing");
+	}
+
+	if (end.node.tag !== "static") {
+		throw new Error("TODO");
+	}
+
+	let cursor: CallGraphNodeKey = [
+		end.hasNonDecreasing,
+		"static",
+		end.node.functionID,
+	];
+
+	while (cursor !== null) {
+		const call = visited.get(cursor);
+		if (call === undefined) {
+			throw new Error("verifyCallGraphExtractPath: ICE");
+		} else if (call === null) {
+			break;
+		}
+		calls.push(call.call);
+		cursor = call.parentKey
+	}
+
+	calls.reverse();
+
+	for (let i = 0; i < calls.length; i++) {
+		if (calls[i].info === "non-decreasing") {
+			const befores = calls.slice(0, i - 1).map(x => x.callLocation);
+			const afters = calls.slice(i + 1).map(x => x.callLocation);
+			failures.push({
+				tag: "failed-totality",
+				nonDecreasingCall: calls[i].callLocation,
+				cycle: afters.concat(befores),
+			});
+		}
+	}
+
+	return failures;
+}
+
+function verifyCallGraphTotality(
+	callGraph: CallGraph<"decreasing" | "non-decreasing">,
+): FailedVerification[] {
+	const nonTerminatingCycles: FailedVerification[] = [];
+
+	// Find every call cycle that contains at least one non-decreasing edge.
+	for (const [fnID] of callGraph.callsByStatic) {
+		const visited = new TrieMap<CallGraphNodeKey, {
+			call: CallGraphCall<"decreasing" | "non-decreasing">,
+			parentKey: CallGraphNodeKey
+		} | null>();
+		const startKey: CallGraphNodeKey = [false, "static", fnID];
+		if (visited.get(startKey) !== undefined) {
+			// A different search has already covered this node (and thus all
+			// its descendants)
+			continue;
+		}
+
+		// Perform breadth first search.
+		visited.put(startKey, null);
+		const q: { node: CallGraphNode, hasNonDecreasing: boolean }[] = [
+			{
+				node: { tag: "static", functionID: fnID },
+				hasNonDecreasing: false,
+			},
+		];
+
+		let cursor = 0;
+		while (cursor < q.length) {
+			const front = q[cursor];
+			if (front.node.tag === "dynamic") {
+				throw new Error("TODO");
+			} else {
+				if (front.node.functionID === fnID && front.hasNonDecreasing) {
+					// Found a cycle.
+					nonTerminatingCycles.push(...verifyCallGraphExtractPath(front, visited));
+					break;
+				}
+
+				const keyOfSource: CallGraphNodeKey = [
+					front.hasNonDecreasing,
+					"static",
+					front.node.functionID,
+				];
+
+				const calls = callGraph.callsByStatic.get(front.node.functionID);
+				for (const call of calls) {
+					const keyOfDestination: CallGraphNodeKey = call.calling.tag === "static"
+						? [
+							front.hasNonDecreasing || call.info === "non-decreasing",
+							"static",
+							call.calling.functionID,
+						]
+						: [
+							front.hasNonDecreasing || call.info === "non-decreasing",
+							"dynamic",
+							call.calling.interfaceID,
+							call.calling.memberID,
+						];
+
+					if (visited.get(keyOfDestination) === undefined) {
+						visited.put(keyOfDestination, { call, parentKey: keyOfSource });
+						q.push({
+							node: call.calling,
+							hasNonDecreasing: front.hasNonDecreasing || call.info === "non-decreasing",
+						});
+					}
+				}
+			}
+			cursor += 1;
+		}
+	}
+
+	return nonTerminatingCycles;
+}
+
 /// RETURNS a CNF clausification restricting solutions to those where the
 /// lexicographic comparison `lefts < rights` is NOT true.
 /// Note that when one tuple is a preifx of the other, the shorter tuple is
@@ -1597,6 +1908,9 @@ export function clausifyNotSmallerThan(
 
 		const ncmp = smt.createApplication(negF, [cmp]);
 		out.push([ncmp, ...neqs]);
+		if (left === undefined || right === undefined) {
+			break;
+		}
 		const eq = smt.createApplication(eqF, [left, right]);
 		const neq = smt.createApplication(negF, [eq]);
 		neqs.push(neq);

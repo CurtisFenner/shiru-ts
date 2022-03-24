@@ -71,7 +71,7 @@ export const foreignOperations: Record<string, {
 						ops: [
 							{
 								tag: "op-branch",
-								condition: "returns" as ir.VariableID,
+								condition: "value" as ir.VariableID,
 								trueBranch: {
 									ops: [
 										{

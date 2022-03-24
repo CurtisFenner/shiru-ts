@@ -1177,6 +1177,34 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
+	"recursive-postcondition-not-held"() {
+		const source = `
+		package example;
+
+		record R {
+			fn dec(n: Int): Int
+			ensures n < 0 implies return == 0
+			ensures return == R.dec(n - 1) {
+				if n < 0 {
+					return 0;
+				}
+				// The postcondition does not hold for n = 1.
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-postcondition",
+				postconditionLocation: { fileID: "test-file", offset: 105, length: 22 },
+				returnLocation: { fileID: "test-file", offset: 220, length: 9 },
+			}
+		]);
+	},
 };
 
 function lexicographicComparison<T>(left: T[], right: T[]): -1 | 0 | 1 {

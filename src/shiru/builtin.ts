@@ -1,3 +1,4 @@
+import * as egraph from "./egraph";
 import * as ir from "./ir";
 import * as uf from "./uf";
 
@@ -288,10 +289,10 @@ export const foreignOperations: Record<string, {
 								if (newLt === null) {
 									continue;
 								}
-								const reason = new Set([
-									...leftSum.reason,
-									...rightSum.reason,
-									...kQuery,
+								const reason = egraph.ReasonTree.withChildren([
+									leftSum.reason,
+									rightSum.reason,
+									kQuery,
 								]);
 								const fresh = matcher.merge(id, newLt, reason);
 								if (fresh) {
@@ -563,7 +564,7 @@ export const foreignOperations: Record<string, {
 					// Resolve commutativity by swapping all sums.
 					const swapped = matcher.hasApplication(sum, [right, left]);
 					if (swapped !== null) {
-						let freshCommutative = matcher.merge(id, swapped, new Set());
+						let freshCommutative = matcher.merge(id, swapped, new egraph.ReasonTree());
 						if (freshCommutative) {
 							change = "change";
 						}

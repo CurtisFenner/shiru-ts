@@ -57,19 +57,19 @@ export interface Semantics<Reason> {
 }
 
 function transitivitySearch<Reason>(
-	digraphOutEdges: DefaultMap<symbol, { reason: Set<Reason>, target: symbol }[]>,
+	digraphOutEdges: DefaultMap<symbol, { reason: egraph.ReasonTree<Reason>, target: symbol }[]>,
 	source: symbol,
 	target: symbol,
-): Set<Reason> | null {
+): egraph.ReasonTree<Reason> | null {
 	const reached = new Set<symbol>();
-	const frontier = [{ source, reason: new Set<Reason>() }];
+	const frontier = [{ source, reason: new egraph.ReasonTree<Reason>() }];
 
 	while (frontier.length !== 0) {
 		const top = frontier.pop()!;
 		const outEdges = digraphOutEdges.get(top.source);
 		for (const outEdge of outEdges) {
 			if (!reached.has(outEdge.target)) {
-				const reason = new Set([...top.reason, ...outEdge.reason]);
+				const reason = egraph.ReasonTree.withChildren([top.reason, outEdge.reason]);
 				if (outEdge.target === target) {
 					return reason;
 				}
@@ -121,18 +121,18 @@ export class EMatcher<Reason> {
 		return this.egraph.hasStructure(f, operands) as ValueID;
 	}
 
-	query(a: ValueID, b: ValueID): Set<Reason> | null {
+	query(a: ValueID, b: ValueID): egraph.ReasonTree<Reason> | null {
 		return this.egraph.query(a, b);
 	}
 
-	merge(a: ValueID, b: ValueID, reason: Set<Reason>): boolean {
+	merge(a: ValueID, b: ValueID, reason: egraph.ReasonTree<Reason>): boolean {
 		// TODO: Currently, this EMatcher's state is not updated when a merge is
 		//  performed, meaning that `matchAsApplication` does not return some
 		//  matches that it could.
 		return this.egraph.merge(a, b, reason);
 	}
 
-	evaluateConstant(value: ValueID): { constant: unknown, reason: Set<Reason> } | null {
+	evaluateConstant(value: ValueID): { constant: unknown, reason: egraph.ReasonTree<Reason> } | null {
 		return this.solver.evaluateConstant(value);
 	}
 
@@ -173,7 +173,7 @@ export class EMatcher<Reason> {
 		id: ValueID,
 		term: FnID,
 		operands: ValueID[],
-		reason: Set<Reason>,
+		reason: egraph.ReasonTree<Reason>,
 	}> {
 		const eclass = this.membersByClassAndTerm.get(this.egraph.getRepresentative(obj));
 		if (eclass === undefined) {
@@ -266,9 +266,12 @@ export class UFSolver<Reason> {
 	falseObject = this.createConstant(false);
 
 	/**
-	 * `refuteUsingTheory(assumptions)` returns a set of facts which the solver
-	 * has determined are inconsistent, or a model ("counterexample") when the
-	 * facts appear to be consistent.
+	 * `refuteUsingTheory(assumptions, queries)` returns a set of facts which
+	 * the solver has determined are inconsistent, or a model ("counterexample")
+	 * when the facts appear to be consistent.
+	 * 
+	 * The model will include boolean assignments for any `queries` that are
+	 * known.
 	 *
 	 * `refuteUsingTheory` is _sound with respect to refutation_; when
 	 * `"inconsistent"` is returned, the theory-solver has proven that the
@@ -276,14 +279,16 @@ export class UFSolver<Reason> {
 	 */
 	refuteUsingTheory(
 		assumptions: Assumption<Reason>[],
-	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample } {
+		queries: ValueID[] = [],
+	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample, answers: Map<ValueID, boolean> } {
 		this.egraph.reset();
 
 		for (const assumption of assumptions) {
 			const truthObject = assumption.assignment
 				? this.trueObject
 				: this.falseObject;
-			this.egraph.merge(truthObject, assumption.constraint, new Set([assumption.reason]));
+			this.egraph.merge(truthObject, assumption.constraint,
+				new egraph.ReasonTree([assumption.reason]));
 		}
 
 		const inconsistencies: Set<Reason>[] = [];
@@ -311,8 +316,7 @@ export class UFSolver<Reason> {
 			// object).
 			const falseClass = classes.get(this.falseObject)!;
 			for (const falseMember of falseClass.members) {
-				const reasonFalse = this.egraph.query(this.falseObject, falseMember.id)!;
-				const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], reasonFalse);
+				const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], falseMember.id as ValueID);
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
@@ -331,11 +335,20 @@ export class UFSolver<Reason> {
 			const constantInconsistency = this.findInconsistentConstants()
 				|| this.findTransitivityContradictions();
 			if (constantInconsistency !== null) {
-				inconsistencies.push(constantInconsistency);
+				inconsistencies.push(constantInconsistency.toSet());
 			}
 
 			if (inconsistencies.length !== 0) {
 				return { tag: "inconsistent", inconsistencies };
+			}
+		}
+
+		const answers = new Map<ValueID, boolean>();
+		for (const query of queries) {
+			if (this.egraph.query(query, this.falseObject) !== null) {
+				answers.set(query, false);
+			} else if (this.egraph.query(query, this.trueObject) !== null) {
+				answers.set(query, true);
 			}
 		}
 
@@ -344,13 +357,14 @@ export class UFSolver<Reason> {
 		return {
 			tag: "model",
 			model: { model: {} },
+			answers,
 		};
 	}
 
 	private handleTrueMember(
 		term: FnID | VarID,
 		operands: ValueID[],
-		reasonTrue: Set<Reason>,
+		reasonTrue: egraph.ReasonTree<Reason>,
 	): "change" | "no-change" | UFInconsistency<Reason> {
 		const semantics = this.fns.get(term as FnID);
 		if (semantics !== undefined) {
@@ -367,7 +381,7 @@ export class UFSolver<Reason> {
 	private handleFalseMember(
 		term: FnID | VarID,
 		operands: ValueID[],
-		reasonFalse: Set<Reason>,
+		member: ValueID,
 	): "change" | "no-change" | UFInconsistency<Reason> {
 		const semantics = this.fns.get(term as FnID)
 		if (semantics !== undefined) {
@@ -376,7 +390,7 @@ export class UFSolver<Reason> {
 				if (query !== null) {
 					return {
 						tag: "inconsistent",
-						inconsistencies: [new Set([...query, ...reasonFalse])],
+						inconsistencies: [egraph.ReasonTree.withChildren([query, this.egraph.query(this.falseObject, member)!]).toSet()],
 					};
 				}
 			}
@@ -389,7 +403,7 @@ export class UFSolver<Reason> {
 	 * `createConstant`) that is equal to the given value under the current
 	 * constraints.
 	 */
-	evaluateConstant(value: ValueID): { constant: unknown, reason: Set<Reason> } | null {
+	evaluateConstant(value: ValueID): { constant: unknown, reason: egraph.ReasonTree<Reason> } | null {
 		const constants = this.egraph.getTagged("constant", value);
 		if (constants.length === 0) {
 			return null;
@@ -466,7 +480,7 @@ export class UFSolver<Reason> {
 			id: ValueID,
 			operands: ValueID[],
 		): "change" | "no-change" => {
-			const reason = new Set<Reason>();
+			const operandReasons = [];
 			const args = [];
 			for (const operand of operands) {
 				// Search for a constant value among the objects equal to the
@@ -474,9 +488,7 @@ export class UFSolver<Reason> {
 				const operandConstant = matcher.evaluateConstant(operand as ValueID);
 				if (operandConstant !== null) {
 					args.push(operandConstant.constant);
-					for (const r of operandConstant.reason) {
-						reason.add(r);
-					}
+					operandReasons.push(operandConstant.reason);
 				} else {
 					args.push(null);
 				}
@@ -486,7 +498,7 @@ export class UFSolver<Reason> {
 			const result = interpreter(...args);
 			if (result !== null) {
 				const resultConstant = matcher.createConstant(result);
-				const changed = matcher.merge(resultConstant, id, reason);
+				const changed = matcher.merge(resultConstant, id, egraph.ReasonTree.withChildren(operandReasons));
 				if (changed) {
 					return "change";
 				}
@@ -495,9 +507,9 @@ export class UFSolver<Reason> {
 		});
 	}
 
-	private findTransitivityContradictions(): null | Set<Reason> {
+	private findTransitivityContradictions(): null | egraph.ReasonTree<Reason> {
 		// A directed graph for each transitive function.
-		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { reason: Set<Reason>, target: symbol }[]>>(f => {
+		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { reason: egraph.ReasonTree<Reason>, target: symbol }[]>>(f => {
 			return new DefaultMap(k => []);
 		});
 
@@ -525,11 +537,10 @@ export class UFSolver<Reason> {
 				const sourceRep = this.egraph.getRepresentative(source);
 				const targetRep = this.egraph.getRepresentative(target);
 
-				const reason = new Set([
-					...this.egraph.query(this.trueObject, app.id)!,
-					...this.egraph.query(source, sourceRep)!,
-					...this.egraph.query(target, targetRep)!,
-				]);
+				const reason = egraph.ReasonTree.withChildren([
+					this.egraph.query(this.trueObject, app.id)!,
+					this.egraph.query(source, sourceRep)!,
+					this.egraph.query(target, targetRep)!]);
 				digraphs.get(app.term as FnID).get(sourceRep).push({
 					reason: reason,
 					target: targetRep,
@@ -553,12 +564,11 @@ export class UFSolver<Reason> {
 				// a contradiction.
 				const transitiveChain = transitivitySearch(digraphs.get(app.term as FnID), sourceRep, targetRep);
 				if (transitiveChain !== null) {
-					return new Set([
-						...this.egraph.query(source, sourceRep)!,
-						...this.egraph.query(target, targetRep)!,
-						...transitiveChain,
-						...this.egraph.query(app.id, this.falseObject)!,
-					]);
+					return egraph.ReasonTree.withChildren([
+						this.egraph.query(source, sourceRep)!,
+						this.egraph.query(target, targetRep)!,
+						transitiveChain,
+						this.egraph.query(app.id, this.falseObject)!]);
 				}
 			}
 		}
@@ -587,12 +597,12 @@ export class UFSolver<Reason> {
 
 	/// findInconsistentConstants() returns a set of reasons which are
 	/// inconsistent because they imply that two distinct constants are equal.
-	private findInconsistentConstants(): null | Set<Reason> {
+	private findInconsistentConstants(): null | egraph.ReasonTree<Reason> {
 		for (const [id, _group] of this.egraph.getClasses()) {
 			const constants = this.egraph.getTagged("constant", id);
 			if (constants.length > 1) {
 				// Two distinct constants are in the same equality class.
-				return new Set([...this.egraph.query(constants[0].id, constants[1].id)!]);
+				return this.egraph.query(constants[0].id, constants[1].id)!;
 			}
 		}
 		return null;
@@ -681,12 +691,28 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 
 	private showLiteral(literal: number): string {
 		if (literal < 0) {
-			return "not " + this.showLiteral(-literal);
+			return "NOT " + this.showLiteral(-literal);
 		}
 		const object = this.objectByTerm.get(literal)!;
 		const pattern = /^Symbol\(egraph-term    (.+)    \)$/;
 		const match = String(object).match(pattern);
 		return (match && match[1]) || String(object);
+	}
+
+	private printClause(clause: number[], lines: string[]): void {
+		for (let i = 0; i < clause.length; i++) {
+			lines.push((i === 0 ? "and" : "") + "\tor\t" + this.showLiteral(clause[i]));
+		}
+	}
+
+	printInstance(lines: string[] = []): string[] {
+		for (const clause of this.unscopedClauses) {
+			this.printClause(clause, lines);
+		}
+		for (const clause of this.clauses) {
+			this.printClause(clause, lines);
+		}
+		return lines;
 	}
 
 	protected learnAdditional(
@@ -704,15 +730,24 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			});
 		}
 
-		const result = this.solver.refuteUsingTheory(assumptions);
+		const queries: ValueID[] = [];
+		for (const literal of unassigned) {
+			const term = literal > 0 ? +literal : -literal;
+			const constraint = this.objectByTerm.get(term)!;
+			queries.push(constraint);
+		}
+		const result = this.solver.refuteUsingTheory(assumptions, queries);
 
 		if (result.tag === "inconsistent") {
 			return "unsatisfiable";
 		}
 
-		// TODO: Make the solver report the truths of unassigned constraints
-		//  and return them here.
-		return [];
+		const learnedLiterals: number[] = [];
+		for (const [object, assignment] of result.answers) {
+			const term = this.termByObject.get(object);
+			learnedLiterals.push(assignment ? +term : -term);
+		}
+		return learnedLiterals;
 	}
 
 	rejectBooleanModel(literals: number[]): UFCounterexample | number[][] {
@@ -727,7 +762,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			});
 		}
 
-		const result = this.solver.refuteUsingTheory(assumptions);
+		const result = this.solver.refuteUsingTheory(assumptions, []);
 		if (result.tag === "inconsistent") {
 			const learnedClauses = [];
 			for (const inconsistent of result.inconsistencies) {

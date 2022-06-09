@@ -561,10 +561,11 @@ function showType(t: ir.Type): string {
 	throw new Error("showType: unknown tag `" + t["tag"] + "`");
 }
 
-export function printProgram(program: ir.Program, lines: string[]) {
+export function printProgram(program: ir.Program, lines: string[] = []): string[] {
 	for (let fnName in program.functions) {
 		printFn(program, fnName, lines);
 	}
+	return lines;
 }
 
 export function printFn(program: ir.Program, fnName: string, lines: string[]) {
@@ -580,14 +581,14 @@ export function printFn(program: ir.Program, fnName: string, lines: string[]) {
 	const typeParameters = context.typeVariables.map(x => "#" + x).join(", ");
 	lines.push("fn " + fnName + "[" + typeParameters + "](" + parameters.join(", ") + ")");
 	for (const pre of fn.signature.preconditions) {
-		lines.push("precondition (" + pre.precondition + ") {");
+		lines.push("precondition (requires " + pre.precondition + ") {");
 		printBlockContents(pre.block, "", context, lines);
 		lines.push("}");
 	}
 	for (const post of fn.signature.postconditions) {
-		lines.push("postcondition ("
+		lines.push("postcondition (returns "
 			+ post.returnedValues.map(printVariable).join(", ")
-			+ " -> " + post.postcondition + ") {");
+			+ " ensures " + post.postcondition + ") {");
 		printBlockContents(post.block, "", context, lines);
 		lines.push("}");
 	}
@@ -665,7 +666,7 @@ export function printOp(
 		return;
 	} else if (op.tag === "op-static-call") {
 		const targs = op.type_arguments.map(x => showType(x));
-		const lhs = op.destinations.map(x => printVariable).join(", ");
+		const lhs = op.destinations.map(printVariable).join(", ");
 		const rhs = op.function + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ");";
 		lines.push(indent + lhs + " = " + rhs);
 		return;
@@ -677,7 +678,7 @@ export function printOp(
 	} else if (op.tag === "op-dynamic-call") {
 		const f = op.constraint + "." + op.signature_id;
 		const targs = op.signature_type_arguments.map(x => showType(x));
-		const lhs = op.destinations.map(x => printVariable(x)).join(", ");
+		const lhs = op.destinations.map(printVariable).join(", ");
 		const rhs = f + "[" + targs.join(", ") + "](" + op.arguments.join(", ") + ")";
 		lines.push(indent + lhs + " = " + rhs + ";");
 		return;

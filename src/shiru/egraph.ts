@@ -7,6 +7,40 @@ export type EClassDescription<Term> = {
 	representative: EObject,
 };
 
+/**
+ * `ReasonTree` represents a tree of sets to be merged lazily.
+ */
+export class ReasonTree<T> {
+	private elementList?: T[];
+	private children: ReasonTree<T>[] = [];
+
+	constructor(elements?: T[]) {
+		this.elementList = elements;
+	}
+
+	static withChildren<T>(children: ReasonTree<T>[]): ReasonTree<T> {
+		const tree = new ReasonTree<T>();
+		tree.children = children;
+		return tree;
+	}
+
+	addChild(child: ReasonTree<T>): void {
+		this.children.push(child);
+	}
+
+	toSet(accumulate: Set<T> = new Set()): Set<T> {
+		if (this.elementList !== undefined) {
+			for (const leaf of this.elementList) {
+				accumulate.add(leaf);
+			}
+		}
+		for (const child of this.children) {
+			child.toSet(accumulate);
+		}
+		return accumulate;
+	}
+}
+
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
 export class EGraph<Term, Tag, Reason> {
 	/// `tagged.get(tag).get(rep)` is the set of IDs tagged with `tag` that are
@@ -16,7 +50,7 @@ export class EGraph<Term, Tag, Reason> {
 
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
-	private ds: DisjointSet<EObject, Set<Reason>> = new DisjointSet();
+	private ds: DisjointSet<EObject, ReasonTree<Reason>> = new DisjointSet();
 
 	reset(): void {
 		this.ds.reset();
@@ -83,6 +117,9 @@ export class EGraph<Term, Tag, Reason> {
 				if (operands.length !== 0) {
 					hint += "(";
 					hint += operands.map(x => {
+						if (x === undefined) {
+							throw new Error("EGraph.add: unexpected undefined");
+						}
 						const raw = String(x);
 						const match = String(x).match(/^Symbol\(egraph-term    (.+)    \)$/);
 						if (match) {
@@ -114,7 +151,7 @@ export class EGraph<Term, Tag, Reason> {
 	/// `reason` is a conjunction of `Reason`s.
 	/// merge(a, b, reason) returns false when this fact was already present in
 	/// this egrahp.
-	merge(a: EObject, b: EObject, reason: Set<Reason>): boolean {
+	merge(a: EObject, b: EObject, reason: ReasonTree<Reason>): boolean {
 		const arep = this.ds.representative(a);
 		const brep = this.ds.representative(b);
 		if (arep === brep) {
@@ -169,16 +206,14 @@ export class EGraph<Term, Tag, Reason> {
 					continue;
 				}
 
-				const conjunctionOfOperandReasons: Set<Reason> = new Set();
+				const conjunctionOfOperandReasons: ReasonTree<Reason> = new ReasonTree();
 				const firstDefinition = this.objectDefinition.get(first.id)!;
 				const secondDefinition = this.objectDefinition.get(second.id)!;
 				for (let i = 0; i < firstDefinition.operands.length; i++) {
 					const a = firstDefinition.operands[i];
 					const b = secondDefinition.operands[i];
-					const reasonOperandEqual = this.query(a, b)!
-					for (const r of reasonOperandEqual) {
-						conjunctionOfOperandReasons.add(r);
-					}
+					const reasonOperandEqual = this.query(a, b)!;
+					conjunctionOfOperandReasons.addChild(reasonOperandEqual);
 				}
 
 				this.merge(first.id, second.id, conjunctionOfOperandReasons);
@@ -194,9 +229,9 @@ export class EGraph<Term, Tag, Reason> {
 		return madeChanges;
 	}
 
-	private queryCache: Map<EObject, Map<EObject, Set<Reason>>> = new Map();
+	private queryCache: Map<EObject, Map<EObject, ReasonTree<Reason>>> = new Map();
 
-	query(a: EObject, b: EObject): null | Set<Reason> {
+	query(a: EObject, b: EObject): null | ReasonTree<Reason> {
 		if (!this.ds.compareEqual(a, b)) {
 			return null;
 		}
@@ -210,12 +245,7 @@ export class EGraph<Term, Tag, Reason> {
 		}
 
 		const seq = this.ds.explainEquality(a, b);
-		const all = new Set<Reason>();
-		for (const list of seq) {
-			for (const el of list) {
-				all.add(el);
-			}
-		}
+		const all = ReasonTree.withChildren(seq);
 
 		if (cacheA === undefined) {
 			cacheA = new Map();

@@ -5,16 +5,76 @@ import * as ir from "./ir";
 import { displayType } from "./semantics";
 import * as uf from "./uf";
 
-class CallGraph<T> {
-	callsByStatic: DefaultMap<ir.FunctionID, CallGraphCall<T>[]> = new DefaultMap(_ => []);
-	callsByDynamic: DefaultMap<ir.InterfaceID, DefaultMap<string, CallGraphCall<T>[]>> = new DefaultMap(_ => new DefaultMap(_ => []));
+type CallEdge<T> = {
+	from: CallGraphNode;
+	edge: CallGraphCall<T>;
+	to: CallGraphNode;
+};
+
+class CallGraph<T> implements DirectedGraph<CallGraphCall<T>, CallGraphNode> {
+	private callsByStatic = new DefaultMap<ir.FunctionID, { from: CallGraphNode, edges: CallEdge<T>[] }>(functionID => {
+		return { from: { tag: "static", functionID }, edges: [] };
+	});
+	private callsByDynamic = new DefaultMap<ir.InterfaceID, DefaultMap<string, { from: CallGraphNode, edges: CallEdge<T>[] }>>(interfaceID => {
+		return new DefaultMap(memberID => {
+			return { from: { tag: "dynamic", interfaceID, memberID }, edges: [] };
+		});
+	});
+
+	/**
+	 * `initialize(node)` adds the given node to this graph so that it is
+	 * included in subsequent calls to `this.getVertexes()`.
+	 * 
+	 * It also returns the canonical instance of the given `CallGraphNode`,
+	 * enabling comparisons by identity.
+	 */
+	initialize(node: CallGraphNode): CallGraphNode {
+		if (node.tag === "dynamic") {
+			return this.callsByDynamic.get(node.interfaceID).get(node.memberID).from;
+		} else {
+			return this.callsByStatic.get(node.functionID).from;
+		}
+	}
 
 	addCall(from: CallGraphNode, call: CallGraphCall<T>) {
+		from = this.initialize(from);
+		const to = this.initialize(call.calling);
 		if (from.tag === "dynamic") {
-			this.callsByDynamic.get(from.interfaceID).get(from.memberID).push(call);
+			this.callsByDynamic.get(from.interfaceID).get(from.memberID).edges.push({
+				from,
+				edge: call,
+				to,
+			});
 		} else {
-			this.callsByStatic.get(from.functionID).push(call);
+			this.callsByStatic.get(from.functionID).edges.push({
+				from,
+				edge: call,
+				to,
+			});
 		}
+	}
+
+	getOutgoing(from: CallGraphNode): Array<{
+		from: CallGraphNode, edge: CallGraphCall<T>, to: CallGraphNode,
+	}> {
+		if (from.tag === "dynamic") {
+			return this.callsByDynamic.get(from.interfaceID).get(from.memberID).edges;
+		} else {
+			return this.callsByStatic.get(from.functionID).edges;
+		}
+	}
+
+	getVertexes(): CallGraphNode[] {
+		const out = [];
+		for (const [_, { from }] of this.callsByStatic) {
+			out.push(from);
+		}
+		for (const [_, group] of this.callsByDynamic) {
+			for (const [_, { from }] of group) {
+				out.push(from);
+			}
+		}
+		return out;
 	}
 }
 
@@ -22,11 +82,6 @@ type CallGraphNode = { tag: "static", functionID: ir.FunctionID }
 	| { tag: "dynamic", interfaceID: ir.InterfaceID, memberID: string };
 
 interface CallGraphCall<T> {
-	/**
-	 * `caller` indicates Which function made the call.
-	 */
-	caller: CallGraphNode,
-
 	/**
 	 * `calling` indicates which function is being called.
 	 */
@@ -134,7 +189,7 @@ function verifyInterface(
 		const parameterTuple = [];
 		for (const parameter of signature.parameters) {
 			const symbolicParameter = state.smt.createVariable(parameter.type, parameter.variable);
-			parameterTuple.push(symbolicParameter);
+			parameterTuple.push({ value: symbolicParameter, type: parameter.type });
 			state.defineVariable(parameter, symbolicParameter);
 		}
 
@@ -240,6 +295,14 @@ function assumeStaticPreconditions(
 	state.pushTypeScope(typeScope);
 	const variableScope = state.pushVariableScope(true);
 
+	const objectArguments = [];
+	for (let i = 0; i < valueArguments.length; i++) {
+		objectArguments.push({
+			value: valueArguments[i],
+			type: signature.parameters[i].type,
+		});
+	}
+
 	for (let i = 0; i < signature.preconditions.length; i++) {
 		const precondition = signature.preconditions[i];
 		traverseBlock(global, valueScope, precondition.block, state, {
@@ -249,7 +312,7 @@ function assumeStaticPreconditions(
 
 			nonDecreasingCallSource: {
 				source: callSource,
-				limit: valueArguments,
+				limit: objectArguments,
 			},
 		}, () => {
 			state.assumeGuaranteedInPath(precondition.precondition);
@@ -450,6 +513,7 @@ function verifyFunction(
 
 	// Initialize the function's arguments.
 	const symbolicArguments = [];
+	const objectArguments = [];
 	for (let i = 0; i < f.signature.parameters.length; i++) {
 		const parameter = f.signature.parameters[i];
 
@@ -457,6 +521,7 @@ function verifyFunction(
 		const symbolic = state.smt.createVariable(parameter.type, parameter.variable);
 		state.defineVariable(parameter, symbolic);
 		symbolicArguments.push(symbolic);
+		objectArguments.push({ value: symbolic, type: parameter.type });
 	}
 
 	// Execute and validate the function's preconditions.
@@ -465,7 +530,7 @@ function verifyFunction(
 			tag: "static",
 			functionID,
 		},
-		limit: symbolicArguments,
+		limit: objectArguments,
 	};
 	assumeStaticPreconditions(
 		global, nonDecreasingCallSource.source, f.signature, symbolicArguments, typeArguments, state);
@@ -535,7 +600,10 @@ interface VerificationContext {
 	 * when traversing a recursive contract, or when checking the body of a
 	 * "partial" function).
 	 */
-	nonDecreasingCallSource: { source: CallGraphNode, limit: uf.ValueID[] } | null,
+	nonDecreasingCallSource: {
+		source: CallGraphNode,
+		limit: { value: uf.ValueID, type: ir.Type }[],
+	} | null,
 }
 
 export type FailedVerification = FailedPreconditionVerification
@@ -987,10 +1055,6 @@ class VerificationState {
 		return this.smt.createApplication(this.eqF, [left, right]);
 	}
 
-	isBoundedBy(left: uf.ValueID, right: uf.ValueID): uf.ValueID {
-		return this.smt.createApplication(this.boundedByF, [left, right]);
-	}
-
 	pushVariableScope(variableHiding: boolean): symbol {
 		const token = Symbol("variable-scope");
 		this.varScopes.push({
@@ -1039,15 +1103,20 @@ class VerificationState {
 	}
 
 	checkPossiblyNonDecreasingInPath(
-		left: uf.ValueID[],
-		right: uf.ValueID[],
+		left: { value: uf.ValueID, type: ir.Type }[],
+		right: { value: uf.ValueID, type: ir.Type }[],
 		reason: FailedVerification,
 	): uf.UFCounterexample | "refuted" {
 		const clausified = clausifyNotSmallerThan(this.smt, {
 			ltF: this.boundedByF,
 			eqF: this.eqF,
 			negF: this.notF,
-		}, left, right);
+		}, left.map(x => x.value), right.map(x => x.value));
+
+		for (let i = 0; i < left.length && i < right.length; i++) {
+			// Add type-specific postconditions for comparisons.
+			createBoundedByComparison(this, left[i], right[i]);
+		}
 
 		for (const clause of clausified) {
 			this.pathConstraints.push(clause);
@@ -1219,7 +1288,8 @@ function traverse(
 		const object = state.getValue(op.object);
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
-		state.smt.addUnscopedConstraint([state.isBoundedBy(fieldValue, object.value)]);
+		const bounding = state.smt.createApplication(state.boundedByF, [fieldValue, object.value]);
+		state.smt.addUnscopedConstraint([bounding]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1258,7 +1328,8 @@ function traverse(
 
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
-		state.smt.addUnscopedConstraint([state.isBoundedBy(variantValue, object.value)]);
+		const bounding = state.smt.createApplication(state.boundedByF, [variantValue, object.value]);
+		state.smt.addUnscopedConstraint([bounding]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1337,58 +1408,65 @@ function traverse(
 	} else if (op.tag === "op-proof-bounds") {
 		const smallerObject = state.getValue(op.smaller);
 		const largerObject = state.getValue(op.larger);
-
-		const smaller = smallerObject.value;
-		const larger = largerObject.value;
-
-		// Compare using the structural comparison.
-		const boundsComparison = state.isBoundedBy(smaller, larger);
-
-		if (ir.equalTypes(ir.T_INT, smallerObject.type) && ir.equalTypes(ir.T_INT, largerObject.type)) {
-			// Use a more specific definition for integers in terms of `Int<`:
-			// `a bounds b` means `b is strictly between -a and a`.
-			// For now, this will be restricted to the simpler condition
-			// `b between 0 and a`:
-			// `(0 < b < a) or (a < b < 0) or (a != 0 and b = 0).
-			const lessThanFns = state.foreign.get("Int<");
-			if (lessThanFns.length !== 1) {
-				throw new Error("verify: Expected `Int<` to have exactly one return");
-			}
-			const lessThanFn = lessThanFns[0];
-
-			const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
-
-			// (smaller == 0 and larger != 0) implies cmp
-			// (smaller != 0 or larger == 0) or cmp
-			state.smt.addUnscopedConstraint([
-				state.negate(state.eq(smaller, zero)),
-				state.eq(larger, zero),
-				boundsComparison,
-			]);
-
-			// (0 < smaller and smaller < larger) implies cmp
-			// (0 !< smaller or smaller !< larger) or cmp
-			state.smt.addUnscopedConstraint([
-				state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
-				state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
-				boundsComparison,
-			]);
-
-			// (larger < smaller and smaller < 0) implies cmp
-			// (larger !< smaller or smaller !< 0) or cmp
-			state.smt.addUnscopedConstraint([
-				state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
-				state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
-				boundsComparison,
-			]);
-		}
-
-		state.defineVariable(op.destination, boundsComparison);
+		state.defineVariable(op.destination, createBoundedByComparison(state, smallerObject, largerObject));
 		return;
 	}
 
 	const _: never = op;
 	throw new Error(`unhandled op ${op["tag"]}`);
+}
+
+function createBoundedByComparison(
+	state: VerificationState,
+	smallerObject: { value: uf.ValueID, type: ir.Type },
+	largerObject: { value: uf.ValueID, type: ir.Type },
+): uf.ValueID {
+	const smaller = smallerObject.value;
+	const larger = largerObject.value;
+
+	// Compare using the structural comparison.
+	const boundsComparison = state.smt.createApplication(state.boundedByF, [smaller, larger]);
+
+	if (ir.equalTypes(ir.T_INT, smallerObject.type) && ir.equalTypes(ir.T_INT, largerObject.type)) {
+		// Use a more specific definition for integers in terms of `Int<`:
+		// `a bounds b` means `b is strictly between -a and a`.
+		// For now, this will be restricted to the simpler condition
+		// `b between 0 and a`:
+		// `(0 < b < a) or (a < b < 0) or (a != 0 and b = 0).
+		const lessThanFns = state.foreign.get("Int<");
+		if (lessThanFns.length !== 1) {
+			throw new Error("verify: Expected `Int<` to have exactly one return");
+		}
+		const lessThanFn = lessThanFns[0];
+
+		const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+
+		// (smaller == 0 and larger != 0) implies cmp
+		// (smaller != 0 or larger == 0) or cmp
+		state.smt.addUnscopedConstraint([
+			state.negate(state.eq(smaller, zero)),
+			state.eq(larger, zero),
+			boundsComparison,
+		]);
+
+		// (0 < smaller and smaller < larger) implies cmp
+		// (0 !< smaller or smaller !< larger) or cmp
+		state.smt.addUnscopedConstraint([
+			state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
+			state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
+			boundsComparison,
+		]);
+
+		// (larger < smaller and smaller < 0) implies cmp
+		// (larger !< smaller or smaller !< 0) or cmp
+		state.smt.addUnscopedConstraint([
+			state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
+			state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
+			boundsComparison,
+		]);
+	}
+
+	return boundsComparison;
 }
 
 /**
@@ -1532,17 +1610,19 @@ function traverseStaticCall(
 	}
 
 	const valueArgs = [];
+	const objectArgs = [];
 	for (let i = 0; i < op.arguments.length; i++) {
-		valueArgs.push(state.getValue(op.arguments[i]).value);
+		const object = state.getValue(op.arguments[i]);
+		objectArgs.push(object);
+		valueArgs.push(object.value);
 	}
 
 	if (context.nonDecreasingCallSource !== null) {
-		const refutation = state.checkPossiblyNonDecreasingInPath(valueArgs, context.nonDecreasingCallSource.limit, {
+		const refutation = state.checkPossiblyNonDecreasingInPath(objectArgs, context.nonDecreasingCallSource.limit, {
 			tag: "failed-totality",
 		} as any);
 
 		global.decreasingCallGraph.addCall(context.nonDecreasingCallSource.source, {
-			caller: context.nonDecreasingCallSource.source,
 			calling: {
 				tag: "static",
 				functionID: op.function,
@@ -1640,15 +1720,15 @@ function traverseDynamicCall(
 		typeArgsList.push(id);
 	}
 
-	const valueArgs = op.arguments.map(v => state.getValue(v).value);
+	const objectArgs = op.arguments.map(v => state.getValue(v));
+	const valueArgs = objectArgs.map(x => x.value);
 
 	if (context.nonDecreasingCallSource !== null) {
-		const refutation = state.checkPossiblyNonDecreasingInPath(valueArgs, context.nonDecreasingCallSource.limit, {
+		const refutation = state.checkPossiblyNonDecreasingInPath(objectArgs, context.nonDecreasingCallSource.limit, {
 			tag: "failed-totality",
 		} as any);
 
 		global.decreasingCallGraph.addCall(context.nonDecreasingCallSource.source, {
-			caller: context.nonDecreasingCallSource.source,
 			calling: {
 				tag: "dynamic",
 				interfaceID: op.constraint.interface,
@@ -1746,60 +1826,17 @@ function traverseForeignCall(
 	}
 }
 
+interface DirectedGraph<E, V> {
+	/**
+	 * `getOutgoing(from)` returns the set of edges originating at vertex
+	 * `from`.
+	 * 
+	 * Each `to` is guaranteed to have the same identity when representing the
+	 * same vertex.
+	 */
+	getOutgoing(from: V): { from: V, edge: E, to: V }[];
 
-type CallGraphNodeKey = [boolean, "static", ir.FunctionID]
-	| [boolean, "dynamic", ir.InterfaceID, string];
-
-function verifyCallGraphExtractPath(
-	end: { node: CallGraphNode, hasNonDecreasing: boolean },
-	visited: TrieMap<CallGraphNodeKey, {
-		call: CallGraphCall<"decreasing" | "non-decreasing">,
-		parentKey: CallGraphNodeKey,
-	} | null>,
-): FailedVerification[] {
-	const failures: FailedVerification[] = [];
-	const calls: CallGraphCall<"decreasing" | "non-decreasing">[] = [];
-
-	if (!end.hasNonDecreasing) {
-		throw new Error("verifyCallGraphExtractPath: unexpected query for no non-decreasing");
-	}
-
-	if (end.node.tag !== "static") {
-		throw new Error("TODO");
-	}
-
-	let cursor: CallGraphNodeKey = [
-		end.hasNonDecreasing,
-		"static",
-		end.node.functionID,
-	];
-
-	while (cursor !== null) {
-		const call = visited.get(cursor);
-		if (call === undefined) {
-			throw new Error("verifyCallGraphExtractPath: ICE");
-		} else if (call === null) {
-			break;
-		}
-		calls.push(call.call);
-		cursor = call.parentKey
-	}
-
-	calls.reverse();
-
-	for (let i = 0; i < calls.length; i++) {
-		if (calls[i].info === "non-decreasing") {
-			const befores = calls.slice(0, i - 1).map(x => x.callLocation);
-			const afters = calls.slice(i + 1).map(x => x.callLocation);
-			failures.push({
-				tag: "failed-totality",
-				nonDecreasingCall: calls[i].callLocation,
-				cycle: afters.concat(befores),
-			});
-		}
-	}
-
-	return failures;
+	getVertexes(): V[];
 }
 
 function verifyCallGraphTotality(
@@ -1807,73 +1844,7 @@ function verifyCallGraphTotality(
 ): FailedVerification[] {
 	const nonTerminatingCycles: FailedVerification[] = [];
 
-	// Find every call cycle that contains at least one non-decreasing edge.
-	for (const [fnID] of callGraph.callsByStatic) {
-		const visited = new TrieMap<CallGraphNodeKey, {
-			call: CallGraphCall<"decreasing" | "non-decreasing">,
-			parentKey: CallGraphNodeKey
-		} | null>();
-		const startKey: CallGraphNodeKey = [false, "static", fnID];
-		if (visited.get(startKey) !== undefined) {
-			// A different search has already covered this node (and thus all
-			// its descendants)
-			continue;
-		}
-
-		// Perform breadth first search.
-		visited.put(startKey, null);
-		const q: { node: CallGraphNode, hasNonDecreasing: boolean }[] = [
-			{
-				node: { tag: "static", functionID: fnID },
-				hasNonDecreasing: false,
-			},
-		];
-
-		let cursor = 0;
-		while (cursor < q.length) {
-			const front = q[cursor];
-			if (front.node.tag === "dynamic") {
-				throw new Error("TODO");
-			} else {
-				if (front.node.functionID === fnID && front.hasNonDecreasing) {
-					// Found a cycle.
-					nonTerminatingCycles.push(...verifyCallGraphExtractPath(front, visited));
-					break;
-				}
-
-				const keyOfSource: CallGraphNodeKey = [
-					front.hasNonDecreasing,
-					"static",
-					front.node.functionID,
-				];
-
-				const calls = callGraph.callsByStatic.get(front.node.functionID);
-				for (const call of calls) {
-					const keyOfDestination: CallGraphNodeKey = call.calling.tag === "static"
-						? [
-							front.hasNonDecreasing || call.info === "non-decreasing",
-							"static",
-							call.calling.functionID,
-						]
-						: [
-							front.hasNonDecreasing || call.info === "non-decreasing",
-							"dynamic",
-							call.calling.interfaceID,
-							call.calling.memberID,
-						];
-
-					if (visited.get(keyOfDestination) === undefined) {
-						visited.put(keyOfDestination, { call, parentKey: keyOfSource });
-						q.push({
-							node: call.calling,
-							hasNonDecreasing: front.hasNonDecreasing || call.info === "non-decreasing",
-						});
-					}
-				}
-			}
-			cursor += 1;
-		}
-	}
+	// throw new Error("TODO");
 
 	return nonTerminatingCycles;
 }

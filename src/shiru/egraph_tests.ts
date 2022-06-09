@@ -8,7 +8,7 @@ function getTag<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Ta
 	}
 	return {
 		value: tags[0],
-		reason: eg.query(id, tags[0].id)!,
+		reason: eg.query(id, tags[0].id)!.toSet(),
 	};
 }
 
@@ -44,17 +44,17 @@ export const tests = {
 		assert(eg.query(three, four32), "is equal to", null);
 		assert(eg.query(four23, four32), "is equal to", null);
 
-		eg.merge(two, three, new Set(["two=three"]));
+		eg.merge(two, three, new egraph.ReasonTree(["two=three"]));
 		eg.updateCongruence();
 
-		assert(eg.query(two, three), "is equal to", new Set(["two=three"]));
+		assert(eg.query(two, three)?.toSet(), "is equal to", new Set(["two=three"]));
 		assert(eg.query(two, four23), "is equal to", null);
 		assert(eg.query(two, four32), "is equal to", null);
-		assert(eg.query(three, two), "is equal to", new Set(["two=three"]));
+		assert(eg.query(three, two)?.toSet(), "is equal to", new Set(["two=three"]));
 		assert(eg.query(three, four23), "is equal to", null);
 		assert(eg.query(three, four32), "is equal to", null);
-		assert(eg.query(four23, four32), "is equal to", new Set(["two=three"]));
-		assert(eg.query(four32, four23), "is equal to", new Set(["two=three"]));
+		assert(eg.query(four23, four32)?.toSet(), "is equal to", new Set(["two=three"]));
+		assert(eg.query(four32, four23)?.toSet(), "is equal to", new Set(["two=three"]));
 	},
 	"EGraph-facts"() {
 		const eg: egraph.EGraph<string | number, "constant", string> = new egraph.EGraph();
@@ -81,7 +81,7 @@ export const tests = {
 							if (cs !== null) {
 								const sum = (cs.values[0].term as number) + (cs.values[1].term as number);
 								const sumObject = eg.add(sum, [], "constant");
-								madeChange = eg.merge(sumObject, member.id, cs.reasons) || madeChange;
+								madeChange = eg.merge(sumObject, member.id, new egraph.ReasonTree([...cs.reasons])) || madeChange;
 							}
 						}
 					}
@@ -96,14 +96,14 @@ export const tests = {
 			assert(eg.getTagged("constant", alpha), "is equal to", []);
 		}
 
-		eg.merge(alpha, ten, new Set(["a=10"]));
-		eg.merge(gamma, ten, new Set(["g=10"]));
-		eg.merge(beta, twenty, new Set(["b=20"]));
+		eg.merge(alpha, ten, new egraph.ReasonTree(["a=10"]));
+		eg.merge(gamma, ten, new egraph.ReasonTree(["g=10"]));
+		eg.merge(beta, twenty, new egraph.ReasonTree(["b=20"]));
 
 		develop();
 
-		assert(eg.query(alpha, ten), "is equal to", specSupersetOf(new Set(["a=10"])));
-		assert(eg.query(gamma, ten), "is equal to", specSupersetOf(new Set(["g=10"])));
+		assert(eg.query(alpha, ten)?.toSet(), "is equal to", specSupersetOf(new Set(["a=10"])));
+		assert(eg.query(gamma, ten)?.toSet(), "is equal to", specSupersetOf(new Set(["g=10"])));
 
 		{
 			assert(getTag(eg, "constant", alpha), "is equal to", {
@@ -140,18 +140,18 @@ export const tests = {
 		const n9 = eg.add("9", []);
 
 		// Join all consecutive pairs.
-		eg.merge(n3, n4, new Set([34]));
-		eg.merge(n7, n8, new Set([78]));
-		eg.merge(n5, n6, new Set([56]));
-		eg.merge(n4, n5, new Set([45]));
-		eg.merge(n8, n9, new Set([89]));
-		eg.merge(n6, n7, new Set([67]));
-		eg.merge(n1, n2, new Set([12]));
-		eg.merge(n2, n3, new Set([23]));
+		eg.merge(n3, n4, new egraph.ReasonTree([34]));
+		eg.merge(n7, n8, new egraph.ReasonTree([78]));
+		eg.merge(n5, n6, new egraph.ReasonTree([56]));
+		eg.merge(n4, n5, new egraph.ReasonTree([45]));
+		eg.merge(n8, n9, new egraph.ReasonTree([89]));
+		eg.merge(n6, n7, new egraph.ReasonTree([67]));
+		eg.merge(n1, n2, new egraph.ReasonTree([12]));
+		eg.merge(n2, n3, new egraph.ReasonTree([23]));
 
 		// Verify that the reason n1 is equal to n9 includes all pairs, and not
 		// just a subset.
-		assert(eg.query(n1, n9), "is equal to", new Set([
+		assert(eg.query(n1, n9)?.toSet(), "is equal to", new Set([
 			12, 23, 34, 45, 56, 67, 78, 89
 		]));
 	},
@@ -162,9 +162,9 @@ export const tests = {
 		const c = eg.add("c", []);
 		const d = eg.add("d", []);
 
-		eg.merge(a, b, new Set([2]));
-		eg.merge(a, c, new Set([3]));
-		eg.merge(a, d, new Set([4]));
+		eg.merge(a, b, new egraph.ReasonTree([2]));
+		eg.merge(a, c, new egraph.ReasonTree([3]));
+		eg.merge(a, d, new egraph.ReasonTree([4]));
 
 		const fa = eg.add("f", [a]);
 		const fb = eg.add("f", [b]);
@@ -175,8 +175,8 @@ export const tests = {
 
 		// All three (and not just some) should become equal after a single step
 		// of congruence.
-		assert(eg.query(fa, fb), "is equal to", new Set([2]));
-		assert(eg.query(fa, fc), "is equal to", new Set([3]));
-		assert(eg.query(fa, fd), "is equal to", new Set([4]));
+		assert(eg.query(fa, fb)?.toSet(), "is equal to", new Set([2]));
+		assert(eg.query(fa, fc)?.toSet(), "is equal to", new Set([3]));
+		assert(eg.query(fa, fd)?.toSet(), "is equal to", new Set([4]));
 	},
 };

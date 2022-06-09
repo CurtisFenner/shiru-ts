@@ -522,6 +522,7 @@ export const tests = {
 		assert(result1, "is equal to", {
 			tag: "model",
 			model: { model: {} },
+			answers: new Map(),
 		});
 
 		const query2: uf.Assumption<number>[] = [

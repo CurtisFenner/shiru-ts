@@ -265,13 +265,11 @@ export const tests = {
 
 		record R {
 			fn dec(n: Int): Int
-			ensures n < 0 or return == R.dec(n - 1) {
-				if n < 0 {
+			ensures n <= 0 or return == R.dec(n - 1) {
+				if n <= 0 {
 					return 0;
 				}
-				assert not (n < 0);
-				assert 0 <= n;
-				assert n bounds n - 1;
+				assert 0 < n;
 				return R.dec(n - 1);
 			}
 		}

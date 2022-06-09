@@ -80,10 +80,25 @@ export class SATSolver {
 	/// `watchedNegative[n]`: see `watchedPositive`.
 	private watchedNegative: ClauseID[][] = [];
 
-	/// `assignments[n]` is the assignment of term `n`.
-	/// `0`: the term is unassigned.
-	/// `1`: the term is assigned "true".
-	/// `-1`: the term is assigned "false".
+	/**
+	 * `positiveLiteralCount[n]` is the number of times term `n` appears
+	 * positively in a clause.
+	 */
+	private positiveLiteralCount: number[] = [];
+
+	/**
+	 * `negativeLiteralCount[n]` is the number of times term `n` appears
+	 * negatively in a clause.
+	 */
+	private negativeLiteralCount: number[] = [];
+
+	/**
+	 * `assignments[n]` is the assignment of term `n`.
+	 * 
+	 * * `0`: the term is unassigned.
+	 * * `1`: the term is assigned "true".
+	 * * `-1`: the temr is assigned "false".
+	 */
 	private assignments: (-1 | 0 | 1)[] = [];
 
 	/// `assignmentStack` is a stack of literals that have been assigned.
@@ -120,6 +135,8 @@ export class SATSolver {
 			this.antecedentClause[i] = 0;
 			this.watchedPositive[i] = [];
 			this.watchedNegative[i] = [];
+			this.positiveLiteralCount[i] = 0;
+			this.negativeLiteralCount[i] = 0;
 		}
 	}
 
@@ -137,6 +154,33 @@ export class SATSolver {
 	 */
 	getAssignmentMap(): (-1 | 0 | 1)[] {
 		return this.assignments.slice(0);
+	}
+
+	/**
+	 * `getSimplifiedClauses()` returns the current set of clauses "simplified"
+	 * by the current assignment: only unsatisfied clauses are returned, and
+	 * only unrefuted literals in those clauses are included.
+	 */
+	getSimplifiedClauses(): Literal[][] {
+		const simplifiedClauses = [];
+		for (const clause of this.clauses) {
+			const simplifiedClause: Literal[] = [];
+			let hasSatisfied = false;
+			for (const literal of clause) {
+				const term = literal > 0 ? +literal : -literal;
+				const assignment = this.assignments[term];
+				if (assignment === 0) {
+					simplifiedClause.push(literal);
+				} else if (assignment * literal > 0) {
+					hasSatisfied = true;
+					break;
+				}
+			}
+			if (!hasSatisfied) {
+				simplifiedClauses.push(simplifiedClause);
+			}
+		}
+		return simplifiedClauses;
 	}
 
 	/**
@@ -251,9 +295,15 @@ export class SATSolver {
 				throw new Error("invariant violation");
 			}
 
+
+			// Use a heuristic to determine which assignment to use.
+			const decisionLiteral = this.positiveLiteralCount[decisionTerm] < this.negativeLiteralCount[decisionTerm]
+				? +decisionTerm
+				: -decisionTerm;
+
 			// Enqueue a free decision.
 			this.decisionLevel += 1;
-			const expectNull = unitLiterals.pushOrFindConflict(+decisionTerm, -1);
+			const expectNull = unitLiterals.pushOrFindConflict(decisionLiteral, -1);
 			if (expectNull !== null) {
 				throw new Error("invariant violation: expected no conflict when no unit literals were found");
 			}
@@ -412,7 +462,7 @@ export class SATSolver {
 	}
 
 	/// Adds a clause to this CNF-SAT instance.
-	/// The array `clause` is interpreted as a conjunction ("and") of its
+	/// The array `clause` is interpreted as a disjunction ("or") of its
 	/// contained literals.
 	/// A clause is satisfied when at least one of its literals is satisfied.
 	addClause(unprocessedClause: Literal[]): ClauseID {
@@ -435,6 +485,15 @@ export class SATSolver {
 			} else {
 				termFirstLiteral[term] = literal;
 				clause.push(literal);
+			}
+		}
+
+		for (let i = 0; i < clause.length; i++) {
+			const literal = clause[i];
+			if (literal > 0) {
+				this.positiveLiteralCount[+literal] += 1;
+			} else {
+				this.negativeLiteralCount[-literal] += 1;
 			}
 		}
 

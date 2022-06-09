@@ -73,23 +73,32 @@ export abstract class SMTSolver<E, Counterexample> {
 			solver.addClause(clause);
 		}
 
-		// Before attempting a full CDCL(T) search loop, perform BCP to get a
-		// partial assignment and ask the theory solver if it is satisfiable.
-		const initial = solver.fastPartialSolve();
-		if (initial === "unsatisfiable") {
-			return "refuted";
-		}
-		const partialAssignment = solver.getAssignment();
-		const unassigned = [];
-		const partialAssignmentMap = solver.getAssignmentMap();
-		for (let term = 1; term < partialAssignmentMap.length; term += 1) {
-			if (partialAssignmentMap[term] === 0) {
-				unassigned.push(term);
+		while (true) {
+			// Before attempting a full CDCL(T) search loop, perform BCP to get a
+			// partial assignment and ask the theory solver if it is satisfiable.
+			const initial = solver.fastPartialSolve();
+			if (initial === "unsatisfiable") {
+				return "refuted";
 			}
-		}
-		const additional = this.learnAdditional(partialAssignment, unassigned);
-		if (additional === "unsatisfiable") {
-			return "refuted";
+			const partialAssignment = solver.getAssignment();
+			const unassigned = [];
+			const partialAssignmentMap = solver.getAssignmentMap();
+			for (let term = 1; term < partialAssignmentMap.length; term += 1) {
+				if (partialAssignmentMap[term] === 0) {
+					unassigned.push(term);
+				}
+			}
+			const additional = this.learnAdditional(partialAssignment, unassigned);
+			if (additional === "unsatisfiable") {
+				return "refuted";
+			} else if (additional.length === 0) {
+				// No unit clauses were added.
+				break;
+			}
+			for (const literal of additional) {
+				// Add additional unit clauses that are implied by the theory.
+				solver.addClause([literal]);
+			}
 		}
 
 		while (true) {

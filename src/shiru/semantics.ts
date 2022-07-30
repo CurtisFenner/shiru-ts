@@ -1976,6 +1976,12 @@ function resolveArithmeticOperator(
 		}
 	}
 
+	if (ir.equalTypes(ir.T_BYTES, value.type)) {
+		if (opStr === "++") {
+			return { tag: "foreign-op", foreignID: "Bytes++" as ir.FunctionID, wrap: null };
+		}
+	}
+
 	if (opStr === "==") {
 		return { tag: "proof-equal-op", wrap: null };
 	} else if (opStr === "!=") {
@@ -2638,6 +2644,7 @@ function compileExpression(
 	while (operatorPackets.flat().length !== 0) {
 		// Find operators which are higher precedence than their neighbors.
 		const pointing = new DefaultMap<OperatorPacketElement, Operand[]>(() => []);
+		const unclear = [];
 		for (const operand of operands) {
 			const leftPacket = operatorPackets[operand.left];
 			const rightPacket = operatorPackets[operand.right];
@@ -2655,6 +2662,8 @@ function compileExpression(
 						// Combine with the operator on the right.
 						pointing.get(rightOperator.element).push(operand);
 					}
+				} else {
+					unclear.push(operand);
 				}
 			} else if (leftOperator.precedence < rightOperator.precedence) {
 				// Combine with the operator on the right.
@@ -2717,7 +2726,7 @@ function compileExpression(
 		}
 
 		if (replacements.size === 0) {
-			for (const operand of operands) {
+			for (const operand of unclear) {
 				const leftOps = operatorPackets[operand.left];
 				const rightOps = operatorPackets[operand.right];
 				if (leftOps.length !== 0 && rightOps.length !== 0) {
@@ -3284,10 +3293,13 @@ function compileImpl(
 	const sourceContext = programContext.sourceContexts[impl.sourceID];
 	const int = programContext.getInterface(impl.constraint.interface);
 
+	const closureConstraints = impl.typeScope.constraints.map(x => x.constraint);
+
 	const vtable: ir.VTableFactory = {
 		for_any: impl.typeScope.typeVariableList,
 		provides: impl.constraint,
 		entries: {},
+		closures: closureConstraints,
 	};
 
 	const canonicalImplName = `impl__${namingInterface}__${namingRecord}__${namingCount}`;
@@ -3309,7 +3321,7 @@ function compileImpl(
 
 		checkImplMemberConformance(int, fnName, impl.constraint, signature, fnAST.signature);
 
-		const body = compileBlock(fnAST.body, stack, int.typeScope, context);
+		const body = compileBlock(fnAST.body, stack, impl.typeScope, context);
 
 		// Make the verifier prove that this function definitely does not exit
 		// without returning.
@@ -3321,13 +3333,16 @@ function compileImpl(
 			});
 		}
 
-		// TODO: Handle signature type constraints.
-		const closureConstraints = impl.typeScope.constraints.map(x => x.constraint);
 		const canonicalMemberName = `${canonicalImplName}__${fnName.name}`;
 		program.functions[canonicalMemberName] = { signature, body };
+		const constraintParameters: ir.VTableEntryConstraintSource[] = [];
+		for (let i = 0; i < impl.typeScope.constraints.length; i++) {
+			// TODO: Handle signature constraint parameters.
+			constraintParameters.push({ source: "closure", closureIndex: i });
+		}
 		vtable.entries[fnName.name] = {
 			implementation: canonicalMemberName as ir.FunctionID,
-			constraint_parameters: closureConstraints,
+			constraint_parameters: constraintParameters,
 		};
 	}
 

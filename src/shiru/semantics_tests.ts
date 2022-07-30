@@ -1318,4 +1318,106 @@ export const tests = {
 			],
 		});
 	},
+	"impl-cannot-refer-to-interface-type-parameter"() {
+		const source = `
+			package example;
+	
+			interface Consumer[#X] {
+				fn consume(t: #X): Int;
+			}
+
+			record FromAny[#T] {
+				fn zero(): Int {
+					return 0;
+				}
+			}
+
+			record Empty {}
+
+			impl Empty is Consumer[String] {
+				fn consume(t: String): Int {
+					return FromAny[#X].zero();
+				}
+			}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"Type variable `#X` has not been defined, but it was referenced at",
+				{ fileID: "test-file", offset: 266, length: 2 },
+			],
+		});
+	},
+	"generic-impl"() {
+		const source = `
+		package example;
+
+		interface Show {
+			fn show(t: This): String;
+		}
+		
+		record Empty {
+		}
+		
+		impl Empty is Show {
+			fn show(s: Empty): String {
+				return "Empty{}";
+			}
+		}
+		
+		record Box[#T] {
+			var boxed: #T;
+		}
+		
+		impl [#T | #T is Show] Box[#T] is Show {
+			fn show(s: Box[#T]): String {
+				return "Box{boxed = " ++ ((#T is Show).show(s.boxed) ++ "}");
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		semantics.compileSources({ ast });
+	},
+	"comparison-has-higher-precedence-than-addition"() {
+		const source = `
+		package example;
+
+		record R {
+			fn f(): Boolean {
+				return 1 + 2 == 3;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		semantics.compileSources({ ast });
+	},
+	"plus-requires-parentheses"() {
+		const source = `
+		package example;
+
+		record R {
+			fn f(): Boolean {
+				return true and 3 < 4 > 5;
+			}
+		}
+		`;
+
+		assert(() => {
+			const ast = grammar.parseSource(source, "test-file");
+			semantics.compileSources({ ast })
+		}, "throws", {
+			message: [
+				"The operators `<` and `>` at",
+				{ fileID: "test-file", offset: 77, length: 1 },
+				"and at",
+				{ fileID: "test-file", offset: 81, length: 1 },
+				"have ambiguous precedence, and require parentheses to specify precedence."
+			],
+		});
+	},
 };

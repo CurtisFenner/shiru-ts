@@ -701,4 +701,27 @@ export const foreignOperations: Record<string, {
 			};
 		},
 	},
+	"Bytes++": {
+		signature: {
+			parameters: [
+				varDef("left", ir.T_BYTES),
+				varDef("right", ir.T_BYTES),
+			],
+			return_types: [ir.T_BYTES],
+			type_parameters: [],
+			constraint_parameters: [],
+			postconditions: [],
+			preconditions: [],
+		},
+		getInterpreter() {
+			return {
+				interpreter(a: unknown, b: unknown): unknown | null {
+					if (typeof a === "string" && typeof b === "string") {
+						return a + b;
+					}
+					return null;
+				},
+			};
+		}
+	},
 };

@@ -288,6 +288,7 @@ export const tests = {
 						subjects: [typeCompound("FortyTwo")],
 					},
 					for_any: [],
+					closures: [],
 					entries: {
 						"get": {
 							implementation: "fortyTwo" as ir.FunctionID,
@@ -376,6 +377,7 @@ export const tests = {
 						subjects: [typeCompound("Thirteen")],
 					},
 					for_any: [],
+					closures: [],
 					entries: {
 						"get": {
 							implementation: "thirteen" as ir.FunctionID,
@@ -491,6 +493,7 @@ export const tests = {
 						subjects: [typeCompound("Seven")],
 					},
 					for_any: [],
+					closures: [],
 					entries: {
 						"get": {
 							implementation: "seven" as ir.FunctionID,
@@ -504,13 +507,19 @@ export const tests = {
 						interface: "Favorite" as ir.InterfaceID,
 						subjects: [typeCompound("Squarer", typeVariable("T"))],
 					},
+					closures: [
+						{
+							interface: "Favorite" as ir.InterfaceID,
+							subjects: [typeVariable("T")]
+						},
+					],
 					entries: {
 						"get": {
 							implementation: "squareFavorite" as ir.FunctionID,
 							constraint_parameters: [
 								{
-									interface: "Favorite" as ir.InterfaceID,
-									subjects: [typeVariable("T")]
+									source: "closure",
+									closureIndex: 0,
 								},
 							],
 						},
@@ -800,10 +809,11 @@ export const tests = {
 						interface: "AbstractProducer" as ir.InterfaceID,
 						subjects: [typeCompound("AbstractProducerImpl")],
 					},
+					closures: [],
 					entries: {
 						"abstractProduce": {
 							implementation: "abstractProducer" as ir.FunctionID,
-							constraint_parameters: [0],
+							constraint_parameters: [{ source: "signature", signatureIndex: 0 }],
 						},
 					},
 				},
@@ -813,6 +823,7 @@ export const tests = {
 						interface: "Producer" as ir.InterfaceID,
 						subjects: [typeCompound("IntProducer"), ir.T_INT],
 					},
+					closures: [],
 					entries: {
 						"produce": {
 							implementation: "produceInt" as ir.FunctionID,

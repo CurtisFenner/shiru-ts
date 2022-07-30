@@ -30,12 +30,13 @@ export type IntValue = {
 
 interface VTable {
 	tag: "dictionary",
+	closures: VTable[],
 	entries: Record<string, VTableEntry>,
 }
 
 interface VTableEntry {
 	implementation: ir.FunctionID,
-	closureConstraints: VTable[],
+	closureConstraints: ir.VTableEntryConstraintSource[],
 }
 
 interface ConstraintsContext {
@@ -50,19 +51,10 @@ interface ConstraintsContext {
 	}[]>,
 }
 
-// N.B.: Only uses "runtime" fields.
-type VTableProducer = (c: ConstraintsContext, callsite: VTable[]) => VTable;
-
-/// `makeVTableProducer` scans the "search" fields of the context, and produces
-/// a `VTableProducer` that only consumes the "runtime" fields of the context.j
-/// The returned producer can thus be cached, avoiding the expensive search
-/// process, for subsequent calls which have different runtime contexts but the
-/// same search context.
-function makeVTableProducer(
-	// N.B.: Only uses "search" fields.
+function findVTable(
 	context: ConstraintsContext,
 	constraint: ir.ConstraintParameter,
-): VTableProducer {
+): VTable {
 	const locals = context.local.get(constraint.interface);
 	if (locals !== undefined) {
 		for (let i = 0; i < locals.length; i++) {
@@ -70,61 +62,40 @@ function makeVTableProducer(
 			const local = locals[ti];
 			const matched = matchTypes([], local.provides.subjects, constraint.subjects);
 			if (matched !== null) {
-				return (runtimeCtx, callsite) => {
-					return runtimeCtx.local.get(constraint.interface)![ti].vtable;
-				};
+				return local.vtable;
 			}
 		}
 	}
+
 
 	const globals = context.global.get(constraint.interface);
 	if (globals !== undefined) {
 		for (const k in globals) {
 			const global = globals[k];
 			const matched = matchTypes(global.for_any, global.provides.subjects, constraint.subjects);
-			if (matched !== null) {
-				const entrySchema: Record<string, {
-					implementation: ir.FunctionID,
-					closureConstraints: (number | VTableProducer)[],
-				}> = {};
-				for (const s in global.entries) {
-					const entry = global.entries[s];
-					entrySchema[s] = {
-						implementation: entry.implementation,
-						closureConstraints: entry.constraint_parameters.map(x => {
-							if (typeof x === "number") {
-								return x;
-							}
-							return makeVTableProducer(context, {
-								interface: x.interface,
-								subjects: x.subjects.map(t => ir.typeSubstitute(t, matched)),
-							});
-						}),
-					};
-				}
+			if (matched === null) {
+				continue;
+			}
 
-				return (runtimeCtx, callsite) => {
-					const entries: Record<string, VTableEntry> = {};
-					for (const s in entrySchema) {
-						const schema = entrySchema[s];
-						entries[s] = {
-							implementation: schema.implementation,
-							closureConstraints: schema.closureConstraints.map(x => {
-								if (typeof x === "number") {
-									return callsite[x];
-								} else {
-									return x(runtimeCtx, callsite);
-								}
-							}),
-						};
-					}
+			// Resolve all closure vtables.
+			const closures = global.closures.map(c => {
+				return findVTable(context, ir.constraintSubstitute(c, matched));
+			});
 
-					return {
-						tag: "dictionary",
-						entries,
-					};
+			const entries: Record<string, VTableEntry> = {};
+			for (const memberName in global.entries) {
+				const def = global.entries[memberName];
+				entries[memberName] = {
+					implementation: def.implementation,
+					closureConstraints: def.constraint_parameters,
 				};
 			}
+
+			return {
+				tag: "dictionary",
+				closures,
+				entries,
+			};
 		}
 	}
 
@@ -404,14 +375,8 @@ function* interpretOp(
 		const signature = context.program.functions[op.function].signature;
 		const instantiation = ir.typeArgumentsMap(signature.type_parameters, op.type_arguments);
 		for (let constraintTemplate of signature.constraint_parameters) {
-			const subjects = constraintTemplate.subjects.map(t => ir.typeSubstitute(t, instantiation));
-			const constraint: ir.ConstraintParameter = {
-				interface: constraintTemplate.interface,
-				subjects,
-			}
-
-			const vtableProducer = makeVTableProducer(context.constraintContext, constraint);
-			const vtable = vtableProducer(context.constraintContext, []);
+			const constraint = ir.constraintSubstitute(constraintTemplate, instantiation);
+			const vtable = findVTable(context.constraintContext, constraint);
 			constraintArgs.push(vtable);
 		}
 
@@ -451,10 +416,11 @@ function* interpretOp(
 		return result;
 	} else if (op.tag === "op-dynamic-call") {
 		const args = op.arguments.map(arg => frame.load(arg));
-		const vtableProducer = makeVTableProducer(context.constraintContext, op.constraint);
+		const vtable = findVTable(context.constraintContext, op.constraint);
+
+		// Construct the (implicitly) passed type constraints:
 		const int = context.program.interfaces[op.constraint.interface];
 		const signature = int.signatures[op.signature_id];
-
 		const interfaceMap = ir.typeArgumentsMap(int.type_parameters, op.constraint.subjects);
 		const signatureMap = ir.typeArgumentsMap(signature.type_parameters, op.signature_type_arguments);
 		const substitutionMap = new Map([...interfaceMap.entries(), ...signatureMap.entries()]);
@@ -462,14 +428,19 @@ function* interpretOp(
 		const callsite: VTable[] = [];
 		for (const genericConstraint of signature.constraint_parameters) {
 			const neededConstraint = ir.constraintSubstitute(genericConstraint, substitutionMap);
-			const argumentProducer = makeVTableProducer(context.constraintContext, neededConstraint);
-			const callsiteVTable = argumentProducer(context.constraintContext, []);
-			callsite.push(callsiteVTable);
+			const fulfillingVtable = findVTable(context.constraintContext, neededConstraint);
+			callsite.push(fulfillingVtable);
 		}
-		const vtable = vtableProducer(context.constraintContext, callsite);
 
 		const spec = vtable.entries[op.signature_id];
-		const constraintArgs = spec.closureConstraints;
+		const constraintArgs: VTable[] = [];
+		for (const source of spec.closureConstraints) {
+			if (source.source === "closure") {
+				constraintArgs.push(vtable.closures[source.closureIndex]);
+			} else {
+				constraintArgs.push(callsite[source.signatureIndex]);
+			}
+		}
 
 		const result = yield* interpretCall(spec.implementation, args, constraintArgs, context);
 		for (let i = 0; i < result.length; i++) {

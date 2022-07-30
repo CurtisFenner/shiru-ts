@@ -472,22 +472,37 @@ export interface VTableFactory {
 	/// provides.
 	provides: ConstraintParameter,
 
+	/**
+	 * `closures` is the list of constraint parameters that must be captured at
+	 * the construction time of this v-table, and which is available to entries
+	 * in this v-table. 
+	 * 
+	 * These constraints may reference type variables in the `for_any` of this
+	 * `VTableFactory`.
+	 */
+	closures: ConstraintParameter[],
+
 	// The functions to call for the corresponding signatures in the interface.
 	entries: Record<string, VTableFactoryEntry>,
 };
 
+export type VTableEntryConstraintSource =
+	{ source: "closure", closureIndex: number }
+	| { source: "signature", signatureIndex: number };
+
 export interface VTableFactoryEntry {
 	implementation: FunctionID,
 
-	/// `constraint_parameters` has one element for each of the
-	/// `constraint_parameters` in the `FunctionSignature` of the
-	/// implementating function.
-	/// A `number` element indicates the index within the _interface_'s
-	/// signature to use; a `ConstraintParameter` indicates a v-table to be
-	/// captured as a closure when this v-table entry is constructed. These
-	/// specifications may reference variables from the `for_any`
-	/// parameterization of the containing `VTableFactory`.
-	constraint_parameters: (number | ConstraintParameter)[],
+	/**
+	 * `constraint_parameters` has one element for each of the
+	 * `constraint_parameters` in the `FunctionSignature` of the implementing
+	 * function.
+	 * 
+	 * Each entry indicates where to find the v-table at runtime; either the
+	 * `closures` of this v-table, or the `constraint_parameters` of the
+	 * interface (not implementation) `FunctionSignature`.
+	 */
+	constraint_parameters: Array<VTableEntryConstraintSource>,
 };
 
 /// `Program` represents a Shiru program: a collection of function definitions

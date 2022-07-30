@@ -1,24 +1,60 @@
 import * as fs from "fs";
+import path = require("path");
 import * as process from "process";
+import { codegenJs } from "./codegen_js";
 import * as diagnostics from "./diagnostics";
 import * as grammar from "./grammar";
-import * as interpreter from "./interpreter";
+import * as ir from "./ir";
 import * as lexer from "./lexer";
 import * as library from "./library";
 
 export function processCommands(args: string[]): number {
 	if (args[0] === "interpret") {
 		return processInterpretCommand(args.slice(1));
+	} else if (args[0] === "compile") {
+		return processCompileCommand(args.slice(1));
 	}
 
 	console.error("Unknown command `" + args[0] + "`");
 	console.error("Supported commands:");
 	console.error("\tinterpret <main> - <files>");
+	console.error("\tcompile js <target dir> - <files>");
 	return 1;
 }
 
 function printError(e: { message: lexer.ErrorElement[] }, sourceList: library.SourceFile[]) {
 	console.error(library.displayError(e, sourceList));
+}
+
+function processCompileCommand(args: string[]): number {
+	if (args[0] !== "js") {
+		console.error("Unknown compile target `" + args[0] + "` in compile command");
+		console.error("\tSupported targets:\n\t\tjs");
+		return 1;
+	}
+	const targetDirectory = args[1];
+	if (!targetDirectory) {
+		console.error("Expected target directory in compile command");
+		return 1;
+	}
+
+	if (args[2] !== "-") {
+		console.error("Expected `-` in compile command");
+		return 1;
+	}
+
+	const sourcePaths = args.slice(3);
+	const compiled = compileSourcePaths(sourcePaths);
+	if (typeof compiled === "number") {
+		return compiled;
+	}
+
+	const files = codegenJs(compiled);
+	for (const file of files) {
+		const resolved = path.resolve(targetDirectory, file.path);
+		fs.writeFileSync(resolved, file.content);
+	}
+	return 0;
 }
 
 function processInterpretCommand(args: string[]): number {
@@ -29,8 +65,19 @@ function processInterpretCommand(args: string[]): number {
 
 	const mainFunction = args[0];
 	const sourcePaths = args.slice(2);
+	const compiled = compileSourcePaths(sourcePaths);
+	if (typeof compiled === "number") {
+		return compiled;
+	}
+
+	const result = library.interpret(compiled, mainFunction as library.FunctionID, []);
+	console.log(JSON.stringify(result, null, "\t"));
+	return 0;
+}
+
+function compileSourcePaths(sourcePaths: string[]): number | ir.Program {
 	if (new Set(sourcePaths).size !== sourcePaths.length) {
-		console.error("Do not repeat south paths");
+		console.error("Do not repeat source paths");
 		return 1;
 	}
 
@@ -60,12 +107,6 @@ function processInterpretCommand(args: string[]): number {
 		return 3;
 	}
 
-	const lines: string[] = [];
-	interpreter.printProgram(compiled, lines);
-	for (const line of lines) {
-		console.log(line);
-	}
-
 	const verificationErrors = library.verifyProgram(compiled);
 	if (verificationErrors instanceof diagnostics.SemanticError) {
 		printError(verificationErrors, sourceFiles);
@@ -80,9 +121,7 @@ function processInterpretCommand(args: string[]): number {
 		return 5;
 	}
 
-	const result = library.interpret(compiled, mainFunction as library.FunctionID, []);
-	console.log(JSON.stringify(result, null, "\t"));
-	return 0;
+	return compiled;
 }
 
 if (require.main === module) {

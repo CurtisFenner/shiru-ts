@@ -1,3 +1,4 @@
+import * as trace from "./trace";
 import * as sat from "./sat";
 
 /// SMTSolver represents an "satisfiability modulo theories" instance, with
@@ -46,12 +47,23 @@ export abstract class SMTSolver<E, Counterexample> {
 		this.clauses.splice(scope.clauseCount);
 	}
 
+	attemptRefutation() {
+		trace.start("attemptRefutation");
+		const out = this._attemptRefutation();
+		trace.stop("attemptRefutation");
+		return out;
+	}
+
+	showLiteral(literal: number): string {
+		return literal.toString();
+	}
+
 	/// RETURNS "refuted" when the given constraints can provably not be
 	/// satisfied.
 	/// RETURNS a counter example (satisfaction) when refutation fails; this may
 	/// not be a truly realizable counter-examples, as instantiation and the
 	/// theory solver may be incomplete.
-	attemptRefutation(): "refuted" | Counterexample {
+	_attemptRefutation(): "refuted" | Counterexample {
 		const solver = new sat.SATSolver();
 
 		for (const clause of this.unscopedClauses) {
@@ -112,7 +124,9 @@ export abstract class SMTSolver<E, Counterexample> {
 				// clauses which merely preserve satisfiability and not logical
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
+				trace.start("rejectBooleanModel(" + booleanModel.length + " terms)");
 				const theoryClauses = this.rejectBooleanModel(booleanModel);
+				trace.stop();
 				if (Array.isArray(theoryClauses)) {
 					// Completely undo the assignment.
 					// TODO: theoryClauses should contain an asserting clause,

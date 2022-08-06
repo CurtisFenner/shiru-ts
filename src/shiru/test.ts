@@ -12,6 +12,8 @@ import * as verify_tests from "./verify_tests";
 import * as ir_tests from "./ir_tests";
 
 import * as util from "util";
+import * as fs from "fs";
+import * as trace from "./trace";
 
 export type Run = PassRun | FailRun;
 
@@ -278,3 +280,7 @@ testRunner.runTests("smt_tests", smt_tests.tests);
 testRunner.runTests("uf_tests", uf_tests.tests);
 testRunner.runTests("verify_tests", verify_tests.tests);
 testRunner.printReport();
+
+if (process.argv[3] && process.argv[3].startsWith("trace=")) {
+	fs.writeFileSync(process.argv[3].substring(6), trace.render());
+}

@@ -2,6 +2,7 @@ import { DefaultMap } from "./data";
 import * as egraph from "./egraph";
 import * as ir from "./ir";
 import * as smt from "./smt";
+import * as trace from "./trace";
 
 export interface UFCounterexample { model: {} }
 
@@ -281,8 +282,10 @@ export class UFSolver<Reason> {
 		assumptions: Assumption<Reason>[],
 		queries: ValueID[] = [],
 	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample, answers: Map<ValueID, boolean> } {
+		trace.start("initialize");
 		this.egraph.reset();
 
+		trace.start("truths");
 		for (const assumption of assumptions) {
 			const truthObject = assumption.assignment
 				? this.trueObject
@@ -290,6 +293,8 @@ export class UFSolver<Reason> {
 			this.egraph.merge(truthObject, assumption.constraint,
 				new egraph.ReasonTree([assumption.reason]));
 		}
+		trace.stop();
+		trace.stop("initialize");
 
 		const inconsistencies: Set<Reason>[] = [];
 
@@ -297,10 +302,13 @@ export class UFSolver<Reason> {
 		while (progress) {
 			progress = false;
 
+			trace.start("getClasses");
 			const classes = this.egraph.getClasses(true);
+			trace.stop("getClasses");
 
 			// Iterate over all true constraints (those equal to the true
 			// object).
+			trace.start("true class");
 			const trueClass = classes.get(this.trueObject)!;
 			for (const trueMember of trueClass.members) {
 				const reasonTrue = this.egraph.query(this.trueObject, trueMember.id)!;
@@ -311,9 +319,11 @@ export class UFSolver<Reason> {
 					inconsistencies.push(...handled.inconsistencies);
 				}
 			}
+			trace.stop();
 
 			// Iterate over all false constraints (those equal to the false
 			// object).
+			trace.start("false class");
 			const falseClass = classes.get(this.falseObject)!;
 			for (const falseMember of falseClass.members) {
 				const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], falseMember.id as ValueID);
@@ -323,14 +333,19 @@ export class UFSolver<Reason> {
 					inconsistencies.push(...handled.inconsistencies);
 				}
 			}
+			trace.stop();
 
+			trace.start("updateCongruence");
 			if (this.egraph.updateCongruence()) {
 				progress = true;
 			}
+			trace.stop();
 
+			trace.start("propagateFnInterpreters");
 			if (this.propagateFnInterpreters() === "change") {
 				progress = true;
 			}
+			trace.stop();
 
 			const constantInconsistency = this.findInconsistentConstants()
 				|| this.findTransitivityContradictions();
@@ -689,7 +704,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return [clause];
 	}
 
-	private showLiteral(literal: number): string {
+	override showLiteral(literal: number): string {
 		if (literal < 0) {
 			return "NOT " + this.showLiteral(-literal);
 		}
@@ -719,6 +734,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		partialAssignment: number[],
 		unassigned: number[],
 	): number[] | "unsatisfiable" {
+		trace.start("learnAdditional");
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of partialAssignment) {
 			const term = literal > 0 ? +literal : -literal;
@@ -739,6 +755,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		const result = this.solver.refuteUsingTheory(assumptions, queries);
 
 		if (result.tag === "inconsistent") {
+			trace.stop();
 			return "unsatisfiable";
 		}
 
@@ -747,6 +764,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			const term = this.termByObject.get(object);
 			learnedLiterals.push(assignment ? +term : -term);
 		}
+		trace.stop();
 		return learnedLiterals;
 	}
 
@@ -762,7 +780,9 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			});
 		}
 
+		trace.start("refuteUsingTheory(" + assumptions.length + " assumptions)");
 		const result = this.solver.refuteUsingTheory(assumptions, []);
+		trace.stop();
 		if (result.tag === "inconsistent") {
 			const learnedClauses = [];
 			for (const inconsistent of result.inconsistencies) {

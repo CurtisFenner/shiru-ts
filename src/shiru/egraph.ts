@@ -43,10 +43,11 @@ export class ReasonTree<T> {
 
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
 export class EGraph<Term, Tag, Reason> {
-	/// `tagged.get(tag).get(rep)` is the set of IDs tagged with `tag` that are
-	/// equal to representative `rep`.
+	/**
+	 * `tagged.get(tag).get(rep)` is the set of objects tagged with `tag` that
+	 * are equal to representative `rep`.
+	 */
 	private tagged = new DefaultMap<Tag, DefaultMap<EObject, Set<EObject>>>(t => new DefaultMap(r => new Set()));
-	private taggedDef = new Map<EObject, { term: Term, operands: EObject[], tag: Tag }>();
 
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
@@ -82,7 +83,7 @@ export class EGraph<Term, Tag, Reason> {
 		const out = [];
 		const representative = this.ds.representative(id);
 		for (const tagged of this.tagged.get(tag).get(representative)) {
-			const def = this.taggedDef.get(tagged)!;
+			const def = this.objectDefinition.get(tagged)!;
 			out.push({ id: tagged, term: def.term, operands: def.operands });
 		}
 		return out;
@@ -105,7 +106,15 @@ export class EGraph<Term, Tag, Reason> {
 		return this.tuples.get(tuple) || null;
 	}
 
-	add(term: Term, operands: EObject[], tag?: Tag, hint?: string): EObject {
+	addTag(object: EObject, tag: Tag): void {
+		const representative = this.getRepresentative(object);
+		this.tagged.get(tag).get(representative).add(object);
+		if (representative !== object) {
+			this.tagged.get(tag).get(object).add(object);
+		}
+	}
+
+	add(term: Term, operands: EObject[], hint?: string): EObject {
 		const tuple: [Term, ...EObject[]] = [term, ...operands];
 		const existing = this.tuples.get(tuple);
 		if (existing) {
@@ -140,10 +149,6 @@ export class EGraph<Term, Tag, Reason> {
 				operands,
 				uniqueObjectCount: this.uniqueObjectCount,
 			});
-			if (tag !== undefined) {
-				this.tagged.get(tag).get(id).add(id);
-				this.taggedDef.set(id, { term, operands, tag });
-			}
 			return id;
 		}
 	}

@@ -32,8 +32,10 @@ export const tests = {
 	"EGraph-basic"() {
 		const eg: egraph.EGraph<number, "constant", string> = new egraph.EGraph();
 
-		const two = eg.add(2, [], "constant");
-		const three = eg.add(3, [], "constant");
+		const two = eg.add(2, []);
+		eg.addTag(two, "constant");
+		const three = eg.add(3, []);
+		eg.addTag(three, "constant");
 		const four23 = eg.add(4, [two, three]);
 		const four32 = eg.add(4, [three, two]);
 
@@ -59,9 +61,12 @@ export const tests = {
 	"EGraph-facts"() {
 		const eg: egraph.EGraph<string | number, "constant", string> = new egraph.EGraph();
 
-		const zero = eg.add(0, [], "constant");
-		const ten = eg.add(10, [], "constant");
-		const twenty = eg.add(20, [], "constant");
+		const zero = eg.add(0, []);
+		eg.addTag(zero, "constant");
+		const ten = eg.add(10, []);
+		eg.addTag(ten, "constant");
+		const twenty = eg.add(20, []);
+		eg.addTag(twenty, "constant");
 		const alpha = eg.add("var-alpha", []);
 		const beta = eg.add("var-beta", []);
 		const gamma = eg.add("var-gamma", []);
@@ -80,7 +85,8 @@ export const tests = {
 							const cs = getTags(eg, "constant", member.operands);
 							if (cs !== null) {
 								const sum = (cs.values[0].term as number) + (cs.values[1].term as number);
-								const sumObject = eg.add(sum, [], "constant");
+								const sumObject = eg.add(sum, []);
+								eg.addTag(sumObject, "constant");
 								madeChange = eg.merge(sumObject, member.id, new egraph.ReasonTree([...cs.reasons])) || madeChange;
 							}
 						}
@@ -114,7 +120,8 @@ export const tests = {
 				value: { id: twenty, term: 20, operands: [] },
 				reason: new Set(["b=20"]),
 			});
-			const thirty = eg.add(30, [], "constant");
+			const thirty = eg.add(30, []);
+			eg.addTag(thirty, "constant");
 			assert(getTag(eg, "constant", sumAlphaBetaZero), "is equal to", {
 				value: { id: thirty, term: 30, operands: [] },
 				reason: new Set(["a=10", "b=20"]),

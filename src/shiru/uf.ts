@@ -211,14 +211,15 @@ export class UFSolver<Reason> {
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
 		const varID = Symbol("uf-constant") as VarID;
-		const object = this.egraph.add(varID, [], "constant", String(constant)) as ValueID;
+		const object = this.egraph.add(varID, [], String(constant)) as ValueID;
+		this.egraph.addTag(object, "constant");
 		this.values.set(object, { tag: "constant", constant });
 		return object;
 	});
 
 	createVariable(debugName: string): ValueID {
 		const varID = Symbol(debugName || "unknown-var") as VarID;
-		const object = this.egraph.add(varID, [], undefined, debugName) as ValueID;
+		const object = this.egraph.add(varID, [], debugName) as ValueID;
 		this.values.set(object, { tag: "var", var: varID });
 		return object;
 	}

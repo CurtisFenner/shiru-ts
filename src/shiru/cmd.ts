@@ -71,7 +71,7 @@ function processInterpretCommand(args: string[]): number {
 	}
 
 	const result = library.interpret(compiled, mainFunction as library.FunctionID, []);
-	console.log(JSON.stringify(result, null, "\t"));
+	console.log(JSON.stringify(result, (key, value) => typeof value === "bigint" ? String(value) : value, "\t"));
 	return 0;
 }
 

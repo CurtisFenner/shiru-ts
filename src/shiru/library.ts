@@ -69,6 +69,16 @@ export function interpret(
 			if (b.sort !== "int") throw new Error("bad argument");
 			return [{ sort: "boolean", boolean: a.int == b.int }];
 		},
+		"Int<=": ([a, b]: interpreter.Value[]) => {
+			if (a.sort !== "int") throw new Error("bad argument");
+			if (b.sort !== "int") throw new Error("bad argument");
+			return [{ sort: "boolean", boolean: a.int <= b.int }];
+		},
+		"Int<": ([a, b]: interpreter.Value[]) => {
+			if (a.sort !== "int") throw new Error("bad argument");
+			if (b.sort !== "int") throw new Error("bad argument");
+			return [{ sort: "boolean", boolean: a.int < b.int }];
+		},
 	});
 }
 

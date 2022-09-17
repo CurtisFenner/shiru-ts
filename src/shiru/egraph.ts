@@ -41,6 +41,12 @@ export class ReasonTree<T> {
 	}
 }
 
+type Equality<Reason> = {
+	left: EObject,
+	right: EObject,
+	reason: ReasonTree<Reason>,
+};
+
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
 export class EGraph<Term, Tag, Reason> {
 	/**
@@ -53,6 +59,41 @@ export class EGraph<Term, Tag, Reason> {
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
 	private ds: DisjointSet<EObject, ReasonTree<Reason>> = new DisjointSet();
 
+	private lazyCongruence: Equality<Reason>[] = [];
+
+	/**
+	 * A canonicalized version of the function is added.
+	 */
+	private functionByRep: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
+
+	private references: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
+
+	private updateFunctionRep(obj: EObject): [Term, ...EObject[]] {
+		const def = this.objectDefinition.get(obj)!!;
+		const representativeKey: [Term, ...EObject[]] = [def.term];
+		for (const operand of def.operands) {
+			representativeKey.push(this.getRepresentative(operand));
+		}
+
+		const existing = this.functionByRep.get(representativeKey);
+		if (existing !== undefined && existing !== obj) {
+			const argumentReasons = [];
+			const existingDef = this.getDefinition(existing);
+			for (let i = 0; i < def.operands.length; i++) {
+				const argReason = this.query(def.operands[i], existingDef.operands[i]);
+				if (argReason === null) {
+					throw new Error("invariant violation");
+				}
+				argumentReasons.push(argReason);
+			}
+			const reason = ReasonTree.withChildren(argumentReasons);
+			this.lazyCongruence.push({ left: existing, right: obj, reason });
+		} else {
+			this.functionByRep.put(representativeKey, obj);
+		}
+		return representativeKey;
+	}
+
 	reset(): void {
 		this.ds.reset();
 		this.queryCache.clear();
@@ -63,6 +104,16 @@ export class EGraph<Term, Tag, Reason> {
 				if (has) {
 					set.add(id);
 				}
+			}
+		}
+
+		this.references.clear();
+		this.functionByRep.clear();
+		this.lazyCongruence = [];
+		for (const [object, { term, operands }] of this.objectDefinition) {
+			this.functionByRep.put([term, ...operands], object);
+			for (const operand of operands) {
+				this.references.get(operand).add(object);
 			}
 		}
 	}
@@ -119,43 +170,48 @@ export class EGraph<Term, Tag, Reason> {
 		const existing = this.tuples.get(tuple);
 		if (existing) {
 			return existing;
-		} else {
-			if (!hint && this.debugSymbolNames) {
-				const fnName = String(term).match(/^Symbol\((.+)\)$/);
-				hint = (fnName ? fnName[1] : "unknown");
-				if (operands.length !== 0) {
-					hint += "(";
-					hint += operands.map(x => {
-						if (x === undefined) {
-							throw new Error("EGraph.add: unexpected undefined");
-						}
-						const raw = String(x);
-						const match = String(x).match(/^Symbol\(egraph-term    (.+)    \)$/);
-						if (match) {
-							return match[1];
-						} else {
-							return raw;
-						}
-					}).join(", ");
-					hint += ")";
-				}
-			}
-
-			const id: EObject = Symbol("egraph-term    " + hint + " #" + this.uniqueObjectCount + "    ") as EObject;
-			this.uniqueObjectCount += 1;
-			this.tuples.put(tuple, id);
-			this.objectDefinition.set(id, {
-				term,
-				operands,
-				uniqueObjectCount: this.uniqueObjectCount,
-			});
-			return id;
 		}
+
+		if (!hint && this.debugSymbolNames) {
+			const fnName = String(term).match(/^Symbol\((.+)\)$/);
+			hint = (fnName ? fnName[1] : "unknown");
+			if (operands.length !== 0) {
+				hint += "(";
+				hint += operands.map(x => {
+					if (x === undefined) {
+						throw new Error("EGraph.add: unexpected undefined");
+					}
+					const raw = String(x);
+					const match = String(x).match(/^Symbol\(egraph-term    (.+)    \)$/);
+					if (match) {
+						return match[1];
+					} else {
+						return raw;
+					}
+				}).join(", ");
+				hint += ")";
+			}
+		}
+
+		const id: EObject = Symbol("egraph-term    " + hint + " #" + this.uniqueObjectCount + "    ") as EObject;
+		this.uniqueObjectCount += 1;
+		this.tuples.put(tuple, id);
+		this.objectDefinition.set(id, {
+			term,
+			operands,
+			uniqueObjectCount: this.uniqueObjectCount,
+		});
+		this.functionByRep.put(tuple, id);
+		for (const operand of operands) {
+			this.references.get(this.getRepresentative(operand)).add(id);
+		}
+		this.updateFunctionRep(id);
+		return id;
 	}
 
 	/// `reason` is a conjunction of `Reason`s.
 	/// merge(a, b, reason) returns false when this fact was already present in
-	/// this egrahp.
+	/// this egraph.
 	merge(a: EObject, b: EObject, reason: ReasonTree<Reason>): boolean {
 		const arep = this.ds.representative(a);
 		const brep = this.ds.representative(b);
@@ -178,59 +234,27 @@ export class EGraph<Term, Tag, Reason> {
 				parentSet.add(e);
 			}
 		}
+
+		// Find all references of the child and process them with
+		// updateFunctionRep
+		const childReferences = this.references.get(child);
+		for (const childReference of childReferences) {
+			this.references.get(parent).add(childReference);
+			this.updateFunctionRep(childReference);
+		}
+
 		return true;
-	}
-
-	private updateCongruenceStep(): boolean {
-		// The keys of `canonical` are representatives.
-		// The `id` is the symbol of the original (non-canonicalized) object;
-		// the `reason` is the union of reasons for why the canonicalized
-		// version is equal to the original version.
-		const canonical = new TrieMap<[Term, ...EObject[]], { id: EObject, representative: EObject }[]>();
-		for (const [[term, ...operands], id] of this.tuples) {
-			const key: [Term, ...EObject[]] = [term];
-			for (let i = 0; i < operands.length; i++) {
-				key.push(this.getRepresentative(operands[i]));
-			}
-			let group = canonical.get(key);
-			if (group === undefined) {
-				group = [];
-				canonical.put(key, group);
-			}
-
-			group.push({ id, representative: this.getRepresentative(id) });
-		}
-
-		let madeChanges = false;
-		for (const [_, members] of canonical) {
-			const first = members[0];
-			for (let i = 1; i < members.length; i++) {
-				const second = members[i];
-				if (first.representative === second.representative) {
-					// They're already equal.
-					continue;
-				}
-
-				const conjunctionOfOperandReasons: ReasonTree<Reason> = new ReasonTree();
-				const firstDefinition = this.objectDefinition.get(first.id)!;
-				const secondDefinition = this.objectDefinition.get(second.id)!;
-				for (let i = 0; i < firstDefinition.operands.length; i++) {
-					const a = firstDefinition.operands[i];
-					const b = secondDefinition.operands[i];
-					const reasonOperandEqual = this.query(a, b)!;
-					conjunctionOfOperandReasons.addChild(reasonOperandEqual);
-				}
-
-				this.merge(first.id, second.id, conjunctionOfOperandReasons);
-				madeChanges = true;
-			}
-		}
-		return madeChanges;
 	}
 
 	updateCongruence(): boolean {
 		let madeChanges = false;
-		while (this.updateCongruenceStep()) { madeChanges = true; }
+		while (this.lazyCongruence.length !== 0) {
+			const q = this.lazyCongruence;
+			this.lazyCongruence = [];
+			for (const e of q) {
+				madeChanges = this.merge(e.left, e.right, e.reason) || madeChanges;
+			}
+		}
 		return madeChanges;
 	}
 

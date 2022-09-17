@@ -4,6 +4,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	// Unfortunately, more accurate typing of this very elaborate.
 	private map: Map<KS[number], TrieMap<KS, V>> = new Map();
 	private value: V | undefined = undefined;
+	size: number = 0;
 
 	get(key: KS, from?: number): V | undefined {
 		from = from || 0;
@@ -21,19 +22,29 @@ export class TrieMap<KS extends readonly unknown[], V> {
 		}
 	}
 
-	put(key: KS, v: V, from?: number) {
+	put(key: KS, v: V, from?: number): number {
 		from = from || 0;
 		if (key.length === from) {
+			const count = this.value === undefined ? 1 : 0;
 			this.value = v;
-		} else {
-			const head = key[from];
-			let child = this.map.get(head);
-			if (!child) {
-				child = new TrieMap;
-				this.map.set(key[from], child);
-			}
-			child.put(key, v, from + 1);
+			return count;
 		}
+
+		const head = key[from];
+		let child = this.map.get(head);
+		if (!child) {
+			child = new TrieMap();
+			this.map.set(key[from], child);
+		}
+
+		const change = child.put(key, v, from + 1);
+		this.size += change;
+		return change;
+	}
+
+	clear(): void {
+		this.map.clear();
+		this.size = 0;
 	}
 
 	/// Iterate over [K[], V] pairs in this map.
@@ -63,6 +74,10 @@ export class DefaultMap<K, V> {
 			this.map.set(key, v);
 			return v;
 		}
+	}
+
+	clear(): void {
+		this.map.clear();
 	}
 
 	*[Symbol.iterator]() {

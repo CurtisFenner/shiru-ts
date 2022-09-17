@@ -164,19 +164,19 @@ export const tests = {
 	},
 	"EGraph-multiple-congruent-applications"() {
 		const eg = new egraph.EGraph<string, never, number>();
-		const a = eg.add("a", []);
-		const b = eg.add("b", []);
-		const c = eg.add("c", []);
-		const d = eg.add("d", []);
+		const a = eg.add("a", [], "a");
+		const b = eg.add("b", [], "b");
+		const c = eg.add("c", [], "c");
+		const d = eg.add("d", [], "d");
 
 		eg.merge(a, b, new egraph.ReasonTree([2]));
 		eg.merge(a, c, new egraph.ReasonTree([3]));
 		eg.merge(a, d, new egraph.ReasonTree([4]));
 
-		const fa = eg.add("f", [a]);
-		const fb = eg.add("f", [b]);
-		const fc = eg.add("f", [c]);
-		const fd = eg.add("f", [d]);
+		const fa = eg.add("f", [a], "f a");
+		const fb = eg.add("f", [b], "f b");
+		const fc = eg.add("f", [c], "f c");
+		const fd = eg.add("f", [d], "f d");
 
 		eg.updateCongruence();
 

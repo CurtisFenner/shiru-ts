@@ -276,8 +276,9 @@ export const foreignOperations: Record<string, {
 					let change: "change" | "no-change" = "no-change";
 					for (const leftSum of leftSums) {
 						for (const rightSum of rightSums) {
-							const kQuery = matcher.query(leftSum.operands[1], rightSum.operands[1]);
-							if (kQuery !== null) {
+							const leftK = leftSum.operands[1];
+							const rightK = rightSum.operands[1];
+							if (matcher.areCongruent(leftK, rightK)) {
 								// Equate this with `a < b`, using the reason
 								// which is why
 								// left == (a+k1) and right == (b+k2)
@@ -289,12 +290,10 @@ export const foreignOperations: Record<string, {
 								if (newLt === null) {
 									continue;
 								}
-								const reason = egraph.ReasonTree.withChildren([
-									leftSum.reason,
-									rightSum.reason,
-									kQuery,
-								]);
-								const fresh = matcher.merge(id, newLt, reason);
+
+								const leftOperands = [left, right, leftK];
+								const rightOperands = [leftSum.id, rightSum.id, rightK];
+								const fresh = matcher.mergeBecauseCongruent(id, newLt, leftOperands, rightOperands);
 								if (fresh) {
 									change = "change";
 								}
@@ -564,7 +563,7 @@ export const foreignOperations: Record<string, {
 					// Resolve commutativity by swapping all sums.
 					const swapped = matcher.hasApplication(sum, [right, left]);
 					if (swapped !== null) {
-						let freshCommutative = matcher.merge(id, swapped, new egraph.ReasonTree());
+						let freshCommutative = matcher.mergeBecauseCongruent(id, swapped, [], []);
 						if (freshCommutative) {
 							change = "change";
 						}
@@ -584,7 +583,7 @@ export const foreignOperations: Record<string, {
 							]);
 
 							if (leftLeaning !== null) {
-								const freshAssociative = matcher.merge(id, leftLeaning, rightSum.reason);
+								const freshAssociative = matcher.mergeBecauseCongruent(id, leftLeaning, [right], [rightSum.id]);
 								if (freshAssociative) {
 									change = "change";
 								}

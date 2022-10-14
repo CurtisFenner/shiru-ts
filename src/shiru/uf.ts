@@ -122,18 +122,24 @@ export class EMatcher<Reason> {
 		return this.egraph.hasStructure(f, operands) as ValueID;
 	}
 
-	query(a: ValueID, b: ValueID): egraph.ReasonTree<Reason> | null {
-		return this.egraph.query(a, b);
+	areCongruent(a: ValueID, b: ValueID): boolean {
+		return this.egraph.getRepresentative(a) === this.egraph.getRepresentative(b);
 	}
 
-	merge(a: ValueID, b: ValueID, reason: egraph.ReasonTree<Reason>): boolean {
+	/**
+	 * merges the objects `a` and `b` so that they are subsequently congurent.
+	 * 
+	 * The reason given is that the elements of `lefts` are index-wise congruent
+	 * to the elements of `rights`.
+	 */
+	mergeBecauseCongruent(a: ValueID, b: ValueID, lefts: ValueID[], rights: ValueID[]): boolean {
 		// TODO: Currently, this EMatcher's state is not updated when a merge is
 		//  performed, meaning that `matchAsApplication` does not return some
 		//  matches that it could.
-		return this.egraph.merge(a, b, reason);
+		return this.egraph.mergeBecauseCongruence(a, b, lefts, rights);
 	}
 
-	evaluateConstant(value: ValueID): { constant: unknown, reason: egraph.ReasonTree<Reason> } | null {
+	evaluateConstant(value: ValueID): { constant: unknown, constantID: ValueID, } | null {
 		return this.solver.evaluateConstant(value);
 	}
 
@@ -312,8 +318,7 @@ export class UFSolver<Reason> {
 			trace.start("true class");
 			const trueClass = classes.get(this.trueObject)!;
 			for (const trueMember of trueClass.members) {
-				const reasonTrue = this.egraph.query(this.trueObject, trueMember.id)!;
-				const handled = this.handleTrueMember(trueMember.term, trueMember.operands as ValueID[], reasonTrue);
+				const handled = this.handleTrueMember(trueMember);
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
@@ -378,14 +383,17 @@ export class UFSolver<Reason> {
 	}
 
 	private handleTrueMember(
-		term: FnID | VarID,
-		operands: ValueID[],
-		reasonTrue: egraph.ReasonTree<Reason>,
+		trueObject: {
+			id: egraph.EObject;
+			term: FnID | VarID;
+			operands: egraph.EObject[];
+		},
 	): "change" | "no-change" | UFInconsistency<Reason> {
-		const semantics = this.fns.get(term as FnID);
+		const semantics = this.fns.get(trueObject.term as FnID);
 		if (semantics !== undefined) {
 			if (semantics.eq) {
-				const newKnowledge = this.egraph.merge(operands[0], operands[1], reasonTrue);
+				const [left, right] = trueObject.operands;
+				const newKnowledge = this.egraph.mergeBecauseCongruence(left, right, [trueObject.id], [this.trueObject]);
 				if (newKnowledge) {
 					return "change";
 				}
@@ -419,7 +427,7 @@ export class UFSolver<Reason> {
 	 * `createConstant`) that is equal to the given value under the current
 	 * constraints.
 	 */
-	evaluateConstant(value: ValueID): { constant: unknown, reason: egraph.ReasonTree<Reason> } | null {
+	evaluateConstant(value: ValueID): { constant: unknown, constantID: ValueID } | null {
 		const constants = this.egraph.getTagged("constant", value);
 		if (constants.length === 0) {
 			return null;
@@ -431,7 +439,7 @@ export class UFSolver<Reason> {
 		}
 		return {
 			constant: valueDefinition.constant,
-			reason: this.egraph.query(value, id)!,
+			constantID: id as ValueID,
 		};
 	}
 
@@ -496,7 +504,8 @@ export class UFSolver<Reason> {
 			id: ValueID,
 			operands: ValueID[],
 		): "change" | "no-change" => {
-			const operandReasons = [];
+			const operandsWithConstant = [];
+			const constants = [];
 			const args = [];
 			for (const operand of operands) {
 				// Search for a constant value among the objects equal to the
@@ -504,7 +513,8 @@ export class UFSolver<Reason> {
 				const operandConstant = matcher.evaluateConstant(operand as ValueID);
 				if (operandConstant !== null) {
 					args.push(operandConstant.constant);
-					operandReasons.push(operandConstant.reason);
+					operandsWithConstant.push(operand);
+					constants.push(operandConstant.constantID);
 				} else {
 					args.push(null);
 				}
@@ -514,7 +524,7 @@ export class UFSolver<Reason> {
 			const result = interpreter(...args);
 			if (result !== null) {
 				const resultConstant = matcher.createConstant(result);
-				const changed = matcher.merge(resultConstant, id, egraph.ReasonTree.withChildren(operandReasons));
+				const changed = matcher.mergeBecauseCongruent(resultConstant, id, operandsWithConstant, constants);
 				if (changed) {
 					return "change";
 				}

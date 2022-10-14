@@ -209,6 +209,22 @@ export class EGraph<Term, Tag, Reason> {
 		return id;
 	}
 
+	mergeBecauseCongruence(a: EObject, b: EObject, lefts: EObject[], rights: EObject[]): boolean {
+		if (lefts.length !== rights.length) {
+			throw new Error("EGraph.mergeBecauseCongruence: lefts.length !== rights.length");
+		}
+		const elementReasons = [];
+		for (let i = 0; i < lefts.length; i++) {
+			const reason = this.query(lefts[i], rights[i]);
+			if (reason === null) {
+				throw new Error("EGraph.mergeBecauseCongruence: non-congruent elements");
+			}
+			elementReasons.push(reason);
+		}
+
+		return this.merge(a, b, ReasonTree.withChildren(elementReasons));
+	}
+
 	/// `reason` is a conjunction of `Reason`s.
 	/// merge(a, b, reason) returns false when this fact was already present in
 	/// this egraph.

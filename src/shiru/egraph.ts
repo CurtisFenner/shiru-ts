@@ -41,10 +41,11 @@ export class ReasonTree<T> {
 	}
 }
 
-type Equality<Reason> = {
+type PendingCongruence = {
 	left: EObject,
 	right: EObject,
-	reason: ReasonTree<Reason>,
+	leftOperands: EObject[],
+	rightOperands: EObject[],
 };
 
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
@@ -59,7 +60,7 @@ export class EGraph<Term, Tag, Reason> {
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
 	private ds: DisjointSet<EObject, ReasonTree<Reason>> = new DisjointSet();
 
-	private lazyCongruence: Equality<Reason>[] = [];
+	private lazyCongruence: PendingCongruence[] = [];
 
 	/**
 	 * A canonicalized version of the function is added.
@@ -77,17 +78,13 @@ export class EGraph<Term, Tag, Reason> {
 
 		const existing = this.functionByRep.get(representativeKey);
 		if (existing !== undefined && existing !== obj) {
-			const argumentReasons = [];
 			const existingDef = this.getDefinition(existing);
-			for (let i = 0; i < def.operands.length; i++) {
-				const argReason = this.query(def.operands[i], existingDef.operands[i]);
-				if (argReason === null) {
-					throw new Error("invariant violation");
-				}
-				argumentReasons.push(argReason);
-			}
-			const reason = ReasonTree.withChildren(argumentReasons);
-			this.lazyCongruence.push({ left: existing, right: obj, reason });
+			this.lazyCongruence.push({
+				left: existing,
+				right: obj,
+				leftOperands: existingDef.operands,
+				rightOperands: def.operands,
+			});
 		} else {
 			this.functionByRep.put(representativeKey, obj);
 		}
@@ -268,7 +265,7 @@ export class EGraph<Term, Tag, Reason> {
 			const q = this.lazyCongruence;
 			this.lazyCongruence = [];
 			for (const e of q) {
-				madeChanges = this.merge(e.left, e.right, e.reason) || madeChanges;
+				madeChanges = this.mergeBecauseCongruence(e.left, e.right, e.leftOperands, e.rightOperands) || madeChanges;
 			}
 		}
 		return madeChanges;

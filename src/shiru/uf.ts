@@ -173,14 +173,14 @@ export class EMatcher<Reason> {
 	 *
 	 * Note: For now, this does not reflect equalities generated with `merge`
 	 * since the creation of this `EMatcher`.
-	 */	matchAsApplication(
+	 */
+	matchAsApplication(
 		obj: ValueID,
 		term: FnID,
 	): Array<{
 		id: ValueID,
 		term: FnID,
 		operands: ValueID[],
-		reason: egraph.ReasonTree<Reason>,
 	}> {
 		const eclass = this.membersByClassAndTerm.get(this.egraph.getRepresentative(obj));
 		if (eclass === undefined) {
@@ -195,15 +195,10 @@ export class EMatcher<Reason> {
 		const out = [];
 		for (let i = 0; i < byTerm.members.length; i++) {
 			const member = byTerm.members[i];
-			const reason = this.egraph.query(obj, member.id);
-			if (reason === null) {
-				throw new Error("matchAsApplication: membersByClassAndItem index does not match egraph.query result");
-			}
 			out.push({
 				id: member.id as ValueID,
 				term,
 				operands: member.operands as ValueID[],
-				reason,
 			});
 		}
 		return out;

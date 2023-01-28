@@ -241,7 +241,7 @@ export const tests = {
 		])]);
 		assert(smt.attemptRefutation(), "is equal to", "refuted");
 	},
-	"UFSolver-transitivity"() {
+	"UFSolver-simple-transitivity"() {
 		const solver = new uf.UFSolver();
 		const alpha = solver.createVariable("alpha");
 		const beta = solver.createVariable("beta");
@@ -267,6 +267,9 @@ export const tests = {
 			},
 		];
 
+		// 100: a < b
+		// 200: b < g
+		// 300: !(a < g)
 		const result = solver.refuteUsingTheory(query);
 		assert(result, "is equal to", {
 			tag: "inconsistent",

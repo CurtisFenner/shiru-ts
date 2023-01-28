@@ -57,28 +57,36 @@ export interface Semantics<Reason> {
 	) => "change" | "no-change",
 }
 
-function transitivitySearch<Reason>(
-	digraphOutEdges: DefaultMap<symbol, { reason: egraph.ReasonTree<Reason>, target: symbol }[]>,
+function transitivitySearch(
+	digraphOutEdges: DefaultMap<symbol, { arrowTruth: Equality[], target: symbol }[]>,
 	source: symbol,
 	target: symbol,
-): egraph.ReasonTree<Reason> | null {
-	const reached = new Set<symbol>();
-	const frontier = [{ source, reason: new egraph.ReasonTree<Reason>() }];
+): Equality[] | null {
+	const reached = new Map<symbol, { parent: symbol, arrowTruth: Equality[] }>();
+	const frontier = [source];
 
 	while (frontier.length !== 0) {
 		const top = frontier.pop()!;
-		const outEdges = digraphOutEdges.get(top.source);
+		const outEdges = digraphOutEdges.get(top);
 		for (const outEdge of outEdges) {
 			if (!reached.has(outEdge.target)) {
-				const reason = egraph.ReasonTree.withChildren([top.reason, outEdge.reason]);
+				reached.set(outEdge.target, { parent: top, arrowTruth: outEdge.arrowTruth });
 				if (outEdge.target === target) {
-					return reason;
+					// Follow the path backwards to construct the full set of
+					// inequalities that were followed.
+					const out: Equality[] = [...outEdge.arrowTruth];
+					let cursor = top;
+					while (cursor !== source) {
+						const parent = reached.get(cursor);
+						if (parent === undefined) {
+							break;
+						}
+						out.push(...parent.arrowTruth);
+						cursor = parent.parent;
+					}
+					return out;
 				}
-				reached.add(outEdge.target);
-				frontier.push({
-					source: outEdge.target,
-					reason,
-				});
+				frontier.push(outEdge.target);
 			}
 		}
 	}
@@ -94,6 +102,18 @@ export interface Assumption<Reason> {
 interface UFInconsistency<Reason> {
 	tag: "inconsistent",
 	inconsistencies: Set<Reason>[],
+}
+
+interface Equality {
+	left: ValueID,
+	right: ValueID,
+}
+
+interface InconsistentConstraints {
+	/**
+	 * The conjunction (and) of these constraints is inconsistent.
+	 */
+	equalityConstraints: Equality[],
 }
 
 export class EMatcher<Reason> {
@@ -298,7 +318,7 @@ export class UFSolver<Reason> {
 		trace.stop();
 		trace.stop("initialize");
 
-		const inconsistencies: Set<Reason>[] = [];
+		const inconsistencies: InconsistentConstraints[] = [];
 
 		let progress = true;
 		while (progress) {
@@ -316,8 +336,6 @@ export class UFSolver<Reason> {
 				const handled = this.handleTrueMember(trueMember);
 				if (handled === "change") {
 					progress = true;
-				} else if (handled !== "no-change") {
-					inconsistencies.push(...handled.inconsistencies);
 				}
 			}
 			trace.stop();
@@ -331,7 +349,7 @@ export class UFSolver<Reason> {
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
-					inconsistencies.push(...handled.inconsistencies);
+					inconsistencies.push(handled);
 				}
 			}
 			trace.stop();
@@ -351,19 +369,31 @@ export class UFSolver<Reason> {
 			const constantInconsistency = this.findInconsistentConstants()
 				|| this.findTransitivityContradictions();
 			if (constantInconsistency !== null) {
-				inconsistencies.push(constantInconsistency.toSet());
+				inconsistencies.push(constantInconsistency);
 			}
 
 			if (inconsistencies.length !== 0) {
-				return { tag: "inconsistent", inconsistencies };
+				// Convert the inconsistencies to sets of incompatible reasons
+				// which can be understood by the SAT solver.
+				const reasonSets: Set<Reason>[] = [];
+				for (const inconsistency of inconsistencies) {
+					const childReasons = [];
+					for (const equality of inconsistency.equalityConstraints) {
+						const reason = this.egraph.explainCongruence(equality.left, equality.right);
+						childReasons.push(reason);
+					}
+					const reason = egraph.ReasonTree.withChildren(childReasons).toSet();
+					reasonSets.push(reason);
+				}
+				return { tag: "inconsistent", inconsistencies: reasonSets };
 			}
 		}
 
 		const answers = new Map<ValueID, boolean>();
 		for (const query of queries) {
-			if (this.egraph.query(query, this.falseObject) !== null) {
+			if (this.egraph.areCongruent(query, this.falseObject)) {
 				answers.set(query, false);
-			} else if (this.egraph.query(query, this.trueObject) !== null) {
+			} else if (this.egraph.areCongruent(query, this.trueObject)) {
 				answers.set(query, true);
 			}
 		}
@@ -383,7 +413,7 @@ export class UFSolver<Reason> {
 			term: FnID | VarID;
 			operands: egraph.EObject[];
 		},
-	): "change" | "no-change" | UFInconsistency<Reason> {
+	): "change" | "no-change" {
 		const semantics = this.fns.get(trueObject.term as FnID);
 		if (semantics !== undefined) {
 			if (semantics.eq) {
@@ -401,15 +431,19 @@ export class UFSolver<Reason> {
 		term: FnID | VarID,
 		operands: ValueID[],
 		member: ValueID,
-	): "change" | "no-change" | UFInconsistency<Reason> {
+	): "change" | "no-change" | InconsistentConstraints {
 		const semantics = this.fns.get(term as FnID)
 		if (semantics !== undefined) {
 			if (semantics.eq) {
-				const query = this.egraph.query(operands[0], operands[1]);
-				if (query !== null) {
+				const left = operands[0];
+				const right = operands[1];
+				if (this.egraph.areCongruent(left, right)) {
+
 					return {
-						tag: "inconsistent",
-						inconsistencies: [egraph.ReasonTree.withChildren([query, this.egraph.query(this.falseObject, member)!]).toSet()],
+						equalityConstraints: [
+							{ left, right },
+							{ left: this.falseObject, right: member },
+						],
 					};
 				}
 			}
@@ -528,9 +562,9 @@ export class UFSolver<Reason> {
 		});
 	}
 
-	private findTransitivityContradictions(): null | egraph.ReasonTree<Reason> {
+	private findTransitivityContradictions(): null | InconsistentConstraints {
 		// A directed graph for each transitive function.
-		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { reason: egraph.ReasonTree<Reason>, target: symbol }[]>>(f => {
+		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { arrowTruth: Equality[], target: symbol }[]>>(f => {
 			return new DefaultMap(k => []);
 		});
 
@@ -553,17 +587,16 @@ export class UFSolver<Reason> {
 					throw new Error("findTransitivityContradictions: ICE");
 				}
 
-				const source = app.operands[0];
-				const target = app.operands[1];
-				const sourceRep = this.egraph.getRepresentative(source);
-				const targetRep = this.egraph.getRepresentative(target);
-
-				const reason = egraph.ReasonTree.withChildren([
-					this.egraph.query(this.trueObject, app.id)!,
-					this.egraph.query(source, sourceRep)!,
-					this.egraph.query(target, targetRep)!]);
+				const source = app.operands[0] as ValueID;
+				const target = app.operands[1] as ValueID;
+				const sourceRep = this.egraph.getRepresentative(source) as ValueID;
+				const targetRep = this.egraph.getRepresentative(target) as ValueID;
 				digraphs.get(app.term as FnID).get(sourceRep).push({
-					reason: reason,
+					arrowTruth: [
+						{ left: this.trueObject, right: app.id as ValueID },
+						{ left: source, right: sourceRep },
+						{ left: target, right: targetRep },
+					],
 					target: targetRep,
 				});
 			}
@@ -576,20 +609,23 @@ export class UFSolver<Reason> {
 				if (app.operands.length !== 2) {
 					throw new Error("findTransitivityContradictions: ICE");
 				}
-				const source = app.operands[0];
-				const target = app.operands[1];
-				const sourceRep = this.egraph.getRepresentative(source);
-				const targetRep = this.egraph.getRepresentative(target);
+				const source = app.operands[0] as ValueID;
+				const target = app.operands[1] as ValueID;
+				const sourceRep = this.egraph.getRepresentative(source) as ValueID;
+				const targetRep = this.egraph.getRepresentative(target) as ValueID;
 
 				// Naively performs a DFS on the set of `<` edges, searching for
 				// a contradiction.
 				const transitiveChain = transitivitySearch(digraphs.get(app.term as FnID), sourceRep, targetRep);
 				if (transitiveChain !== null) {
-					return egraph.ReasonTree.withChildren([
-						this.egraph.query(source, sourceRep)!,
-						this.egraph.query(target, targetRep)!,
-						transitiveChain,
-						this.egraph.query(app.id, this.falseObject)!]);
+					return {
+						equalityConstraints: [
+							{ left: source, right: sourceRep },
+							{ left: target, right: targetRep },
+							{ left: app.id as ValueID, right: this.falseObject },
+							...transitiveChain,
+						],
+					};
 				}
 			}
 		}
@@ -607,7 +643,7 @@ export class UFSolver<Reason> {
 				if (semantics.transitiveAcyclic === true) {
 					const transitiveChain = transitivitySearch(digraph, id, id);
 					if (transitiveChain !== null) {
-						return transitiveChain;
+						return { equalityConstraints: transitiveChain };
 					}
 				}
 			}
@@ -618,12 +654,19 @@ export class UFSolver<Reason> {
 
 	/// findInconsistentConstants() returns a set of reasons which are
 	/// inconsistent because they imply that two distinct constants are equal.
-	private findInconsistentConstants(): null | egraph.ReasonTree<Reason> {
+	private findInconsistentConstants(): null | InconsistentConstraints {
 		for (const [id, _group] of this.egraph.getClasses()) {
 			const constants = this.egraph.getTagged("constant", id);
 			if (constants.length > 1) {
 				// Two distinct constants are in the same equality class.
-				return this.egraph.query(constants[0].id, constants[1].id)!;
+				return {
+					equalityConstraints: [
+						{
+							left: constants[0].id as ValueID,
+							right: constants[1].id as ValueID,
+						},
+					],
+				};
 			}
 		}
 		return null;

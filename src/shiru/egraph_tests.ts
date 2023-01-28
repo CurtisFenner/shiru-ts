@@ -8,7 +8,7 @@ function getTag<Term, Tag, Reason>(eg: egraph.EGraph<Term, Tag, Reason>, tag: Ta
 	}
 	return {
 		value: tags[0],
-		reason: eg.query(id, tags[0].id)!.toSet(),
+		reason: eg.explainCongruence(id, tags[0].id).toSet(),
 	};
 }
 
@@ -39,24 +39,28 @@ export const tests = {
 		const four23 = eg.add(4, [two, three]);
 		const four32 = eg.add(4, [three, two]);
 
-		assert(eg.query(two, three), "is equal to", null);
-		assert(eg.query(two, four23), "is equal to", null);
-		assert(eg.query(two, four32), "is equal to", null);
-		assert(eg.query(three, four23), "is equal to", null);
-		assert(eg.query(three, four32), "is equal to", null);
-		assert(eg.query(four23, four32), "is equal to", null);
+		assert(eg.areCongruent(two, three), "is equal to", false);
+		assert(eg.areCongruent(two, four23), "is equal to", false);
+		assert(eg.areCongruent(two, four32), "is equal to", false);
+		assert(eg.areCongruent(three, four23), "is equal to", false);
+		assert(eg.areCongruent(three, four32), "is equal to", false);
+		assert(eg.areCongruent(four23, four32), "is equal to", false);
 
 		eg.merge(two, three, new egraph.ReasonTree(["two=three"]));
 		eg.updateCongruence();
 
-		assert(eg.query(two, three)?.toSet(), "is equal to", new Set(["two=three"]));
-		assert(eg.query(two, four23), "is equal to", null);
-		assert(eg.query(two, four32), "is equal to", null);
-		assert(eg.query(three, two)?.toSet(), "is equal to", new Set(["two=three"]));
-		assert(eg.query(three, four23), "is equal to", null);
-		assert(eg.query(three, four32), "is equal to", null);
-		assert(eg.query(four23, four32)?.toSet(), "is equal to", new Set(["two=three"]));
-		assert(eg.query(four32, four23)?.toSet(), "is equal to", new Set(["two=three"]));
+		assert(eg.areCongruent(two, three), "is equal to", true);
+		assert(eg.explainCongruence(two, three).toSet(), "is equal to", new Set(["two=three"]));
+		assert(eg.areCongruent(two, four23), "is equal to", false);
+		assert(eg.areCongruent(two, four32), "is equal to", false);
+		assert(eg.areCongruent(three, two), "is equal to", true);
+		assert(eg.explainCongruence(three, two).toSet(), "is equal to", new Set(["two=three"]));
+		assert(eg.areCongruent(three, four23), "is equal to", false);
+		assert(eg.areCongruent(three, four32), "is equal to", false);
+		assert(eg.areCongruent(four23, four32), "is equal to", true);
+		assert(eg.explainCongruence(four23, four32).toSet(), "is equal to", new Set(["two=three"]));
+		assert(eg.areCongruent(four32, four23), "is equal to", true);
+		assert(eg.explainCongruence(four32, four23).toSet(), "is equal to", new Set(["two=three"]));
 	},
 	"EGraph-facts"() {
 		const eg: egraph.EGraph<string | number, "constant", string> = new egraph.EGraph();
@@ -108,30 +112,28 @@ export const tests = {
 
 		develop();
 
-		assert(eg.query(alpha, ten)?.toSet(), "is equal to", specSupersetOf(new Set(["a=10"])));
-		assert(eg.query(gamma, ten)?.toSet(), "is equal to", specSupersetOf(new Set(["g=10"])));
+		assert(eg.explainCongruence(alpha, ten).toSet(), "is equal to", specSupersetOf(new Set(["a=10"])));
+		assert(eg.explainCongruence(gamma, ten).toSet(), "is equal to", specSupersetOf(new Set(["g=10"])));
 
-		{
-			assert(getTag(eg, "constant", alpha), "is equal to", {
-				value: { id: ten, term: 10, operands: [] },
-				reason: new Set(["a=10"]),
-			});
-			assert(getTag(eg, "constant", beta), "is equal to", {
-				value: { id: twenty, term: 20, operands: [] },
-				reason: new Set(["b=20"]),
-			});
-			const thirty = eg.add(30, []);
-			eg.addTag(thirty, "constant");
-			assert(getTag(eg, "constant", sumAlphaBetaZero), "is equal to", {
-				value: { id: thirty, term: 30, operands: [] },
-				reason: new Set(["a=10", "b=20"]),
-			});
+		assert(getTag(eg, "constant", alpha), "is equal to", {
+			value: { id: ten, term: 10, operands: [] },
+			reason: new Set(["a=10"]),
+		});
+		assert(getTag(eg, "constant", beta), "is equal to", {
+			value: { id: twenty, term: 20, operands: [] },
+			reason: new Set(["b=20"]),
+		});
+		const thirty = eg.add(30, []);
+		eg.addTag(thirty, "constant");
+		assert(getTag(eg, "constant", sumAlphaBetaZero), "is equal to", {
+			value: { id: thirty, term: 30, operands: [] },
+			reason: new Set(["a=10", "b=20"]),
+		});
 
-			assert(getTag(eg, "constant", sumAlphaGamma), "is equal to", {
-				value: { id: twenty, term: 20, operands: [] },
-				reason: specSupersetOf(new Set(["a=10", "g=10"])),
-			});
-		}
+		assert(getTag(eg, "constant", sumAlphaGamma), "is equal to", {
+			value: { id: twenty, term: 20, operands: [] },
+			reason: specSupersetOf(new Set(["a=10", "g=10"])),
+		});
 	},
 	"EGraph-remembers-path-for-reason"() {
 		// Construct nine nodes.
@@ -158,7 +160,7 @@ export const tests = {
 
 		// Verify that the reason n1 is equal to n9 includes all pairs, and not
 		// just a subset.
-		assert(eg.query(n1, n9)?.toSet(), "is equal to", new Set([
+		assert(eg.explainCongruence(n1, n9).toSet(), "is equal to", new Set([
 			12, 23, 34, 45, 56, 67, 78, 89
 		]));
 	},
@@ -182,8 +184,8 @@ export const tests = {
 
 		// All three (and not just some) should become equal after a single step
 		// of congruence.
-		assert(eg.query(fa, fb)?.toSet(), "is equal to", new Set([2]));
-		assert(eg.query(fa, fc)?.toSet(), "is equal to", new Set([3]));
-		assert(eg.query(fa, fd)?.toSet(), "is equal to", new Set([4]));
+		assert(eg.explainCongruence(fa, fb).toSet(), "is equal to", new Set([2]));
+		assert(eg.explainCongruence(fa, fc).toSet(), "is equal to", new Set([3]));
+		assert(eg.explainCongruence(fa, fd).toSet(), "is equal to", new Set([4]));
 	},
 };

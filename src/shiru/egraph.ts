@@ -212,10 +212,7 @@ export class EGraph<Term, Tag, Reason> {
 		}
 		const elementReasons = [];
 		for (let i = 0; i < lefts.length; i++) {
-			const reason = this.query(lefts[i], rights[i]);
-			if (reason === null) {
-				throw new Error("EGraph.mergeBecauseCongruence: non-congruent elements");
-			}
+			const reason = this.explainCongruence(lefts[i], rights[i]);
 			elementReasons.push(reason);
 		}
 
@@ -273,9 +270,13 @@ export class EGraph<Term, Tag, Reason> {
 
 	private queryCache: Map<EObject, Map<EObject, ReasonTree<Reason>>> = new Map();
 
-	query(a: EObject, b: EObject): null | ReasonTree<Reason> {
+	areCongruent(a: EObject, b: EObject): boolean {
+		return this.ds.compareEqual(a, b);
+	}
+
+	explainCongruence(a: EObject, b: EObject): ReasonTree<Reason> {
 		if (!this.ds.compareEqual(a, b)) {
-			return null;
+			throw new Error("EGraph.explainCongruence: objects are not congruent");
 		}
 
 		let cacheA = this.queryCache.get(a);

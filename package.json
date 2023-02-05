@@ -8,10 +8,13 @@
 		"test-satchecker": "node --enable-source-maps built/shiru/satchecker/checker.js"
 	},
 	"dependencies": {
-		"@types/node": "^14.6.4"
+		"@types/node": "^16.6.0"
 	},
 	"license": "LGPL-3.0-only",
 	"devDependencies": {
 		"typescript": "^4.2.3"
+	},
+	"engines": {
+		"node": ">=16.6.0"
 	}
 }

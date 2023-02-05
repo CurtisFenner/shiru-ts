@@ -33,21 +33,27 @@ export interface FailRun {
 export class TestRunner {
 	runs: Run[] = [];
 
-	constructor(private testNameFilter?: string) { }
+	constructor(private testNameFilters: string[]) { }
 
 	runTest(name: string, body: () => void) {
-		if (name.indexOf(this.testNameFilter || "") < 0) {
+		let keep = this.testNameFilters.length === 0;
+		for (const filter of this.testNameFilters) {
+			if (name.indexOf(filter) >= 0) {
+				keep = true;
+			}
+		}
+		if (!keep) {
 			return;
 		}
 
-		const beforeMillis = Date.now();
+		const beforeMillis = performance.now();
 		try {
 			body();
-			const elapsedMillis = Date.now() - beforeMillis;
+			const elapsedMillis = performance.now() - beforeMillis;
 			this.runs.push({ name, type: "pass", elapsedMillis });
 			return;
 		} catch (e) {
-			const elapsedMillis = Date.now() - beforeMillis;
+			const elapsedMillis = performance.now() - beforeMillis;
 			this.runs.push({ name, type: "fail", exception: e, elapsedMillis });
 		}
 	}
@@ -94,7 +100,7 @@ export class TestRunner {
 					slowest = this.runs[i];
 				}
 			}
-			console.log("Slowest: " + slowest.name + " took " + slowest.elapsedMillis + " ms");
+			console.log("Slowest: " + slowest.name + " took " + slowest.elapsedMillis.toFixed(0) + " ms");
 		}
 
 		if (passed.length === 0 || failed.length !== 0) {
@@ -108,7 +114,7 @@ export const spec = Symbol("test-spec");
 
 export type Spec<T> = T
 	| (T extends object ? { [K in keyof T]: Spec<T[K]> } : never)
-	| { [spec]: (t: T) => ReturnType<typeof deepEqual> };
+	| { [spec]: (t: T) => ReturnType<typeof deepEqual>, [util.inspect.custom]?: any };
 
 export function specSupersetOf<T>(subset: Set<T>): Spec<Set<T>> {
 	return {
@@ -128,6 +134,38 @@ export function specEq<T>(value: Spec<T>): Spec<T> {
 		[spec](test: T) {
 			return deepEqual(test, value);
 		},
+	};
+}
+
+export function specSetEq<R extends Iterable<unknown>>(value: R): Spec<R> {
+	return {
+		[spec](test: R) {
+			try {
+				const setTest = new Set(test);
+				const comparison = deepEqual(new Set(value), setTest);
+				return comparison;
+			} catch {
+				// The `test` is not iterable.
+				return { eq: false, path: [] };
+			}
+		},
+		[util.inspect.custom]: (depth: number, options: any) => {
+			return "(in any order) " + util.inspect(value, options);
+		},
+	};
+}
+
+export function specPredicate<T>(predicate: (t: T) => true | string[], description: string = "(custom predicate)"): Spec<T> {
+	return {
+		[spec](test: T) {
+			const result = predicate(test);
+			if (result === true) {
+				return { eq: true };
+			} else {
+				return { eq: false, path: result };
+			}
+		},
+		[util.inspect.custom]: () => description,
 	};
 }
 
@@ -265,7 +303,28 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 	}
 }
 
-const testRunner = new TestRunner(process.argv[2]);
+const commandArguments: Record<string, string[]> = {};
+const bare = "filter";
+for (let i = 2; i < process.argv.length; i++) {
+	const argument = process.argv[i];
+	const m = argument.match(/^([a-z0-9-]+)=(.*)/);
+	let key: string;
+	let value: string;
+	if (m !== null) {
+		key = m[1];
+		value = m[2];
+	} else {
+		key = bare;
+		value = argument;
+	}
+
+	if (!(key in commandArguments)) {
+		commandArguments[key] = [];
+	}
+	commandArguments[key].push(value);
+}
+
+const testRunner = new TestRunner(commandArguments.filter || []);
 
 testRunner.runTests("data_tests", data_tests.tests);
 testRunner.runTests("ir_tests", ir_tests.tests);
@@ -281,6 +340,16 @@ testRunner.runTests("uf_tests", uf_tests.tests);
 testRunner.runTests("verify_tests", verify_tests.tests);
 testRunner.printReport();
 
-if (process.argv[3] && process.argv[3].startsWith("trace=")) {
-	fs.writeFileSync(process.argv[3].substring(6), trace.render());
+
+if ("trace" in commandArguments) {
+	fs.writeFileSync(commandArguments.trace.at(-1)!, trace.render());
+}
+
+if ("perf" in commandArguments) {
+	const dictionary: any = {};
+	for (const run of testRunner.runs) {
+		dictionary[run.name] = { elapsedMillis: run.elapsedMillis };
+	}
+	const body = JSON.stringify({ version: "0.1", tests: dictionary }, null, "    ");
+	fs.writeFileSync(commandArguments.perf.at(-1)!, body);
 }

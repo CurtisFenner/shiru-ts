@@ -156,7 +156,7 @@ export class EMatcher<Reason> {
 		// TODO: Currently, this EMatcher's state is not updated when a merge is
 		//  performed, meaning that `matchAsApplication` does not return some
 		//  matches that it could.
-		return this.egraph.mergeBecauseCongruence(a, b, lefts, rights);
+		return this.egraph.mergeApplications(a, b, null, lefts, rights);
 	}
 
 	evaluateConstant(value: ValueID): { constant: unknown, constantID: ValueID, } | null {
@@ -312,8 +312,7 @@ export class UFSolver<Reason> {
 			const truthObject = assumption.assignment
 				? this.trueObject
 				: this.falseObject;
-			this.egraph.merge(truthObject, assumption.constraint,
-				new egraph.ReasonTree([assumption.reason]));
+			this.egraph.mergeApplications(truthObject, assumption.constraint, assumption.reason, [], []);
 		}
 		trace.stop();
 		trace.stop("initialize");
@@ -377,13 +376,14 @@ export class UFSolver<Reason> {
 				// which can be understood by the SAT solver.
 				const reasonSets: Set<Reason>[] = [];
 				for (const inconsistency of inconsistencies) {
-					const childReasons = [];
+					const conjunction = new Set<Reason>();
 					for (const equality of inconsistency.equalityConstraints) {
-						const reason = this.egraph.explainCongruence(equality.left, equality.right);
-						childReasons.push(reason);
+						const subConjunction = this.egraph.explainCongruence(equality.left, equality.right);
+						for (const r of subConjunction) {
+							conjunction.add(r);
+						}
 					}
-					const reason = egraph.ReasonTree.withChildren(childReasons).toSet();
-					reasonSets.push(reason);
+					reasonSets.push(conjunction);
 				}
 				return { tag: "inconsistent", inconsistencies: reasonSets };
 			}
@@ -418,7 +418,7 @@ export class UFSolver<Reason> {
 		if (semantics !== undefined) {
 			if (semantics.eq) {
 				const [left, right] = trueObject.operands;
-				const newKnowledge = this.egraph.mergeBecauseCongruence(left, right, [trueObject.id], [this.trueObject]);
+				const newKnowledge = this.egraph.mergeApplications(left, right, null, [trueObject.id], [this.trueObject]);
 				if (newKnowledge) {
 					return "change";
 				}

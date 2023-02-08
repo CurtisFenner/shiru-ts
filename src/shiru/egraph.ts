@@ -1,4 +1,5 @@
-import { DefaultMap, DisjointSet, TrieMap } from "./data";
+import { Components } from "./components";
+import { DefaultMap, TrieMap } from "./data";
 
 export type EObject = symbol & { __brand: "EObject" };
 
@@ -6,40 +7,6 @@ export type EClassDescription<Term> = {
 	members: { id: EObject, term: Term, operands: EObject[] }[],
 	representative: EObject,
 };
-
-/**
- * `ReasonTree` represents a tree of sets to be merged lazily.
- */
-export class ReasonTree<T> {
-	private elementList?: T[];
-	private children: ReasonTree<T>[] = [];
-
-	constructor(elements?: T[]) {
-		this.elementList = elements;
-	}
-
-	static withChildren<T>(children: ReasonTree<T>[]): ReasonTree<T> {
-		const tree = new ReasonTree<T>();
-		tree.children = children;
-		return tree;
-	}
-
-	addChild(child: ReasonTree<T>): void {
-		this.children.push(child);
-	}
-
-	toSet(accumulate: Set<T> = new Set()): Set<T> {
-		if (this.elementList !== undefined) {
-			for (const leaf of this.elementList) {
-				accumulate.add(leaf);
-			}
-		}
-		for (const child of this.children) {
-			child.toSet(accumulate);
-		}
-		return accumulate;
-	}
-}
 
 type PendingCongruence = {
 	left: EObject,
@@ -58,7 +25,7 @@ export class EGraph<Term, Tag, Reason> {
 
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
-	private ds: DisjointSet<EObject, ReasonTree<Reason>> = new DisjointSet();
+	private components = new Components<EObject, Reason>();
 
 	private lazyCongruence: PendingCongruence[] = [];
 
@@ -92,7 +59,7 @@ export class EGraph<Term, Tag, Reason> {
 	}
 
 	reset(): void {
-		this.ds.reset();
+		this.components.reset();
 		this.queryCache.clear();
 		for (const [_, map] of this.tagged) {
 			for (const [id, set] of map) {
@@ -129,7 +96,7 @@ export class EGraph<Term, Tag, Reason> {
 
 	getTagged(tag: Tag, id: EObject): Array<{ id: EObject, term: Term, operands: EObject[] }> {
 		const out = [];
-		const representative = this.ds.representative(id);
+		const representative = this.components.representative(id);
 		for (const tagged of this.tagged.get(tag).get(representative)) {
 			const def = this.objectDefinition.get(tagged)!;
 			out.push({ id: tagged, term: def.term, operands: def.operands });
@@ -206,34 +173,30 @@ export class EGraph<Term, Tag, Reason> {
 		return id;
 	}
 
-	mergeBecauseCongruence(a: EObject, b: EObject, lefts: EObject[], rights: EObject[]): boolean {
+	/**
+	 * The "reason" that this congruence is being added is the conjunction of
+	 * `simpleReason` and the equalities `lefts[0] == rights[0] & ...`.
+	 * 
+	 * @returns false when this fact was already present in this egraph.
+	 */
+	mergeApplications(a: EObject, b: EObject, simpleReason: Reason | null, lefts: EObject[], rights: EObject[]): boolean {
 		if (lefts.length !== rights.length) {
 			throw new Error("EGraph.mergeBecauseCongruence: lefts.length !== rights.length");
 		}
-		const elementReasons = [];
-		for (let i = 0; i < lefts.length; i++) {
-			const reason = this.explainCongruence(lefts[i], rights[i]);
-			elementReasons.push(reason);
-		}
 
-		return this.merge(a, b, ReasonTree.withChildren(elementReasons));
-	}
-
-	/// `reason` is a conjunction of `Reason`s.
-	/// merge(a, b, reason) returns false when this fact was already present in
-	/// this egraph.
-	merge(a: EObject, b: EObject, reason: ReasonTree<Reason>): boolean {
-		const arep = this.ds.representative(a);
-		const brep = this.ds.representative(b);
+		const arep = this.components.representative(a);
+		const brep = this.components.representative(b);
 		if (arep === brep) {
 			return false;
 		}
 
-		// Merge a and b specifically (and not their representatives) so that
-		// the reason is precisely tracked.
-		this.ds.union(a, b, reason);
+		const dependencies = [];
+		for (let i = 0; i < lefts.length; i++) {
+			dependencies.push({ left: lefts[i], right: rights[i] });
+		}
+		this.components.addCongruence(a, b, simpleReason, dependencies);
 
-		const parent = this.ds.representative(arep);
+		const parent = this.components.representative(arep);
 		if (parent !== arep && parent !== brep) {
 			throw new Error("EGraph.merge: unexpected new representative");
 		}
@@ -262,20 +225,20 @@ export class EGraph<Term, Tag, Reason> {
 			const q = this.lazyCongruence;
 			this.lazyCongruence = [];
 			for (const e of q) {
-				madeChanges = this.mergeBecauseCongruence(e.left, e.right, e.leftOperands, e.rightOperands) || madeChanges;
+				madeChanges = this.mergeApplications(e.left, e.right, null, e.leftOperands, e.rightOperands) || madeChanges;
 			}
 		}
 		return madeChanges;
 	}
 
-	private queryCache: Map<EObject, Map<EObject, ReasonTree<Reason>>> = new Map();
+	private queryCache: Map<EObject, Map<EObject, Set<Reason>>> = new Map();
 
 	areCongruent(a: EObject, b: EObject): boolean {
-		return this.ds.compareEqual(a, b);
+		return this.components.areCongruent(a, b);
 	}
 
-	explainCongruence(a: EObject, b: EObject): ReasonTree<Reason> {
-		if (!this.ds.compareEqual(a, b)) {
+	explainCongruence(a: EObject, b: EObject): Set<Reason> {
+		if (!this.components.areCongruent(a, b)) {
 			throw new Error("EGraph.explainCongruence: objects are not congruent");
 		}
 
@@ -287,15 +250,16 @@ export class EGraph<Term, Tag, Reason> {
 			}
 		}
 
-		const seq = this.ds.explainEquality(a, b);
-		const all = ReasonTree.withChildren(seq);
-
+		const seq = this.components.findPath(a, b);
+		if (seq === null) {
+			throw new Error("EGraph.explainCongruence: expected missing path");
+		}
 		if (cacheA === undefined) {
 			cacheA = new Map();
 			this.queryCache.set(a, cacheA);
 		}
-		cacheA.set(b, all);
-		return all;
+		cacheA.set(b, seq);
+		return seq;
 	}
 
 	/// getRepresentative(obj) returns a "representative" element of obj's
@@ -303,13 +267,13 @@ export class EGraph<Term, Tag, Reason> {
 	/// same representative, and any objects that are not equal have different
 	/// representatives.
 	getRepresentative(obj: EObject): EObject {
-		return this.ds.representative(obj);
+		return this.components.representative(obj);
 	}
 
 	getClasses(duplicate?: boolean): Map<EObject, EClassDescription<Term>> {
 		const mapping: Map<EObject, EClassDescription<Term>> = new Map();
 		for (const [k, id] of this.tuples) {
-			const representative = this.ds.representative(id);
+			const representative = this.components.representative(id);
 			let eclass = mapping.get(representative);
 			if (eclass === undefined) {
 				eclass = { members: [], representative };

@@ -1,3 +1,4 @@
+import * as components_tests from "./components_tests";
 import * as data_tests from "./data_tests";
 import * as egraph_tests from "./egraph_tests";
 import * as grammar_tests from "./grammar_tests";
@@ -126,6 +127,9 @@ export function specSupersetOf<T>(subset: Set<T>): Spec<Set<T>> {
 			}
 			return { eq: true };
 		},
+		[util.inspect.custom]: (depth: number, options: any) => {
+			return "(any superset of) " + util.inspect(subset, options);
+		},
 	}
 }
 
@@ -133,6 +137,9 @@ export function specEq<T>(value: Spec<T>): Spec<T> {
 	return {
 		[spec](test: T) {
 			return deepEqual(test, value);
+		},
+		[util.inspect.custom]: (depth: number, options: any) => {
+			return util.inspect(value, options);
 		},
 	};
 }
@@ -182,6 +189,9 @@ export function specDescribe<T>(value: Spec<T>, description: string, path?: stri
 				}
 				return cmp;
 			}
+		},
+		[util.inspect.custom]: (depth: number, options: any) => {
+			return util.inspect(value, options);
 		},
 	};
 }
@@ -326,6 +336,7 @@ for (let i = 2; i < process.argv.length; i++) {
 
 const testRunner = new TestRunner(commandArguments.filter || []);
 
+testRunner.runTests("components_tests", components_tests.tests);
 testRunner.runTests("data_tests", data_tests.tests);
 testRunner.runTests("ir_tests", ir_tests.tests);
 testRunner.runTests("egraph_tests", egraph_tests.tests);

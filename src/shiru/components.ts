@@ -14,7 +14,7 @@ type Neighbor<T, R> = {
 }
 
 export class Components<T, R> {
-	private disjointSet = new DisjointSet<T, null>();
+	private disjointSet = new DisjointSet<T>();
 	private time = 1;
 	private outEdge = new DefaultMap<T, Neighbor<T, R>[]>(key => [])
 
@@ -54,7 +54,7 @@ export class Components<T, R> {
 			dependencies,
 			time: newTime,
 		});
-		this.disjointSet.union(a, b, null);
+		this.disjointSet.union(a, b);
 
 		this.time = newTime;
 		return newTime;

@@ -53,15 +53,15 @@ export const tests = {
 		assert(ds.compareEqual(1, 2), "is equal to", false);
 		assert(ds.compareEqual(1, 1), "is equal to", true);
 
-		assert(ds.union(1, 1, "a"), "is equal to", false);
-		assert(ds.union(1, 2, "b"), "is equal to", true);
-		assert(ds.explainEquality(1, 2), "is equal to", ["b"]);
+		assert(ds.union(1, 1), "is equal to", false);
+		assert(ds.union(1, 2), "is equal to", true);
+		assert(ds.compareEqual(1, 2), "is equal to", true);
 
 		assert(ds.compareEqual(1, 1), "is equal to", true);
 		assert(ds.compareEqual(2, 1), "is equal to", true);
 
-		ds.union(3, 4, "c");
-		ds.union(4, 5, "d");
+		ds.union(3, 4);
+		ds.union(4, 5);
 		assert(ds.compareEqual(3, 4), "is equal to", true);
 		assert(ds.compareEqual(5, 4), "is equal to", true);
 		assert(ds.compareEqual(1, 3), "is equal to", false);
@@ -75,33 +75,31 @@ export const tests = {
 	},
 	"DisjointSet-basic-explainEquality"() {
 		const ds = new DisjointSet();
-		ds.union(0, 1, "a");
-		ds.union(5, 4, "e");
-		ds.union(1, 2, "b");
-		ds.union(3, 4, "d");
-		assert(new Set(ds.explainEquality(0, 2)), "is equal to", new Set(["a", "b"]));
-		assert(new Set(ds.explainEquality(3, 5)), "is equal to", new Set(["d", "e"]));
-		ds.union(3, 2, "c");
-		assert(new Set(ds.explainEquality(0, 5)), "is equal to", new Set(["a", "b", "c", "d", "e"]));
-		assert(new Set(ds.explainEquality(1, 1)), "is equal to", new Set());
+		ds.union(0, 1);
+		ds.union(5, 4);
+		ds.union(1, 2);
+		ds.union(3, 4);
+		assert(ds.compareEqual(0, 2), "is equal to", true);
+		assert(ds.compareEqual(3, 5), "is equal to", true);
+		ds.union(3, 2);
+		assert(ds.compareEqual(0, 5), "is equal to", true);
+		assert(ds.compareEqual(1, 1), "is equal to", true);
 	},
 	"DisjointSet-explainEquality-efficient"() {
 		const ds = new DisjointSet();
 
 		const count = 1000;
 		for (let i = 0; i < count; i++) {
-			ds.union(i, i + 1, `${i} - ${i + 1}`);
+			ds.union(i, i + 1);
 		}
 
 		// Querying this should be almost instant.
-		const reason = ds.explainEquality(0, count);
-		assert(new Set(reason).size, "is equal to", count);
+		const reason = ds.compareEqual(0, count);
+		assert(reason, "is equal to", true);
 
-		let total = 0;
 		for (let i = 0; i < count; i++) {
-			const reason = ds.explainEquality(i, count - 1 - i);
-			total += reason.length;
-			assert(reason.length >= i - (count - 1 - i), "is equal to", true);
+			const reason = ds.compareEqual(i, count - 1 - i);
+			assert(reason, "is equal to", true);
 		}
 	},
 };

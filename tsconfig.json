@@ -16,6 +16,7 @@
   },
   "include": [
     "src/*.d.ts",
-    "src/shiru/**/*.ts"
+    "src/shiru/**/*.ts",
+    "src/util/**/*.ts"
   ]
 }

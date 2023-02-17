@@ -648,7 +648,6 @@ export const tests = {
 		assert(isSatisfiable([[smt.createApplication(ltF, [n1, n3])]]), "is equal to", true);
 	},
 	"UFSolver-always-false-interpreter"() {
-
 		const solver = new uf.UFSolver<string>();
 
 		const ltF = solver.createFn({

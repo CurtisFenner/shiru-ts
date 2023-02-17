@@ -1,29 +1,27 @@
-/// TrieMap implements a map where keys are arrays.
-/// This is implemented using a "trie" of ES6 Map objects.
+/**
+ * TrieMap implements a map where keys are arrays (or tuples).
+ * This is implemented using a "trie" of ES6 Map objects.
+ */
 export class TrieMap<KS extends readonly unknown[], V> {
-	// Unfortunately, more accurate typing of this very elaborate.
 	private map: Map<KS[number], TrieMap<KS, V>> = new Map();
 	private value: V | undefined = undefined;
 	size: number = 0;
 
-	get(key: KS, from?: number): V | undefined {
-		from = from || 0;
-
-		if (key.length === from) {
-			return this.value;
-		} else {
+	get(key: KS, from: number = 0): V | undefined {
+		let cursor: TrieMap<KS, V> | undefined = this;
+		while (from < key.length) {
 			const head = key[from];
-			const child = this.map.get(head);
-			if (child) {
-				return child.get(key, from + 1);
-			} else {
+			cursor = cursor.map.get(head);
+			if (cursor === undefined) {
 				return undefined;
 			}
+
+			from += 1;
 		}
+		return cursor.value;
 	}
 
-	put(key: KS, v: V, from?: number): number {
-		from = from || 0;
+	put(key: KS, v: V, from: number = 0): number {
 		if (key.length === from) {
 			const count = this.value === undefined ? 1 : 0;
 			this.value = v;
@@ -32,7 +30,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 
 		const head = key[from];
 		let child = this.map.get(head);
-		if (!child) {
+		if (child === undefined) {
 			child = new TrieMap();
 			this.map.set(key[from], child);
 		}
@@ -47,9 +45,12 @@ export class TrieMap<KS extends readonly unknown[], V> {
 		this.size = 0;
 	}
 
-	/// Iterate over [K[], V] pairs in this map.
-	/// N.B.: The key array is retained and mutated by this generator, so it
-	// should not be retained or modified by the caller.
+	/**
+	 * Iterate over [K[], V] pairs in this map.
+	 * 
+	 * Warning: The key array is retained and mutate by this generator, so it
+	 * should not be retained or modified by the caller.
+	 */
 	*[Symbol.iterator](progress: KS[number][] = []): Generator<[KS, V]> {
 		if (this.value !== undefined) {
 			yield [progress as unknown as KS, this.value];
@@ -85,13 +86,11 @@ export class DefaultMap<K, V> {
 	}
 }
 
-type BFS<E> = { n: E, parent: null } | { n: E, parent: BFS<E> };
-
-/// DisjointSet implements the "disjoint set" (a.k.a. "union find") data-
-/// structure, which tracks the set of components in an undirected graph between
-/// a set of integers {0, 1, 2, ... n} as edges are added.
-/// This implementation is augmented with information about "keys" so that
-/// queries can find a path between two nodes in the same component.
+/**
+ * DisjointSet implements the "disjoint set" (a.k.a "union find")
+ * data-structure, which tracks the set of components in an undirected graph as
+ * edges are added.
+ */
 export class DisjointSet<E> {
 	parents: Map<E, E> = new Map();
 	ranks: Map<E, number> = new Map();
@@ -108,9 +107,14 @@ export class DisjointSet<E> {
 		}
 	}
 
-	/// representative returns a "representative" element of the given object's
-	/// equivalence class, such that two elements are members of the same
-	/// equivalence class if and only if their representatives are the same.
+	/**
+	 * representative returns a "representative" element of the given object's
+	 * equivalence class, such that two elements are members of the same
+	 * equivalence class if and only if their representatives are the same.
+	 * 
+	 * After a union is performed, the new representative will be the
+	 * former representative of the unioned elements.
+	 */
 	representative(e: E): E {
 		this.init(e);
 		while (true) {
@@ -125,16 +129,21 @@ export class DisjointSet<E> {
 		return e;
 	}
 
-	/// compareEqual returns whether or not the two objects are members of the
-	/// same equivalence class.
+	/**
+	 * compareEqual returns whether the two objects are members of the same
+	 * equivalence class.
+	 */
 	compareEqual(a: E, b: E): boolean {
 		return this.representative(a) === this.representative(b);
 	}
 
-	/// union updates this datastructure to join the equivalence classes of
-	/// objects a and b.
-	/// RETURNS false when the objects were already members of the same
-	///         equivalence class.
+	/**
+	 * union updates this data-structure to merge the equivalence classes of a
+	 * and b.
+	 * 
+	 * returns false when the objects were already members of the same
+	 * equivalence class.
+	 */
 	union(a: E, b: E): boolean {
 		this.init(a);
 		this.init(b);
@@ -164,7 +173,10 @@ export class DisjointSet<E> {
 		return true;
 	}
 
-	/// RETURNS the set of equivalence classes managed by this data structure.
+	/**
+	 * components returns the set of equivalence classes managed by this
+	 * data-structure.
+	 */
 	components(): E[][] {
 		let components: Map<E, E[]> = new Map();
 		for (const [e, parent] of this.parents) {

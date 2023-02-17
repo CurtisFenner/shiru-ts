@@ -13,6 +13,12 @@ type Neighbor<T, R> = {
 	time: number,
 }
 
+/**
+ * Components is a disjoint-set data-structure augmented with path information.
+ * 
+ * These paths can be used to "explain" how two elements came to be in the same
+ * equivalence class.
+ */
 export class Components<T, R> {
 	private disjointSet = new DisjointSet<T>();
 	private time = 1;

@@ -321,6 +321,7 @@ export class UFSolver<Reason> {
 
 		let progress = true;
 		while (progress) {
+			trace.start("iteration");
 			progress = false;
 
 			trace.start("getClasses");
@@ -365,11 +366,21 @@ export class UFSolver<Reason> {
 			}
 			trace.stop();
 
-			const constantInconsistency = this.findInconsistentConstants()
-				|| this.findTransitivityContradictions();
+			trace.start("findInconsistentConstants");
+			const constantInconsistency = this.findInconsistentConstants();
 			if (constantInconsistency !== null) {
 				inconsistencies.push(constantInconsistency);
 			}
+			trace.stop();
+
+			trace.start("findTransitivityContradictions");
+			const transitivityContradictions = this.findTransitivityContradictions();
+			if (transitivityContradictions !== null) {
+				inconsistencies.push(transitivityContradictions);
+			}
+			trace.stop();
+
+			trace.stop();
 
 			if (inconsistencies.length !== 0) {
 				// Convert the inconsistencies to sets of incompatible reasons
@@ -438,7 +449,6 @@ export class UFSolver<Reason> {
 				const left = operands[0];
 				const right = operands[1];
 				if (this.egraph.areCongruent(left, right)) {
-
 					return {
 						equalityConstraints: [
 							{ left, right },
@@ -569,7 +579,9 @@ export class UFSolver<Reason> {
 		});
 
 		// Retrieve the true/false constraints.
+		trace.start("getClasses");
 		const classes = this.egraph.getClasses(true);
+		trace.stop();
 		const trueClass = classes.get(this.trueObject);
 		const falseClass = classes.get(this.falseObject);
 		if (trueClass === undefined) {
@@ -580,6 +592,7 @@ export class UFSolver<Reason> {
 
 		// For each transitive function, build a directed graph for each
 		// application in the "true" equality class.
+		trace.start("positive inequalities");
 		for (const app of trueClass.members) {
 			const semantics = this.fns.get(app.term as FnID);
 			if (semantics !== undefined && semantics.transitive === true) {
@@ -601,8 +614,10 @@ export class UFSolver<Reason> {
 				});
 			}
 		}
+		trace.stop();
 
 		// Find each negative transitive constraint.
+		trace.start("negative inequalities");
 		for (const app of falseClass.members) {
 			const semantics = this.fns.get(app.term as FnID);
 			if (semantics !== undefined && semantics.transitive === true) {
@@ -618,6 +633,7 @@ export class UFSolver<Reason> {
 				// a contradiction.
 				const transitiveChain = transitivitySearch(digraphs.get(app.term as FnID), sourceRep, targetRep);
 				if (transitiveChain !== null) {
+					trace.stop();
 					return {
 						equalityConstraints: [
 							{ left: source, right: sourceRep },
@@ -629,6 +645,7 @@ export class UFSolver<Reason> {
 				}
 			}
 		}
+		trace.stop();
 
 		// Find violations of transitive-acyclic semantics.
 		for (const [id] of classes) {
@@ -643,7 +660,9 @@ export class UFSolver<Reason> {
 				if (semantics.transitiveAcyclic === true) {
 					const transitiveChain = transitivitySearch(digraph, id, id);
 					if (transitiveChain !== null) {
-						return { equalityConstraints: transitiveChain };
+						return {
+							equalityConstraints: transitiveChain,
+						};
 					}
 				}
 			}

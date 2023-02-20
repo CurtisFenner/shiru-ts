@@ -228,7 +228,9 @@ export class EMatcher<Reason> {
 export class UFSolver<Reason> {
 	private values = new Map<ValueID, Value>();
 	private fns = new Map<FnID, Semantics<Reason>>();
-	private egraph = new egraph.EGraph<VarID | FnID, "constant", Reason>();
+	private egraph = new egraph.EGraph<VarID | FnID, "constant", Reason>((a, b) => {
+		this.preMerge(a as ValueID, b as ValueID);
+	});
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
 		const varID = Symbol("uf-constant") as VarID;
@@ -288,6 +290,29 @@ export class UFSolver<Reason> {
 	trueObject = this.createConstant(true);
 	falseObject = this.createConstant(false);
 
+	private pendingInconsistencies: InconsistentConstraints[] = [];
+
+	private preMerge(a: ValueID, b: ValueID): void {
+		const constantsA = this.egraph.getTagged("constant", a);
+		if (constantsA.length === 0) {
+			return;
+		}
+		const constantsB = this.egraph.getTagged("constant", b);
+		if (constantsB.length === 0) {
+			return;
+		}
+
+		// Two distinct constants will be congruent after this merge.
+		this.pendingInconsistencies.push({
+			equalityConstraints: [
+				{
+					left: constantsA[0].id as ValueID,
+					right: constantsB[0].id as ValueID,
+				},
+			]
+		});
+	}
+
 	/**
 	 * `refuteUsingTheory(assumptions, queries)` returns a set of facts which
 	 * the solver has determined are inconsistent, or a model ("counterexample")
@@ -306,6 +331,7 @@ export class UFSolver<Reason> {
 	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample, answers: Map<ValueID, boolean> } {
 		trace.start("initialize");
 		this.egraph.reset();
+		this.pendingInconsistencies.length = 0;
 
 		trace.start("truths");
 		for (const assumption of assumptions) {
@@ -316,8 +342,6 @@ export class UFSolver<Reason> {
 		}
 		trace.stop();
 		trace.stop("initialize");
-
-		const inconsistencies: InconsistentConstraints[] = [];
 
 		let progress = true;
 		while (progress) {
@@ -349,7 +373,7 @@ export class UFSolver<Reason> {
 				if (handled === "change") {
 					progress = true;
 				} else if (handled !== "no-change") {
-					inconsistencies.push(handled);
+					this.pendingInconsistencies.push(handled);
 				}
 			}
 			trace.stop();
@@ -366,27 +390,20 @@ export class UFSolver<Reason> {
 			}
 			trace.stop();
 
-			trace.start("findInconsistentConstants");
-			const constantInconsistency = this.findInconsistentConstants();
-			if (constantInconsistency !== null) {
-				inconsistencies.push(constantInconsistency);
-			}
-			trace.stop();
-
 			trace.start("findTransitivityContradictions");
 			const transitivityContradictions = this.findTransitivityContradictions();
 			if (transitivityContradictions !== null) {
-				inconsistencies.push(transitivityContradictions);
+				this.pendingInconsistencies.push(transitivityContradictions);
 			}
 			trace.stop();
 
 			trace.stop();
 
-			if (inconsistencies.length !== 0) {
+			if (this.pendingInconsistencies.length !== 0) {
 				// Convert the inconsistencies to sets of incompatible reasons
 				// which can be understood by the SAT solver.
 				const reasonSets: Set<Reason>[] = [];
-				for (const inconsistency of inconsistencies) {
+				for (const inconsistency of this.pendingInconsistencies) {
 					const conjunction = new Set<Reason>();
 					for (const equality of inconsistency.equalityConstraints) {
 						const subConjunction = this.egraph.explainCongruence(equality.left, equality.right);
@@ -668,26 +685,6 @@ export class UFSolver<Reason> {
 			}
 		}
 
-		return null;
-	}
-
-	/// findInconsistentConstants() returns a set of reasons which are
-	/// inconsistent because they imply that two distinct constants are equal.
-	private findInconsistentConstants(): null | InconsistentConstraints {
-		for (const [id, _group] of this.egraph.getClasses()) {
-			const constants = this.egraph.getTagged("constant", id);
-			if (constants.length > 1) {
-				// Two distinct constants are in the same equality class.
-				return {
-					equalityConstraints: [
-						{
-							left: constants[0].id as ValueID,
-							right: constants[1].id as ValueID,
-						},
-					],
-				};
-			}
-		}
 		return null;
 	}
 }

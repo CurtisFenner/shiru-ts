@@ -3,7 +3,14 @@ import { assert, specSupersetOf } from "./test";
 
 export const tests = {
 	"EGraph-basic"() {
-		const eg: egraph.EGraph<number, "constant", string> = new egraph.EGraph();
+		const pairs: [egraph.EObject, egraph.EObject][] = [];
+		const eg: egraph.EGraph<number, "constant", string> = new egraph.EGraph((a, b) => {
+			// The callback should be called before they are merged.
+			assert(eg.areCongruent(a, b), "is equal to", false);
+
+			// Ensure the callback was called.
+			pairs.push([a, b]);
+		});
 
 		const two = eg.add(2, []);
 		eg.addTag(two, "constant");
@@ -19,8 +26,11 @@ export const tests = {
 		assert(eg.areCongruent(three, four32), "is equal to", false);
 		assert(eg.areCongruent(four23, four32), "is equal to", false);
 
+		assert(pairs, "is equal to", [] as [egraph.EObject, egraph.EObject][]);
 		eg.mergeApplications(two, three, "two=three", [], []);
+		assert(pairs, "is equal to", [[two, three]]);
 		eg.updateCongruence();
+		assert(pairs, "is equal to", [[two, three], [four23, four32]]);
 
 		assert(eg.areCongruent(two, three), "is equal to", true);
 		assert(eg.explainCongruence(two, three), "is equal to", new Set(["two=three"]));
@@ -36,7 +46,7 @@ export const tests = {
 		assert(eg.explainCongruence(four32, four23), "is equal to", new Set(["two=three"]));
 	},
 	"EGraph-facts"() {
-		const eg: egraph.EGraph<string | number, "constant", string[]> = new egraph.EGraph();
+		const eg: egraph.EGraph<string | number, "constant", string[]> = new egraph.EGraph(() => { });
 
 		const zero = eg.add(0, []);
 		eg.addTag(zero, "constant");
@@ -156,7 +166,7 @@ export const tests = {
 	},
 	"EGraph-remembers-path-for-reason"() {
 		// Construct nine nodes.
-		const eg = new egraph.EGraph<string, never, number>();
+		const eg = new egraph.EGraph<string, never, number>(() => { });
 		const n1 = eg.add("1", []);
 		const n2 = eg.add("2", []);
 		const n3 = eg.add("3", []);
@@ -184,7 +194,7 @@ export const tests = {
 		]));
 	},
 	"EGraph-multiple-congruent-applications"() {
-		const eg = new egraph.EGraph<string, never, number>();
+		const eg = new egraph.EGraph<string, never, number>(() => { });
 		const a = eg.add("a", [], "a");
 		const b = eg.add("b", [], "b");
 		const c = eg.add("c", [], "c");

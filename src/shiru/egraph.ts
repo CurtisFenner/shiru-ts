@@ -36,6 +36,8 @@ export class EGraph<Term, Tag, Reason> {
 
 	private references: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
 
+	constructor(private preMergeCallback: (a: EObject, b: EObject) => void) { }
+
 	private updateFunctionRep(obj: EObject): [Term, ...EObject[]] {
 		const def = this.objectDefinition.get(obj)!!;
 		const representativeKey: [Term, ...EObject[]] = [def.term];
@@ -189,6 +191,8 @@ export class EGraph<Term, Tag, Reason> {
 		if (arep === brep) {
 			return false;
 		}
+
+		this.preMergeCallback(a, b);
 
 		const dependencies = [];
 		for (let i = 0; i < lefts.length; i++) {

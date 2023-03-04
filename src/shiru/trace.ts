@@ -1,5 +1,5 @@
 type Stack = {
-	name: string,
+	name: unknown,
 	start: number,
 	end: null | number,
 	children: Stack[],
@@ -16,7 +16,7 @@ const root: Stack = {
 
 let stack: Stack = root;
 
-export function start(name: string): void {
+export function start(name: unknown): void {
 	const e = {
 		name,
 		start: performance.now(),
@@ -26,6 +26,11 @@ export function start(name: string): void {
 	};
 	stack.children.push(e);
 	stack = e;
+}
+
+export function mark(value: unknown): void {
+	start(value);
+	stop();
 }
 
 export function stop(name?: string): void {
@@ -40,7 +45,10 @@ export function stop(name?: string): void {
 	stack = parent;
 }
 
-function escapeHtml(text: string): string {
+function escapeHtml(text: unknown): string {
+	if (typeof text !== "string") {
+		return "<code>" + escapeHtml(JSON.stringify(text)) + "</code>";
+	}
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

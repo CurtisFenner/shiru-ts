@@ -334,6 +334,10 @@ for (let i = 2; i < process.argv.length; i++) {
 	commandArguments[key].push(value);
 }
 
+if ("trace" in commandArguments) {
+	trace.setSlow(true);
+}
+
 const testRunner = new TestRunner(commandArguments.filter || []);
 
 testRunner.runTests("components_tests", components_tests.tests);

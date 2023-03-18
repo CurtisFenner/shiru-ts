@@ -58,6 +58,46 @@ export abstract class SMTSolver<E, Counterexample> {
 		return literal.toString();
 	}
 
+	showClause(clause: number[], assignment: Set<number>, lines: string[] = []) {
+		let first = true;
+		const satisfiedLiteral = clause.find(x => assignment.has(x));
+		if (satisfiedLiteral !== undefined) {
+			// This clause is satisfied by the satisfied literal.
+			lines.push("// satisfied by " + this.showLiteral(satisfiedLiteral));
+			return false;
+		}
+
+		let hasUnrefuted = false;
+		for (const literal of clause) {
+			const literalIsRefuted = assignment.has(-literal);
+			if (literalIsRefuted) {
+				continue;
+			}
+			hasUnrefuted = true;
+
+			lines.push((first ? "&&" : "") + "\t||\t" + this.showLiteral(literal));
+			first = false;
+		}
+		if (!hasUnrefuted) {
+			lines.push("// contradiction!");
+		}
+		return true;
+	}
+
+	showFormula(partialAssignment: number[] = [], indent = ""): string[] {
+		const literals = new Set(partialAssignment);
+
+		const lines: string[] = [];
+		for (const clause of this.clauses) {
+			this.showClause(clause, literals, lines);
+		}
+		return [
+			indent + "formula - " + "v".repeat(120),
+			...lines.map(x => indent + "\t" + x),
+			indent + "formula - " + "^".repeat(120),
+		];
+	}
+
 	/// RETURNS "refuted" when the given constraints can provably not be
 	/// satisfied.
 	/// RETURNS a counter example (satisfaction) when refutation fails; this may
@@ -85,11 +125,13 @@ export abstract class SMTSolver<E, Counterexample> {
 			solver.addClause(clause);
 		}
 
+		trace.start("partial-theory-simplification");
 		while (true) {
 			// Before attempting a full CDCL(T) search loop, perform BCP to get a
 			// partial assignment and ask the theory solver if it is satisfiable.
 			const initial = solver.fastPartialSolve();
 			if (initial === "unsatisfiable") {
+				trace.stop("partial-theory-simplification");
 				return "refuted";
 			}
 			const partialAssignment = solver.getAssignment();
@@ -102,6 +144,7 @@ export abstract class SMTSolver<E, Counterexample> {
 			}
 			const additional = this.learnAdditional(partialAssignment, unassigned);
 			if (additional === "unsatisfiable") {
+				trace.stop("partial-theory-simplification");
 				return "refuted";
 			} else if (additional.length === 0) {
 				// No unit clauses were added.
@@ -112,10 +155,35 @@ export abstract class SMTSolver<E, Counterexample> {
 				solver.addClause([literal]);
 			}
 		}
+		trace.stop("partial-theory-simplification");
 
+		// Find the subset of terms which must be passed to the theory solver
+		// to satisfy the boolean formula.
+		const termsRequiringAssignment = new Set<number>();
+		for (const clause of solver.getSimplifiedClauses()) {
+			for (const literal of clause) {
+				termsRequiringAssignment.add(Math.abs(literal));
+			}
+		}
+		for (const literal of solver.getAssignment()) {
+			termsRequiringAssignment.add(Math.abs(literal));
+		}
+
+		trace.mark("Partial solving boolean assignment", () => {
+			const assignment = solver.getAssignment();
+			return assignment.sort((a, b) => Math.abs(a) - Math.abs(b)).join(", ");
+		});
+		trace.mark("Result of partial solving", () => {
+			const assignment = solver.getAssignment();
+			const lines = this.showFormula(assignment);
+			return lines.join("\n");
+		});
+
+		trace.start("solving");
 		while (true) {
 			const booleanModel = solver.solve();
 			if (booleanModel === "unsatisfiable") {
+				trace.stop("solving");
 				return "refuted";
 			} else {
 				// Clausal proof adds additional constraints to the formula, which
@@ -124,8 +192,14 @@ export abstract class SMTSolver<E, Counterexample> {
 				// clauses which merely preserve satisfiability and not logical
 				// equivalence must be pruned.
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
-				trace.start("rejectBooleanModel(" + booleanModel.length + " terms)");
-				const theoryClauses = this.rejectBooleanModel(booleanModel);
+				const restrictedBooleanModel = booleanModel.filter(literal => {
+					const term = literal > 0 ? +literal : -literal;
+					return termsRequiringAssignment.has(term);
+				});
+				trace.start("rejectBooleanModel");
+				trace.mark("booleanModel size",
+					() => restrictedBooleanModel.length + " restricted, from " + booleanModel.length + " unrestricted");
+				const theoryClauses = this.rejectBooleanModel(restrictedBooleanModel);
 				trace.stop();
 				if (Array.isArray(theoryClauses)) {
 					// Completely undo the assignment.
@@ -147,6 +221,7 @@ export abstract class SMTSolver<E, Counterexample> {
 					// TODO: Instantiation may need to take place here.
 					// The SAT+SMT solver has failed to refute the formula.
 					solver.rollbackToDecisionLevel(-1);
+					trace.stop("solving");
 					return theoryClauses;
 				}
 			}

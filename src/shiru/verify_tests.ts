@@ -1203,6 +1203,71 @@ export const tests = {
 			}
 		]);
 	},
+	"conditional-fact-not-assumed-after-branch"() {
+		const source = `
+		package example;
+
+		record R {
+			fn only_one(n: Int): Int
+			requires n == 1
+			ensures n == 1 {
+				return n;
+			}
+
+			fn main(p: Int): Int {
+				if p == 1 {
+					var x: Int = R.only_one(p);
+					assert p == 1;
+				}
+				assert p == 1;
+				return p;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-assert",
+				assertLocation: { fileID: "test-file", offset: 226, length: 14 },
+			}
+		]);
+	},
+	"duplicated-assert-is-fast"() {
+		// Subsequent asserts should be checked almost immediately.
+		const source = `
+		package example;
+
+		record R {
+			fn dec(n: Int): Int
+			ensures n < 0 implies return == 0
+			ensures return == R.dec(n - 1) {
+				if n < 0 {
+					assert 0 == R.dec(n - 1);
+					assert 0 == R.dec(n - 1);
+					assert 0 == R.dec(n - 1);
+					assert 0 == R.dec(n - 1);
+					return 0;
+				}
+				// The postcondition does not hold for n = 1.
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
+			{
+				tag: "failed-postcondition",
+				postconditionLocation: { fileID: "test-file", offset: 105, length: 22 },
+				returnLocation: { fileID: "test-file", offset: 344, length: 9 },
+			}
+		]);
+	},
 };
 
 function lexicographicComparison<T>(left: T[], right: T[]): -1 | 0 | 1 {

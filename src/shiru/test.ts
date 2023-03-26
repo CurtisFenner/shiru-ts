@@ -33,6 +33,7 @@ export interface FailRun {
 
 export class TestRunner {
 	runs: Run[] = [];
+	traces: trace.TraceBranch[] = [];
 
 	constructor(private testNameFilters: string[]) { }
 
@@ -47,6 +48,7 @@ export class TestRunner {
 			return;
 		}
 
+		trace.clear(name);
 		const beforeMillis = performance.now();
 		try {
 			body();
@@ -56,6 +58,7 @@ export class TestRunner {
 		} catch (e) {
 			const elapsedMillis = performance.now() - beforeMillis;
 			this.runs.push({ name, type: "fail", exception: e, elapsedMillis });
+			this.traces.push(trace.publish());
 		}
 	}
 
@@ -357,7 +360,7 @@ testRunner.printReport();
 
 
 if ("trace" in commandArguments) {
-	fs.writeFileSync(commandArguments.trace.at(-1)!, trace.render());
+	fs.writeFileSync(commandArguments.trace.at(-1)!, trace.render(testRunner.traces));
 }
 
 if ("perf" in commandArguments) {

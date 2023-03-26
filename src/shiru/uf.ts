@@ -14,17 +14,20 @@ type Value = VarValue | AppValue | ConstantValue;
 interface VarValue {
 	tag: "var",
 	var: VarID,
+	type: ir.Type,
 }
 
 interface AppValue {
 	tag: "app",
 	fn: FnID,
 	args: ValueID[],
+	type: ir.Type,
 }
 
 interface ConstantValue {
 	tag: "constant",
 	constant: unknown,
+	type: ir.Type | "unknown",
 }
 
 // A (boolean) variable ID.
@@ -109,11 +112,13 @@ interface Equality {
 	right: ValueID,
 }
 
-interface InconsistentConstraints {
+interface InconsistentConstraints<Reason> {
 	/**
 	 * The conjunction (and) of these constraints is inconsistent.
 	 */
 	equalityConstraints: Equality[],
+
+	simpleReasons?: Reason[],
 }
 
 export class EMatcher<Reason> {
@@ -121,7 +126,7 @@ export class EMatcher<Reason> {
 
 	constructor(
 		private solver: UFSolver<Reason>,
-		private egraph: egraph.EGraph<FnID | VarID, "constant", Reason>,
+		private egraph: egraph.EGraph<FnID | VarID, UFTags, Reason>,
 		eclasses: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
 	) {
 		for (const { members, representative } of eclasses.values()) {
@@ -225,34 +230,55 @@ export class EMatcher<Reason> {
 	}
 }
 
+type UFTags = {
+	constant: { valueID: ValueID, constantValue: unknown },
+};
+
 export class UFSolver<Reason> {
 	private values = new Map<ValueID, Value>();
-	private fns = new Map<FnID, Semantics<Reason>>();
-	private egraph = new egraph.EGraph<VarID | FnID, "constant", Reason>((a, b) => {
-		this.preMerge(a as ValueID, b as ValueID);
-	});
+	private fns = new Map<FnID, { returnType: ir.Type, semantics: Semantics<Reason> }>();
+	private egraph: egraph.EGraph<VarID | FnID, UFTags, Reason>;
+
+	// Create symbolic constants for the two boolean values.
+	trueObject: ValueID;
+	falseObject: ValueID;
+
+	constructor() {
+		this.egraph = new egraph.EGraph((a, b, s, l, r) => {
+			return this.preMerge(a as ValueID, b as ValueID, s, l as ValueID[], r as ValueID[]);
+		}, {
+			constant(child, parent) {
+				return parent;
+			},
+		});
+		this.trueObject = this.createConstant(true);
+		this.falseObject = this.createConstant(false);
+	}
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
 		const varID = Symbol("uf-constant") as VarID;
 		const object = this.egraph.add(varID, [], String(constant)) as ValueID;
-		this.egraph.addTag(object, "constant");
-		this.values.set(object, { tag: "constant", constant });
+		this.egraph.addTag(object, "constant", { valueID: object, constantValue: constant });
+		const type = typeof constant === "boolean"
+			? ir.T_BOOLEAN
+			: "unknown";
+		this.values.set(object, { tag: "constant", constant, type });
 		return object;
 	});
 
-	createVariable(debugName: string): ValueID {
+	createVariable(type: ir.Type, debugName: string): ValueID {
 		const varID = Symbol(debugName || "unknown-var") as VarID;
 		const object = this.egraph.add(varID, [], debugName) as ValueID;
-		this.values.set(object, { tag: "var", var: varID });
+		this.values.set(object, { tag: "var", var: varID, type });
 		return object;
 	}
 
-	createFn(semantics: Semantics<Reason>, debugName: string): FnID {
+	createFn(returnType: ir.Type, semantics: Semantics<Reason>, debugName: string): FnID {
 		const fnID = Symbol(debugName || "unknown-fn") as FnID;
 		if (semantics.transitiveAcyclic && !semantics.transitive) {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
-		this.fns.set(fnID, semantics);
+		this.fns.set(fnID, { returnType, semantics });
 		return fnID;
 	}
 
@@ -261,8 +287,12 @@ export class UFSolver<Reason> {
 	}
 
 	createApplication(fn: FnID, args: ValueID[]): ValueID {
+		const definition = this.fns.get(fn);
+		if (definition === undefined) {
+			throw new Error("UFSolver.createApplication: fn is not defined");
+		}
 		const object = this.egraph.add(fn, args) as ValueID;
-		this.values.set(object, { tag: "app", fn, args });
+		this.values.set(object, { type: definition.returnType, tag: "app", fn, args });
 		return object;
 	}
 
@@ -278,39 +308,61 @@ export class UFSolver<Reason> {
 		return value;
 	}
 
-	getFnSemantics(fnID: FnID): Semantics<Reason> {
-		const semantics = this.fns.get(fnID);
-		if (semantics === undefined) {
-			throw new Error("UFSolver.getFnSemantics: no such fn");
+	getFnReturnType(fnID: FnID): ir.Type {
+		const definition = this.fns.get(fnID);
+		if (definition === undefined) {
+			throw new Error("UFSolver.getFnReturnType: no such fn");
 		}
-		return semantics;
+		return definition.returnType;
 	}
 
-	// Create symbolic constants for the two boolean values.
-	trueObject = this.createConstant(true);
-	falseObject = this.createConstant(false);
+	getFnSemantics(fnID: FnID): Semantics<Reason> {
+		const definition = this.fns.get(fnID);
+		if (definition === undefined) {
+			throw new Error("UFSolver.getFnSemantics: no such fn");
+		}
+		return definition.semantics;
+	}
 
-	private pendingInconsistencies: InconsistentConstraints[] = [];
+	getType(value: ValueID): ir.Type | "unknown" {
+		const definition = this.getDefinition(value);
+		return definition.type;
+	}
 
-	private preMerge(a: ValueID, b: ValueID): void {
+	private pendingInconsistencies: InconsistentConstraints<Reason>[] = [];
+
+	private preMerge(
+		a: ValueID,
+		b: ValueID,
+		simpleReason: Reason | null,
+		lefts: ValueID[],
+		rights: ValueID[]
+	): null | "cancel" {
 		const constantsA = this.egraph.getTagged("constant", a);
-		if (constantsA.length === 0) {
-			return;
+		if (constantsA === null) {
+			return null;
 		}
 		const constantsB = this.egraph.getTagged("constant", b);
-		if (constantsB.length === 0) {
-			return;
+		if (constantsB === null) {
+			return null;
 		}
 
-		// Two distinct constants will be congruent after this merge.
+		// Two distinct constants would be congruent after this merge.
+		// However, because we are canceling the merge, we have to record
+		// the reasons for this merge rather than the pair (left == right).
 		this.pendingInconsistencies.push({
 			equalityConstraints: [
-				{
-					left: constantsA[0].id as ValueID,
-					right: constantsB[0].id as ValueID,
-				},
-			]
+				...lefts.map((left, i) => {
+					return { left, right: rights[i] };
+				}),
+				{ left: constantsA.valueID, right: a },
+				{ left: constantsB.valueID, right: b },
+			],
+			simpleReasons: simpleReason === null ? [] : [simpleReason],
 		});
+
+		// Avoid merging these to reduce explosion of false facts.
+		return "cancel";
 	}
 
 	/**
@@ -368,14 +420,7 @@ export class UFSolver<Reason> {
 			// object).
 			trace.start("false class");
 			const falseClass = classes.get(this.falseObject)!;
-			for (const falseMember of falseClass.members) {
-				const handled = this.handleFalseMember(falseMember.term, falseMember.operands as ValueID[], falseMember.id as ValueID);
-				if (handled === "change") {
-					progress = true;
-				} else if (handled !== "no-change") {
-					this.pendingInconsistencies.push(handled);
-				}
-			}
+			this.handleFalseMembers(falseClass);
 			trace.stop();
 
 			trace.start("updateCongruence");
@@ -400,23 +445,43 @@ export class UFSolver<Reason> {
 			trace.stop();
 
 			if (this.pendingInconsistencies.length !== 0) {
+				trace.start("diagnose inconsistencies");
 				// Convert the inconsistencies to sets of incompatible reasons
 				// which can be understood by the SAT solver.
 				const reasonSets: Set<Reason>[] = [];
 				for (const inconsistency of this.pendingInconsistencies) {
 					const conjunction = new Set<Reason>();
+					const subConjunctions: Set<Reason>[] = [];
 					for (const equality of inconsistency.equalityConstraints) {
 						const subConjunction = this.egraph.explainCongruence(equality.left, equality.right);
+						subConjunctions.push(subConjunction);
 						for (const r of subConjunction) {
 							conjunction.add(r);
 						}
 					}
+					if (inconsistency.simpleReasons && inconsistency.simpleReasons.length !== 0) {
+						for (const simpleReason of inconsistency.simpleReasons) {
+							conjunction.add(simpleReason);
+						}
+					}
 					reasonSets.push(conjunction);
+					// Marks?
+					trace.mark("inconsistency " + conjunction.size, () => {
+						const out: string[] = [];
+						for (const equality of inconsistency.equalityConstraints) {
+							out.push(String(equality.left) + " =?= " + String(equality.right));
+							out.push(...[...subConjunctions.shift()!].map(x => String(x)));
+							out.push("");
+						}
+						return out.join("\n");
+					});
 				}
+				trace.stop("diagnose inconsistencies");
 				return { tag: "inconsistent", inconsistencies: reasonSets };
 			}
 		}
 
+		trace.start("queries");
 		const answers = new Map<ValueID, boolean>();
 		for (const query of queries) {
 			if (this.egraph.areCongruent(query, this.falseObject)) {
@@ -425,6 +490,7 @@ export class UFSolver<Reason> {
 				answers.set(query, true);
 			}
 		}
+		trace.stop("queries");
 
 		// The UFSolver has failed to show that the given assumptions are
 		// inconsistent.
@@ -442,9 +508,9 @@ export class UFSolver<Reason> {
 			operands: egraph.EObject[];
 		},
 	): "change" | "no-change" {
-		const semantics = this.fns.get(trueObject.term as FnID);
-		if (semantics !== undefined) {
-			if (semantics.eq) {
+		const definition = this.fns.get(trueObject.term as FnID);
+		if (definition !== undefined) {
+			if (definition.semantics.eq) {
 				const [left, right] = trueObject.operands;
 				const newKnowledge = this.egraph.mergeApplications(left, right, null, [trueObject.id], [this.trueObject]);
 				if (newKnowledge) {
@@ -455,27 +521,90 @@ export class UFSolver<Reason> {
 		return "no-change";
 	}
 
-	private handleFalseMember(
-		term: FnID | VarID,
-		operands: ValueID[],
-		member: ValueID,
-	): "change" | "no-change" | InconsistentConstraints {
-		const semantics = this.fns.get(term as FnID)
-		if (semantics !== undefined) {
-			if (semantics.eq) {
-				const left = operands[0];
-				const right = operands[1];
-				if (this.egraph.areCongruent(left, right)) {
-					return {
-						equalityConstraints: [
-							{ left, right },
-							{ left: this.falseObject, right: member },
-						],
-					};
-				}
+	private handleFalseMembers(falseClass: egraph.EClassDescription<VarID | FnID>): boolean {
+		let progress = false;
+		const disequalities = [];
+		for (const falseMember of falseClass.members) {
+			const definition = this.fns.get(falseMember.term as FnID);
+			if (definition !== undefined && definition.semantics.eq === true) {
+				const left = falseMember.operands[0] as ValueID;
+				const right = falseMember.operands[1] as ValueID;
+				const disequality = { equality: falseMember.id as ValueID, left, right };
+				disequalities.push(disequality);
+				progress = this.checkDisequality(disequality) || progress;
 			}
 		}
-		return "no-change";
+
+		// Categorize boolean expressions as disequal to `true` and `false`.
+		const notTrueReasons = new Map<ValueID, { equality: ValueID, pair: ValueID, pairConstant: ValueID }>();
+		const notFalseReasons = new Map<ValueID, { equality: ValueID, pair: ValueID, pairConstant: ValueID }>();
+		for (const disequality of disequalities) {
+			const leftType = this.getType(disequality.left);
+			const rightType = this.getType(disequality.right);
+			if (leftType === "unknown" || !ir.equalTypes(leftType, ir.T_BOOLEAN)) {
+				continue;
+			} else if (rightType === "unknown" || !ir.equalTypes(rightType, ir.T_BOOLEAN)) {
+				continue;
+			}
+			const leftConstant = this.evaluateConstant(disequality.left);
+			if (leftConstant !== null && typeof leftConstant.constant === "boolean") {
+				const target = leftConstant.constant
+					? notTrueReasons
+					: notFalseReasons;
+				target.set(disequality.right, {
+					equality: disequality.equality,
+					pair: disequality.left,
+					pairConstant: leftConstant.constantID,
+				});
+			}
+
+			const rightConstant = this.evaluateConstant(disequality.right);
+			if (rightConstant !== null && typeof rightConstant.constant === "boolean") {
+				const target = rightConstant.constant
+					? notTrueReasons
+					: notFalseReasons;
+				target.set(disequality.left, {
+					equality: disequality.equality,
+					pair: disequality.right,
+					pairConstant: rightConstant.constantID,
+				});
+			}
+		}
+
+		// Complain if any boolean-typed expressions are disequal to both `true`
+		// and `false`.
+		for (const key of notTrueReasons.keys()) {
+			const notFalseReason = notFalseReasons.get(key);
+			if (notFalseReason === undefined) {
+				continue;
+			}
+			const notTrueReason = notTrueReasons.get(key)!;
+
+			this.pendingInconsistencies.push({
+				equalityConstraints: [
+					{ left: notFalseReason.equality, right: this.falseObject },
+					{ left: notFalseReason.pair, right: notFalseReason.pairConstant },
+					{ left: notTrueReason.equality, right: this.falseObject },
+					{ left: notTrueReason.pair, right: notTrueReason.pairConstant },
+				],
+			});
+			progress = true;
+		}
+
+		return progress;
+	}
+
+	private checkDisequality({ equality, left, right }: { equality: ValueID, left: ValueID, right: ValueID }): boolean {
+		if (this.egraph.areCongruent(left, right)) {
+			this.pendingInconsistencies.push({
+				equalityConstraints: [
+					{ left, right },
+					{ left: this.falseObject, right: equality },
+				],
+			});
+			return true;
+		}
+		return false;
 	}
 
 	/**
@@ -485,17 +614,17 @@ export class UFSolver<Reason> {
 	 */
 	evaluateConstant(value: ValueID): { constant: unknown, constantID: ValueID } | null {
 		const constants = this.egraph.getTagged("constant", value);
-		if (constants.length === 0) {
+		if (constants === null) {
 			return null;
 		}
-		const id = constants[0].id;
-		const valueDefinition = this.values.get(id as ValueID);
+		const id = constants.valueID;
+		const valueDefinition = this.values.get(id);
 		if (valueDefinition?.tag !== "constant") {
 			throw new Error("UFSolver.evaluateConstant: non-literal tagged");
 		}
 		return {
 			constant: valueDefinition.constant,
-			constantID: id as ValueID,
+			constantID: id,
 		};
 	}
 
@@ -511,8 +640,9 @@ export class UFSolver<Reason> {
 			const matcher = new EMatcher(this, this.egraph, eclasses);
 			for (const { members } of eclasses.values()) {
 				for (const member of members) {
-					const semantics = this.fns.get(member.term as FnID);
-					if (semantics !== undefined) {
+					const definition = this.fns.get(member.term as FnID);
+					if (definition !== undefined) {
+						const semantics = definition.semantics;
 						const simpleInterpreter = semantics.interpreter;
 						if (simpleInterpreter !== undefined) {
 							const changeMade = this.propagateSimpleInterpreter(matcher, member, simpleInterpreter);
@@ -589,7 +719,7 @@ export class UFSolver<Reason> {
 		});
 	}
 
-	private findTransitivityContradictions(): null | InconsistentConstraints {
+	private findTransitivityContradictions(): null | InconsistentConstraints<Reason> {
 		// A directed graph for each transitive function.
 		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { arrowTruth: Equality[], target: symbol }[]>>(f => {
 			return new DefaultMap(k => []);
@@ -611,8 +741,8 @@ export class UFSolver<Reason> {
 		// application in the "true" equality class.
 		trace.start("positive inequalities");
 		for (const app of trueClass.members) {
-			const semantics = this.fns.get(app.term as FnID);
-			if (semantics !== undefined && semantics.transitive === true) {
+			const definition = this.fns.get(app.term as FnID);
+			if (definition !== undefined && definition.semantics.transitive === true) {
 				if (app.operands.length !== 2) {
 					throw new Error("findTransitivityContradictions: ICE");
 				}
@@ -636,8 +766,8 @@ export class UFSolver<Reason> {
 		// Find each negative transitive constraint.
 		trace.start("negative inequalities");
 		for (const app of falseClass.members) {
-			const semantics = this.fns.get(app.term as FnID);
-			if (semantics !== undefined && semantics.transitive === true) {
+			const definition = this.fns.get(app.term as FnID);
+			if (definition !== undefined && definition.semantics.transitive === true) {
 				if (app.operands.length !== 2) {
 					throw new Error("findTransitivityContradictions: ICE");
 				}
@@ -673,8 +803,8 @@ export class UFSolver<Reason> {
 
 			// Search for a path from the group to itself.
 			for (const [fnID, digraph] of digraphs) {
-				const semantics = this.fns.get(fnID)!;
-				if (semantics.transitiveAcyclic === true) {
+				const definition = this.fns.get(fnID)!;
+				if (definition.semantics.transitiveAcyclic === true) {
 					const transitiveChain = transitivitySearch(digraph, id, id);
 					if (transitiveChain !== null) {
 						return {
@@ -715,14 +845,14 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	private objectByTerm = new Map<number, ValueID>();
 
 	createVariable(type: ir.Type, debugName: string): ValueID {
-		const v = this.solver.createVariable(debugName);
+		const v = this.solver.createVariable(type, debugName);
 		if (ir.equalTypes(ir.T_BOOLEAN, type)) {
 			// Boolean-typed variables must be equal to either true or false.
 			// This constraint ensures that the sat solver will commit the
 			// variable to a particular assignment.
 			this.addUnscopedConstraint([
-				this.createApplication(this.eqFn, [this.solver.trueObject, v]),
-				this.createApplication(this.eqFn, [this.solver.falseObject, v]),
+				v,
+				this.createApplication(this.notFn, [v]),
 			]);
 		}
 		return v;
@@ -740,12 +870,27 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		semantics: Semantics<ReasonSatLiteral>,
 		debugName: string,
 	): FnID {
-		return this.solver.createFn(semantics, debugName);
+		return this.solver.createFn(returnType, semantics, debugName);
 	}
 
-	private eqFn = this.createFunction(ir.T_BOOLEAN, { eq: true }, "proof==");
+	notFn = this.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 
 	createApplication(fnID: FnID, args: ValueID[]): ValueID {
+		// Apply simplifications
+		const semantics = this.solver.getFnSemantics(fnID);
+		if (semantics.eq === true) {
+			const left = args[0];
+			const right = args[0];
+			if (left === this.solver.trueObject) {
+				return right;
+			} else if (left === this.solver.falseObject) {
+				return this.createApplication(this.notFn, [right]);
+			} else if (right === this.solver.trueObject) {
+				return left;
+			} else if (right === this.solver.falseObject) {
+				return this.createApplication(this.notFn, [left]);
+			}
+		}
 		return this.solver.createApplication(fnID, args);
 	}
 
@@ -845,7 +990,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			});
 		}
 
-		trace.start("refuteUsingTheory(" + assumptions.length + " assumptions)");
+		trace.start("refuteUsingTheory");
 		const result = this.solver.refuteUsingTheory(assumptions, []);
 		trace.stop();
 		if (result.tag === "inconsistent") {
@@ -862,8 +1007,109 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return result.model;
 	}
 
+	generateTestCode(): string {
+		const defs: string[] = [
+			"const smt = new uf.UFTheory();",
+		];
+		const showType = (t: ir.Type) => {
+			if (ir.equalTypes(ir.T_BOOLEAN, t)) {
+				return "ir.T_BOOLEAN";
+			} else if (ir.equalTypes(ir.T_BYTES, t)) {
+				return "ir.T_BYTES";
+			} else if (ir.equalTypes(ir.T_INT, t)) {
+				return "ir.T_INT";
+			} else if (ir.equalTypes(ir.T_UNIT, t)) {
+				return "ir.T_UNIT";
+			}
+			return JSON.stringify(t);
+		};
+		const fs = new DefaultMap<FnID, string>(value => {
+			const def = this.solver.getFnSemantics(value);
+			const name = "f" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+			const returnType = showType(this.solver.getFnReturnType(value));
+			const semantics = JSON.stringify(def, (_, value) => {
+				if (typeof value !== "function") {
+					return value;
+				}
+				return value.toString().replace(/\s+/g, " ");
+			}, "\t");
+			const hint = JSON.stringify(String(value));
+			defs.push(`const ${name} = smt.createFunction(${returnType}, ${semantics}, ${hint});`);
+			return name;
+		});
+		const exprs = new DefaultMap<ValueID, string>(value => {
+			const def = this.solver.getDefinition(value);
+			if (def.tag === "var") {
+				const name = "v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+				const type = showType(def.type);
+				const hint = JSON.stringify(String(value));
+				defs.push(`const ${name} = smt.createVariable(${type}, ${hint});`);
+				return name;
+			} else if (def.tag === "app") {
+				const f = fs.get(def.fn);
+				const name = "f" + String(def.fn).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+				const args = def.args.map(x => exprs.get(x));
+				defs.push(`const ${name} = smt.createApplication(${f}, [${args.join(", ")}]);`);
+				return name;
+			} else if (def.tag === "constant") {
+				const name = "c" + String(def.constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+				const value = (typeof def.constant === "bigint")
+					? "BigInt(" + JSON.stringify(def.constant.toString()) + ")"
+					: JSON.stringify(def.constant);
+				defs.push(`const ${name} = smt.createConstant(ir.T_INT, ${value});`);
+				return name;
+			}
+			const _: never = def;
+			throw new Error("unreachable");
+		});
+
+		const showLiteral = (literal: number) => {
+			const term = Math.abs(literal);
+			const value = this.objectByTerm.get(term)!;
+			const showValue = exprs.get(value);
+			return literal < 0
+				? "smt.createApplication(smt.notFn, [" + showValue + "])"
+				: showValue;
+		};
+
+		const out = [];
+
+		// Scoped constraints
+		out.push("// Scoped constraints");
+		out.push("");
+		for (const clause of this.clauses) {
+			out.push(`smt.addConstraint([`);
+			for (const literal of clause) {
+				out.push("\t" + showLiteral(literal) + ",");
+			}
+			out.push(`]);`);
+		}
+
+		// Unscoped constraints
+		out.push("// Unscoped constraints");
+		out.push("");
+		for (const clause of this.unscopedClauses) {
+			out.push(`smt.addUnscopedConstraint([`);
+			for (const literal of clause) {
+				out.push("\t" + showLiteral(literal) + ",");
+			}
+			out.push(`]);`);
+		}
+
+		return [
+			...defs,
+			"",
+			...out,
+			"",
+			"const response = smt.attemptRefutation();",
+		].join("\n");
+	}
+
 	override attemptRefutation(): "refuted" | UFCounterexample {
 		// Run the solver.
+		trace.mark("test case source", () => {
+			return this.generateTestCode();
+		});
 		const output = super.attemptRefutation();
 		return output;
 	}

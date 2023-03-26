@@ -1,23 +1,23 @@
-type Trace = TraceBranch | TraceDetails;
+export type Trace = TraceBranch | TraceDetails;
 
 type TraceDetails = {
 	tag: "trace-details",
-	title: string,
-	details: string,
+	title: string | unknown[],
+	details: string | null,
 	time: number,
 	parent: Trace | null,
 };
 
-type TraceBranch = {
+export type TraceBranch = {
 	tag: "trace-branch",
-	title: string,
+	title: string | unknown[],
 	start: number,
 	end: null | number,
 	children: Trace[],
 	parent: TraceBranch | null,
 };
 
-const root: TraceBranch = {
+let root: TraceBranch = {
 	tag: "trace-branch",
 	title: "root",
 	start: performance.now(),
@@ -28,16 +28,29 @@ const root: TraceBranch = {
 
 let activeStack: TraceBranch = root;
 
+export function clear(title: string) {
+	root = {
+		tag: "trace-branch",
+		title,
+		start: performance.now(),
+		end: null,
+		children: [],
+		parent: null,
+	};
+
+	activeStack = root;
+}
+
 let slow = false;
 
 export function setSlow(newSlow: boolean) {
 	slow = newSlow;
 }
 
-export function start(title: unknown): void {
+export function start(title: string | unknown[]): void {
 	const e: TraceBranch = {
 		tag: "trace-branch",
-		title: typeof title === "string" ? title : JSON.stringify(title),
+		title,
 		start: performance.now(),
 		end: null,
 		children: [],
@@ -47,11 +60,13 @@ export function start(title: unknown): void {
 	activeStack = e;
 }
 
-export function mark(title: string, details: () => string): void {
+export function mark(title: string | unknown[], details?: () => string): void {
 	const e: TraceDetails = {
 		tag: "trace-details",
 		title,
-		details: slow ? details() : "(details skipped because trace.slow is false)",
+		details: details
+			? (slow ? details() : "(details skipped because trace.slow is false)")
+			: null,
 		time: performance.now(),
 		parent: activeStack,
 	};
@@ -70,16 +85,28 @@ export function stop(title?: string): void {
 	activeStack = parent;
 }
 
+function showValue(x: unknown): string {
+	const s = JSON.stringify(x, (key, value) => {
+		if (typeof value === "bigint") {
+			return value.toString() + "n";
+		} else {
+			return value;
+		}
+	});
+
+	return String(s);
+}
+
 function escapeHtml(text: unknown): string {
 	if (typeof text !== "string") {
-		return "<code>" + escapeHtml(JSON.stringify(text)) + "</code>";
+		return "<code>" + escapeHtml(showValue(text)) + "</code>";
 	}
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function renderTrees(stacks: Trace[], out: string[], settings: { root: TraceBranch }) {
+function renderTrees(stacks: Trace[], out: string[], settings: { totalTimeMs: number }) {
 	for (const child of stacks) {
-		renderTree(child, out, { open: stacks.length < 2, root: settings.root });
+		renderTree(child, out, { open: stacks.length < 2, totalTimeMs: settings.totalTimeMs });
 	}
 }
 
@@ -90,49 +117,82 @@ function getDurationMs(stack: TraceBranch): number {
 	return stack.end - stack.start;
 }
 
-export function renderTree(stack: Trace, out: string[], settings: { open: boolean, root: TraceBranch }): void {
+export function renderTree(stack: Trace, out: string[], settings: { open: boolean, totalTimeMs: number }): void {
 	if (stack.tag === "trace-branch") {
 		out.push("<details " + (settings.open ? "open" : "") + ">");
 		out.push("<summary>");
 		out.push("<div class=perf-spark>");
-		const totalPercentage = 100 * getDurationMs(stack) / getDurationMs(settings.root);
+		const totalPercentage = 100 * getDurationMs(stack) / settings.totalTimeMs;
 		out.push(`<div class=bar style="width: ${totalPercentage.toFixed(2)}%"></div>`);
 		out.push("</div>");
 		const durationText = stack.end ? getDurationMs(stack).toFixed(1) : "?";
 		out.push("<span class=numeral>" + durationText + " ms</span> &mdash; ");
-		out.push(escapeHtml(stack.title));
+		const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
+		for (const element of title) {
+			out.push(escapeHtml(element));
+		}
 		out.push("</summary>");
 		out.push("<ul>");
-		renderTrees(stack.children, out, { root: settings.root });
+		renderTrees(stack.children, out, { totalTimeMs: settings.totalTimeMs });
 		out.push("</ul>");
 		out.push("</details>");
 	} else {
-		out.push("<details>");
-		out.push("<summary>");
-		out.push(escapeHtml(stack.title));
-		out.push("</summary>");
-		out.push("<pre><code>" + escapeHtml(stack.details) + "</code></pre>");
-		out.push("</details>");
+		if (stack.details === null) {
+			out.push("<li>");
+			const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
+			for (const element of title) {
+				out.push(escapeHtml(element));
+			}
+			out.push("</li>");
+		} else {
+			out.push("<details>");
+			out.push("<summary>");
+			const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
+			for (const element of title) {
+				out.push(escapeHtml(element));
+			}
+			out.push("</summary>");
+			out.push("<pre><code>" + escapeHtml(stack.details) + "</code></pre>");
+			out.push("</details>");
+		}
 	}
 }
 
-export function render(): string {
+export function publish(): TraceBranch {
 	root.end = performance.now();
+	return root;
+}
+
+export function render(branches: TraceBranch[]): string {
 	const out: string[] = [`
 <style>
 body {
 	font-family: sans-serif;
+	line-height: 1.5rem;
+}
+
+summary {
+	/* Align the expand arrow with li bullets */
+	list-style-position: outside;
 }
 
 details {
 	padding: 0.25em;
 }
 
-pre {
-	background: #FED;
-	padding: 1em;
+code {
+	background: #FFFAF5;
+	display: inline-block;
 	border: 1px dotted #BBB;
-	color: #012;
+	color: #00050A;
+	padding: 0.25em;
+	margin-top: -0.125em;
+	margin-bottom: -0.125em;
+}
+
+pre code {
+	padding: 1em;
+	display: block;
 }
 
 .numeral {
@@ -144,7 +204,7 @@ pre {
 
 .perf-box {
 	position: relative;
-	padding-left: 8em;
+	padding-left: 9em;
 }
 
 .perf-spark {
@@ -156,6 +216,7 @@ pre {
 	border: 1px solid black;
 	background: white;
 }
+
 .perf-spark .bar {
 	display: block;
 	position: absolute;
@@ -170,7 +231,12 @@ pre {
 <div class=perf-box>
 
 `];
-	renderTrees([root], out, { root });
+	for (const branch of branches) {
+		renderTree(branch, out, {
+			open: true,
+			totalTimeMs: getDurationMs(branch),
+		});
+	}
 	out.push(`
 </div>
 	`);

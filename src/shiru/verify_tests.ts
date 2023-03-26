@@ -1186,7 +1186,7 @@ export const tests = {
 				if n < 0 {
 					return 0;
 				}
-				// The postcondition does not hold for n = 1.
+				// The postcondition does not hold for n = 0.
 				return 1;
 			}
 		}
@@ -1266,6 +1266,78 @@ export const tests = {
 				postconditionLocation: { fileID: "test-file", offset: 105, length: 22 },
 				returnLocation: { fileID: "test-file", offset: 344, length: 9 },
 			}
+		]);
+	},
+	"excluded-middle"() {
+		const source = `
+		package example;
+
+		record R {
+			fn test_plain_variable(a: Boolean): Int {
+				assert a == true or a == false;
+				return 1;
+			}
+			
+			fn f(a: Boolean): Int {
+				if a {
+					return 1;
+				} else {
+					return 2;
+				}
+			}
+
+			fn test_image(a: Boolean): Int {
+				assert a == true or a == false;
+				assert R.f(a) == R.f(true) or R.f(a) == R.f(false);
+				return 1;
+			}
+
+			fn g(n: Int): Boolean {
+				return n == 0;
+			}
+
+			fn test_range(a: Int): Int {
+				assert R.g(a) == true or R.g(a) == false;
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", []);
+	},
+	"boolean-has-known-cardinality"() {
+		const source = `
+		package example;
+
+		record R {
+			fn testPlainVariable(a: Boolean, b: Boolean, c: Boolean): Int {
+				assert a == b or a == c or b == c;
+				return 1;
+			}
+			
+			fn f(a: Boolean): Int {
+				if a {
+					return 1;
+				} else {
+					return 2;
+				}
+			}
+
+			fn testApplication(a: Boolean, b: Boolean, c: Boolean): Int {
+				assert R.f(a) == R.f(true) or R.f(a) == R.f(false);
+				assert R.f(a) == R.f(b) or R.f(a) == R.f(c) or R.f(b) == R.f(c);
+				return 1;
+			}
+		}
+		`;
+
+		const ast = grammar.parseSource(source, "test-file");
+		const program = semantics.compileSources({ ast });
+		const failures = verify.verifyProgram(program);
+		assert(failures, "is equal to", [
 		]);
 	},
 };

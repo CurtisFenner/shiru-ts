@@ -243,11 +243,11 @@ export const tests = {
 	},
 	"UFSolver-simple-transitivity"() {
 		const solver = new uf.UFSolver();
-		const alpha = solver.createVariable("alpha");
-		const beta = solver.createVariable("beta");
-		const gamma = solver.createVariable("gamma");
+		const alpha = solver.createVariable(ir.T_INT, "alpha");
+		const beta = solver.createVariable(ir.T_INT, "beta");
+		const gamma = solver.createVariable(ir.T_INT, "gamma");
 
-		const p = solver.createFn({ transitive: true }, "p");
+		const p = solver.createFn(ir.T_BOOLEAN, { transitive: true }, "p");
 
 		const query: uf.Assumption<number>[] = [
 			{
@@ -338,16 +338,16 @@ export const tests = {
 	},
 	"UFSolver-transitivity-with-equivalence"() {
 		const solver = new uf.UFSolver();
-		const f = solver.createFn({ transitive: true }, "f");
-		const eq = solver.createFn({ eq: true }, "==");
+		const f = solver.createFn(ir.T_BOOLEAN, { transitive: true }, "f");
+		const eq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
 
 		const as = [];
 		const bs = [];
 		const cs = [];
 		for (let i = 0; i < 10; i++) {
-			as[i] = solver.createVariable("a[" + i + "]");
-			bs[i] = solver.createVariable("b[" + i + "]");
-			cs[i] = solver.createVariable("c[" + i + "]");
+			as[i] = solver.createVariable(ir.T_INT, "a[" + i + "]");
+			bs[i] = solver.createVariable(ir.T_INT, "b[" + i + "]");
+			cs[i] = solver.createVariable(ir.T_INT, "c[" + i + "]");
 		}
 
 		const assumptions: uf.Assumption<number>[] = [
@@ -441,9 +441,9 @@ export const tests = {
 
 		const c1 = solver.createConstant(1);
 		const c2 = solver.createConstant(2);
-		const b = solver.createVariable("b");
+		const b = solver.createVariable(ir.T_INT, "b");
 
-		const eq = solver.createFn({ eq: true }, "==");
+		const eq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
 		const eq_1_b = solver.createApplication(eq, [c1, b]);
 		const eq_2_b = solver.createApplication(eq, [c2, b]);
 
@@ -470,13 +470,13 @@ export const tests = {
 
 		const c1 = solver.createConstant(1);
 		const c2 = solver.createConstant(2);
-		const b = solver.createVariable("b");
+		const b = solver.createVariable(ir.T_INT, "b");
 
-		const f = solver.createFn({}, "f");
+		const f = solver.createFn(ir.T_INT, {}, "f");
 		const f1 = solver.createApplication(f, [c1]);
 		const fb = solver.createApplication(f, [b]);
 
-		const eq = solver.createFn({ eq: true }, "==");
+		const eq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
 		const eq_f1_1 = solver.createApplication(eq, [f1, c1]);
 		const eq_fb_2 = solver.createApplication(eq, [fb, c2]);
 		const eq_1_b = solver.createApplication(eq, [c1, b]);
@@ -507,11 +507,11 @@ export const tests = {
 	"UFSolver-transitiveAcyclic-is-anti-reflexive"() {
 		const solver = new uf.UFSolver<number>();
 
-		const f = solver.createFn({ transitive: true, transitiveAcyclic: true }, "f");
-		const eq = solver.createFn({ eq: true }, "==");
+		const f = solver.createFn(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "f");
+		const eq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
 
-		const a = solver.createVariable("a");
-		const b = solver.createVariable("b");
+		const a = solver.createVariable(ir.T_INT, "a");
+		const b = solver.createVariable(ir.T_INT, "b");
 
 		const query1: uf.Assumption<number>[] = [
 			{
@@ -574,7 +574,7 @@ export const tests = {
 	"UFSolver-antireflexive-interpreter-yes"() {
 		const solver = new uf.UFSolver<string>();
 
-		const ltF = solver.createFn({
+		const ltF = solver.createFn(ir.T_BOOLEAN, {
 			interpreter(...args: (unknown | null)[]): unknown | null {
 				if (args.length !== 2) {
 					throw new Error("unexpected");
@@ -650,7 +650,7 @@ export const tests = {
 	"UFSolver-always-false-interpreter"() {
 		const solver = new uf.UFSolver<string>();
 
-		const ltF = solver.createFn({
+		const ltF = solver.createFn(ir.T_BOOLEAN, {
 			interpreter(...args: (unknown | null)[]): unknown | null {
 				return false;
 			},
@@ -668,5 +668,77 @@ export const tests = {
 			tag: "inconsistent",
 			inconsistencies: [new Set(["alpha"])],
 		});
+	},
+	"UFTheory-breaks-symmetry"() {
+		const smt = new uf.UFTheory();
+
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+
+		const xs = [];
+		for (let i = 0; i < 10; i++) {
+			// This subinstance is satisfied only by
+			// x = y = 1.
+			const x = smt.createVariable(ir.T_INT, "x" + i);
+			const y = smt.createVariable(ir.T_INT, "y" + i);
+			const c1 = smt.createConstant(ir.T_INT, 1);
+			const c2 = smt.createConstant(ir.T_INT, 2);
+			const c3 = smt.createConstant(ir.T_INT, 3);
+			smt.addConstraint([
+				smt.createApplication(eq, [x, c1]),
+				smt.createApplication(eq, [x, c2]),
+			]);
+			smt.addConstraint([
+				smt.createApplication(eq, [y, c1]),
+				smt.createApplication(eq, [y, c3]),
+			]);
+			smt.addConstraint([
+				smt.createApplication(eq, [x, y]),
+			]);
+
+			xs.push(x);
+		}
+
+		const c4 = smt.createConstant(ir.T_INT, 4);
+		smt.addConstraint(xs.map(fx => smt.createApplication(eq, [fx, c4])));
+
+		const result = smt.attemptRefutation();
+		assert(result, "is equal to", "refuted");
+	},
+	"UFTheory-correctly-handles-disequal-constant-reasons"() {
+		const smt = new uf.UFTheory();
+		const cTrue = smt.createConstant(ir.T_BOOLEAN, true);
+		const c0 = smt.createConstant(ir.T_INT, BigInt("0"));
+		const c1 = smt.createConstant(ir.T_INT, BigInt("1"));
+		const eq = smt.createFunction(ir.T_BOOLEAN, { "eq": true }, "==");
+		const alpha = smt.createVariable(ir.T_BOOLEAN, "alpha");
+		const gamma = smt.createVariable(ir.T_BOOLEAN, "gamma");
+		const p0eq1 = smt.createApplication(eq, [c0, c1]);
+		const gammaIsKindaFalse = smt.createApplication(eq, [gamma, p0eq1]);
+		const gammaIsTrue = smt.createApplication(eq, [gamma, cTrue]);
+		const alphaIsKindaFalse = smt.createApplication(eq, [alpha, p0eq1]);
+
+		// Scoped constraints
+		smt.addConstraint([
+			alpha,
+		]);
+		smt.addConstraint([
+			p0eq1,
+			alpha,
+		]);
+		smt.addConstraint([
+			smt.createApplication(smt.notFn, [p0eq1]),
+			gammaIsKindaFalse,
+		]);
+		smt.addConstraint([
+			p0eq1,
+			gammaIsTrue,
+		]);
+		smt.addConstraint([
+			smt.createApplication(smt.notFn, [p0eq1]),
+			alphaIsKindaFalse,
+		]);
+
+		const response = smt.attemptRefutation();
+		assert(response, "is equal to", { model: {} });
 	},
 };

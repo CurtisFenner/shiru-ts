@@ -1,8 +1,9 @@
 import * as builtin from "./builtin";
-import { DefaultMap, TrieMap } from "./data";
+import { DefaultMap } from "./data";
 import * as diagnostics from "./diagnostics";
 import * as ir from "./ir";
 import { displayType } from "./semantics";
+import * as trace from "./trace";
 import * as uf from "./uf";
 
 type CallEdge<T> = {
@@ -1135,12 +1136,15 @@ class VerificationState {
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
+		trace.start("checkReachable");
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
 			this.smt.addConstraint(constraint);
 		}
+		trace.mark([reason]);
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
+		trace.stop("checkReachable");
 		return model;
 	}
 

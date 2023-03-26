@@ -84,11 +84,11 @@ export abstract class SMTSolver<E, Counterexample> {
 		return true;
 	}
 
-	showFormula(partialAssignment: number[] = [], indent = ""): string[] {
+	showFormula(clauses: number[][], partialAssignment: number[] = [], indent = ""): string[] {
 		const literals = new Set(partialAssignment);
 
 		const lines: string[] = [];
-		for (const clause of this.clauses) {
+		for (const clause of clauses) {
 			this.showClause(clause, literals, lines);
 		}
 		return [
@@ -104,6 +104,12 @@ export abstract class SMTSolver<E, Counterexample> {
 	/// not be a truly realizable counter-examples, as instantiation and the
 	/// theory solver may be incomplete.
 	_attemptRefutation(): "refuted" | Counterexample {
+		trace.mark("initial SMT instance", () => {
+			return this.showFormula(this.clauses).join("\n");
+		});
+		trace.mark("initial SMT unscoped instance", () => {
+			return this.showFormula(this.unscopedClauses).join("\n");
+		});
 		const solver = new sat.SATSolver();
 
 		for (const clause of this.unscopedClauses) {
@@ -157,25 +163,44 @@ export abstract class SMTSolver<E, Counterexample> {
 		}
 		trace.stop("partial-theory-simplification");
 
-		// Find the subset of terms which must be passed to the theory solver
-		// to satisfy the boolean formula.
-		const termsRequiringAssignment = new Set<number>();
-		for (const clause of solver.getSimplifiedClauses()) {
-			for (const literal of clause) {
-				termsRequiringAssignment.add(Math.abs(literal));
-			}
-		}
-		for (const literal of solver.getAssignment()) {
-			termsRequiringAssignment.add(Math.abs(literal));
-		}
-
 		trace.mark("Partial solving boolean assignment", () => {
 			const assignment = solver.getAssignment();
 			return assignment.sort((a, b) => Math.abs(a) - Math.abs(b)).join(", ");
 		});
+
+		// Use the SMT solver's clauses, rather than the SAT solver's clauses,
+		// to exclude any learned CDCL clauses.
+		const simplified = solver.simplifyClauses([...this.clauses, ...this.unscopedClauses]);
+
 		trace.mark("Result of partial solving", () => {
-			const assignment = solver.getAssignment();
-			const lines = this.showFormula(assignment);
+			const lines = this.showFormula(simplified);
+			return lines.join("\n");
+		});
+
+		// Find the subset of terms which must be passed to the theory solver
+		// to satisfy the boolean formula.
+		const termsRequiringAssignment = new Set<number>();
+
+		for (const clause of simplified) {
+			for (const literal of clause) {
+				termsRequiringAssignment.add(Math.abs(literal));
+			}
+		}
+
+		trace.mark("termsRequiringAssignment", () => {
+			const lines = [...termsRequiringAssignment].map(x => this.showLiteral(x));
+			return lines.join("\n");
+		});
+
+		// In addition, add all forced unit clauses. These may be useful to the
+		// theory solver.
+		const instantiationTerms = new Set<number>();
+		for (const literal of solver.getAssignment()) {
+			instantiationTerms.add(Math.abs(literal));
+		}
+
+		trace.mark("instantiationTerms", () => {
+			const lines = [...instantiationTerms].map(x => this.showLiteral(x));
 			return lines.join("\n");
 		});
 
@@ -194,13 +219,16 @@ export abstract class SMTSolver<E, Counterexample> {
 				// TODO: Remove (and attempt to re-add) any non-implied clauses.
 				const restrictedBooleanModel = booleanModel.filter(literal => {
 					const term = literal > 0 ? +literal : -literal;
-					return termsRequiringAssignment.has(term);
+					return instantiationTerms.has(term) || termsRequiringAssignment.has(term);
 				});
 				trace.start("rejectBooleanModel");
-				trace.mark("booleanModel size",
-					() => restrictedBooleanModel.length + " restricted, from " + booleanModel.length + " unrestricted");
+				trace.mark(["booleanModel (not passed to theory) size:", booleanModel.length], () => {
+					return booleanModel.map(x => this.showLiteral(x)).join("\n");
+				});
+				trace.mark(["restrictedBooleanModel size:", restrictedBooleanModel.length], () => {
+					return restrictedBooleanModel.map(x => this.showLiteral(x)).join("\n");
+				});
 				const theoryClauses = this.rejectBooleanModel(restrictedBooleanModel);
-				trace.stop();
 				if (Array.isArray(theoryClauses)) {
 					// Completely undo the assignment.
 					// TODO: theoryClauses should contain an asserting clause,
@@ -210,14 +238,25 @@ export abstract class SMTSolver<E, Counterexample> {
 					if (theoryClauses.length === 0) {
 						throw new Error("SMTSolver.attemptRefutation: expected at least one clause from theory refutation");
 					}
+
+					trace.start(["learned ", theoryClauses.length, " theory clauses"]);
 					for (const theoryClause of theoryClauses) {
 						if (theoryClause.length === 0) {
 							throw new Error("SMTSolver.attemptRefutation: expected theoryClause to not be empty");
 						}
 
+						trace.mark(["learned clause of", theoryClause.length, "terms"], () => {
+							const lines: string[] = [];
+							this.showClause(theoryClause, new Set(), lines);
+							return lines.join("\n");
+						});
+
 						solver.addClause(theoryClause);
 					}
+					trace.stop();
+					trace.stop();
 				} else {
+					trace.stop();
 					// TODO: Instantiation may need to take place here.
 					// The SAT+SMT solver has failed to refute the formula.
 					solver.rollbackToDecisionLevel(-1);

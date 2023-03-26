@@ -15,13 +15,114 @@ type PendingCongruence = {
 	rightOperands: EObject[],
 };
 
+class TagTracker<Key, TagValues extends Record<string, unknown>> {
+	private tags = new Map<
+		keyof TagValues,
+		Map<Key, TagValues[keyof TagValues]>
+	>();
+
+	private originals = new Map<
+		keyof TagValues,
+		{ original: Key, value: TagValues[keyof TagValues] }[]
+	>();
+
+	constructor(private merge: {
+		[K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]
+	}) {
+		this.clear();
+	}
+
+	clear(): void {
+		this.tags.clear();
+		for (const key in this.merge) {
+			this.tags.set(key, new Map());
+		}
+		for (const [tag, values] of this.originals) {
+			const map = this.tags.get(tag)!;
+			for (const value of values) {
+				const existing = map.get(value.original);
+				if (existing === undefined) {
+					map.set(value.original, value.value);
+				} else {
+					const merged = this.merge[tag](existing, value.value);
+					map.set(value.original, merged);
+				}
+			}
+		}
+	}
+
+	attach<Tag extends keyof TagValues>(
+		tag: Tag,
+		to: Key,
+		value: TagValues[Tag],
+		retainAfterClear: boolean,
+		andParent: Key,
+	): void {
+		let byTag = this.tags.get(tag)!;
+		this.mergeValueInto(tag, to, value, byTag);
+
+		if (retainAfterClear) {
+			// Re-add this attachment after clearing.
+			const record = { original: to, value };
+			let originalsByTag = this.originals.get(tag);
+			if (originalsByTag === undefined) {
+				originalsByTag = [];
+				this.originals.set(tag, originalsByTag);
+			}
+			originalsByTag.push(record);
+		}
+
+		if (andParent !== to) {
+			// Attach the tag to the parent, but do not remember this attachment
+			// after clearing.
+			this.mergeValueInto(tag, andParent, value, byTag);
+		}
+	}
+
+	private mergeValueInto<Tag extends keyof TagValues>(
+		tag: Tag,
+		to: Key,
+		value: TagValues[Tag],
+		byTag = this.tags.get(tag)!,
+	): void {
+		const existing = byTag.get(to);
+		if (existing === undefined) {
+			byTag.set(to, value);
+		} else {
+			const merged = this.merge[tag](existing as TagValues[Tag], value);
+			byTag.set(to, merged);
+		}
+	}
+
+	getTagged<Tag extends keyof TagValues>(
+		tag: Tag,
+		on: Key,
+	): TagValues[Tag] | null {
+		const byTag = this.tags.get(tag);
+		if (byTag === undefined) {
+			return null;
+		}
+		const byKey = byTag.get(on);
+		if (byKey === undefined) {
+			return null;
+		}
+		return byKey as TagValues[Tag];
+	}
+
+	mergeInto(child: Key, parent: Key): void {
+		for (const [tag, byTag] of this.tags) {
+			const fromChild = byTag.get(child);
+			if (fromChild === undefined) {
+				continue;
+			}
+			this.mergeValueInto(tag, parent, fromChild, byTag);
+		}
+	}
+}
+
 /// An "equivalence-graph", loosely inspired by "egg (e-graphs good)".
-export class EGraph<Term, Tag, Reason> {
-	/**
-	 * `tagged.get(tag).get(rep)` is the set of objects tagged with `tag` that
-	 * are equal to representative `rep`.
-	 */
-	private tagged = new DefaultMap<Tag, DefaultMap<EObject, Set<EObject>>>(t => new DefaultMap(r => new Set()));
+export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
+	private tagTracker: TagTracker<EObject, TagValues>;
 
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
 	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
@@ -36,7 +137,12 @@ export class EGraph<Term, Tag, Reason> {
 
 	private references: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
 
-	constructor(private preMergeCallback: (a: EObject, b: EObject) => void) { }
+	constructor(
+		private preMergeCallback: (a: EObject, b: EObject, simpleReason: Reason | null, lefts: EObject[], rights: EObject[]) => null | "cancel",
+		tagTrackingMerges: { [K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]; },
+	) {
+		this.tagTracker = new TagTracker(tagTrackingMerges);
+	}
 
 	private updateFunctionRep(obj: EObject): [Term, ...EObject[]] {
 		const def = this.objectDefinition.get(obj)!!;
@@ -63,16 +169,7 @@ export class EGraph<Term, Tag, Reason> {
 	reset(): void {
 		this.components.reset();
 		this.queryCache.clear();
-		for (const [_, map] of this.tagged) {
-			for (const [id, set] of map) {
-				const has = set.has(id);
-				set.clear();
-				if (has) {
-					set.add(id);
-				}
-			}
-		}
-
+		this.tagTracker.clear();
 		this.references.clear();
 		this.functionByRep.clear();
 		this.lazyCongruence = [];
@@ -96,14 +193,13 @@ export class EGraph<Term, Tag, Reason> {
 		return { term: definition.term, operands: definition.operands };
 	}
 
-	getTagged(tag: Tag, id: EObject): Array<{ id: EObject, term: Term, operands: EObject[] }> {
-		const out = [];
+	getTagged<Tag extends keyof TagValues>(
+		tag: Tag,
+		id: EObject,
+	): TagValues[Tag] | null {
 		const representative = this.components.representative(id);
-		for (const tagged of this.tagged.get(tag).get(representative)) {
-			const def = this.objectDefinition.get(tagged)!;
-			out.push({ id: tagged, term: def.term, operands: def.operands });
-		}
-		return out;
+		const tagValue = this.tagTracker.getTagged(tag, representative);
+		return tagValue;
 	}
 
 	debugSymbolNames = true;
@@ -123,12 +219,9 @@ export class EGraph<Term, Tag, Reason> {
 		return this.tuples.get(tuple) || null;
 	}
 
-	addTag(object: EObject, tag: Tag): void {
+	addTag<Tag extends keyof TagValues>(object: EObject, tag: Tag, value: TagValues[Tag]): void {
 		const representative = this.getRepresentative(object);
-		this.tagged.get(tag).get(representative).add(object);
-		if (representative !== object) {
-			this.tagged.get(tag).get(object).add(object);
-		}
+		this.tagTracker.attach(tag, object, value, true, representative);
 	}
 
 	add(term: Term, operands: EObject[], hint?: string): EObject {
@@ -142,8 +235,7 @@ export class EGraph<Term, Tag, Reason> {
 			const fnName = String(term).match(/^Symbol\((.+)\)$/);
 			hint = (fnName ? fnName[1] : "unknown");
 			if (operands.length !== 0) {
-				hint += "(";
-				hint += operands.map(x => {
+				const operandStrings = operands.map(x => {
 					if (x === undefined) {
 						throw new Error("EGraph.add: unexpected undefined");
 					}
@@ -154,8 +246,12 @@ export class EGraph<Term, Tag, Reason> {
 					} else {
 						return raw;
 					}
-				}).join(", ");
-				hint += ")";
+				});
+				if (operands.length === 2 && !hint.match(/^[a-zA-Z0-9]*$/)) {
+					hint = `(${operandStrings[0]}) ${hint} (${operandStrings[1]})`;
+				} else {
+					hint = `${hint}(${operandStrings.join(", ")})`;
+				}
 			}
 		}
 
@@ -192,7 +288,9 @@ export class EGraph<Term, Tag, Reason> {
 			return false;
 		}
 
-		this.preMergeCallback(a, b);
+		if (this.preMergeCallback(a, b, simpleReason, lefts, rights) === "cancel") {
+			return false;
+		}
 
 		const dependencies = [];
 		for (let i = 0; i < lefts.length; i++) {
@@ -205,12 +303,7 @@ export class EGraph<Term, Tag, Reason> {
 			throw new Error("EGraph.merge: unexpected new representative");
 		}
 		const child = arep === parent ? brep : arep;
-		for (const [tag, map] of this.tagged) {
-			const parentSet = this.tagged.get(tag).get(parent);
-			for (const e of map.get(child)) {
-				parentSet.add(e);
-			}
-		}
+		this.tagTracker.mergeInto(child, parent);
 
 		// Find all references of the child and process them with
 		// updateFunctionRep

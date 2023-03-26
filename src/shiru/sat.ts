@@ -157,13 +157,15 @@ export class SATSolver {
 	}
 
 	/**
-	 * `getSimplifiedClauses()` returns the current set of clauses "simplified"
-	 * by the current assignment: only unsatisfied clauses are returned, and
-	 * only unrefuted literals in those clauses are included.
+	 * `simplifyClauses(clauses)` returns the given set of clauses "simplified"
+	 * by the current assignment.
+	 * 
+	 * Only unsatisfied clauses are returned, and only unrefuted literals in
+	 * those clauses are included.
 	 */
-	getSimplifiedClauses(): Literal[][] {
+	simplifyClauses(clauses: Literal[][]): Literal[][] {
 		const simplifiedClauses = [];
-		for (const clause of this.clauses) {
+		for (const clause of clauses) {
 			const simplifiedClause: Literal[] = [];
 			let hasSatisfied = false;
 			for (const literal of clause) {

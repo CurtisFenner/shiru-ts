@@ -197,7 +197,7 @@ pre code {
 
 .numeral {
 	display: inline-block;
-	width: 7em;
+	width: 5.5em;
 	text-align: right;
 	font-weight: bold;
 }

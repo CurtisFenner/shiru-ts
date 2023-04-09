@@ -58,6 +58,7 @@ export class TestRunner {
 		} catch (e) {
 			const elapsedMillis = performance.now() - beforeMillis;
 			this.runs.push({ name, type: "fail", exception: e, elapsedMillis });
+		} finally {
 			this.traces.push(trace.publish());
 		}
 	}

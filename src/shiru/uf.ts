@@ -870,17 +870,28 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		semantics: Semantics<ReasonSatLiteral>,
 		debugName: string,
 	): FnID {
+		if (semantics.not) {
+			return this.notFn;
+		}
 		return this.solver.createFn(returnType, semantics, debugName);
 	}
 
-	notFn = this.createFunction(ir.T_BOOLEAN, { not: true }, "not");
+	notFn = this.solver.createFn(ir.T_BOOLEAN, {
+		not: true,
+		interpreter(a: unknown) {
+			if (typeof a === "boolean") {
+				return !a;
+			}
+			return null;
+		},
+	}, "not");
 
 	createApplication(fnID: FnID, args: ValueID[]): ValueID {
 		// Apply simplifications
 		const semantics = this.solver.getFnSemantics(fnID);
 		if (semantics.eq === true) {
 			const left = args[0];
-			const right = args[0];
+			const right = args[1];
 			if (left === this.solver.trueObject) {
 				return right;
 			} else if (left === this.solver.falseObject) {

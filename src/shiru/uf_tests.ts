@@ -741,4 +741,56 @@ export const tests = {
 		const response = smt.attemptRefutation();
 		assert(response, "is equal to", { model: {} });
 	},
+	"UFTheory-simplification-regression-test"() {
+		const smt = new uf.UFTheory();
+		const cTrue = smt.createConstant(ir.T_BOOLEAN, true);
+		const cFalse = smt.createConstant(ir.T_BOOLEAN, false);
+		const v = smt.createVariable(ir.T_BOOLEAN, "v");
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
+
+		smt.pushScope();
+		smt.addConstraint([
+			smt.createApplication(eq, [cTrue, v]),
+		]);
+		smt.addConstraint([
+			smt.createApplication(not, [v]),
+		]);
+		const response1 = smt.attemptRefutation();
+		assert(response1, "is equal to", "refuted");
+		smt.popScope();
+
+		smt.pushScope();
+		smt.addConstraint([
+			smt.createApplication(eq, [cFalse, v]),
+		]);
+		smt.addConstraint([
+			v,
+		]);
+		const response2 = smt.attemptRefutation();
+		assert(response2, "is equal to", "refuted");
+		smt.popScope();
+
+		smt.pushScope();
+		smt.addConstraint([
+			smt.createApplication(eq, [v, cTrue]),
+		]);
+		smt.addConstraint([
+			smt.createApplication(not, [v]),
+		]);
+		const response3 = smt.attemptRefutation();
+		assert(response3, "is equal to", "refuted");
+		smt.popScope();
+
+		smt.pushScope();
+		smt.addConstraint([
+			smt.createApplication(eq, [v, cFalse]),
+		]);
+		smt.addConstraint([
+			v,
+		]);
+		const response4 = smt.attemptRefutation();
+		assert(response4, "is equal to", "refuted");
+		smt.popScope();
+	},
 };

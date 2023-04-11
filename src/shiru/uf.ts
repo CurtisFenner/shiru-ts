@@ -1,4 +1,4 @@
-import { DefaultMap, TreeBag } from "./data";
+import { DefaultMap, TreeBag, zipMaps } from "./data";
 import * as egraph from "./egraph";
 import * as ir from "./ir";
 import * as smt from "./smt";
@@ -60,12 +60,12 @@ export interface Semantics<Reason> {
 	) => "change" | "no-change",
 }
 
-function transitivitySearch(
-	digraphOutEdges: DefaultMap<symbol, { arrowTruth: Equality[], target: symbol }[]>,
-	source: symbol,
-	target: symbol,
+function transitivitySearch<Node>(
+	digraphOutEdges: DefaultMap<Node, { arrowTruth: Equality[], target: Node }[]>,
+	source: Node,
+	target: Node,
 ): Equality[] | null {
-	const reached = new Map<symbol, { parent: symbol, arrowTruth: Equality[] }>();
+	const reached = new Map<Node, { parent: Node, arrowTruth: Equality[] }>();
 	const frontier = [source];
 
 	while (frontier.length !== 0) {
@@ -78,7 +78,7 @@ function transitivitySearch(
 					// Follow the path backwards to construct the full set of
 					// inequalities that were followed.
 					const out: Equality[] = [...outEdge.arrowTruth];
-					let cursor = top;
+					let cursor: Node = top;
 					while (cursor !== source) {
 						const parent = reached.get(cursor);
 						if (parent === undefined) {
@@ -339,27 +339,16 @@ export class UFSolver<Reason> {
 			trace.start("iteration");
 			progress = false;
 
-			trace.start("getClasses");
-			const classes = this.egraph.getClasses(true);
-			trace.stop("getClasses");
-
 			// Iterate over all true constraints (those equal to the true
 			// object).
-			trace.start("true class");
-			const trueClass = classes.get(this.trueObject)!;
-			for (const trueMember of trueClass.members) {
-				const handled = this.handleTrueMember(trueMember);
-				if (handled === "change") {
-					progress = true;
-				}
-			}
+			trace.start("handleTrueMembers");
+			progress = this.handleTrueMembers() || progress;
 			trace.stop();
 
 			// Iterate over all false constraints (those equal to the false
 			// object).
-			trace.start("false class");
-			const falseClass = classes.get(this.falseObject)!;
-			this.handleFalseMembers(falseClass);
+			trace.start("handleFalseMembers");
+			progress = this.handleFalseMembers() || progress;
 			trace.stop();
 
 			trace.start("updateCongruence");
@@ -375,10 +364,7 @@ export class UFSolver<Reason> {
 			trace.stop();
 
 			trace.start("findTransitivityContradictions");
-			const transitivityContradictions = this.findTransitivityContradictions();
-			if (transitivityContradictions !== null) {
-				this.pendingInconsistencies.push(transitivityContradictions);
-			}
+			this.findTransitivityContradictions();
 			trace.stop();
 
 			trace.stop();
@@ -440,37 +426,48 @@ export class UFSolver<Reason> {
 		};
 	}
 
-	private handleTrueMember(
-		trueObject: {
-			id: egraph.EObject;
-			term: FnID | VarID;
-			operands: egraph.EObject[];
-		},
-	): "change" | "no-change" {
-		const definition = this.fns.get(trueObject.term as FnID);
-		if (definition !== undefined) {
-			if (definition.semantics.eq) {
-				const [left, right] = trueObject.operands;
-				const newKnowledge = this.egraph.mergeApplications(left, right, null, [trueObject.id], [this.trueObject]);
-				if (newKnowledge) {
-					return "change";
+	private handleTrueMembers(): boolean {
+		let progress = false;
+		const trueApplications = this.egraph.getTagged("indexByFn", this.trueObject);
+		if (trueApplications !== null) {
+			for (const [fn, applications] of trueApplications) {
+				const fnDefinition = this.fns.get(fn)!;
+				if (fnDefinition.semantics.eq === true) {
+					for (const application of applications) {
+						const changeMade = this.handleTrueEquality(
+							application.id,
+							application.operands as [ValueID, ValueID],
+						);
+						progress = progress || changeMade;
+					}
 				}
 			}
 		}
-		return "no-change";
+		return progress;
 	}
 
-	private handleFalseMembers(falseClass: egraph.EClassDescription<VarID | FnID>): boolean {
+	private handleTrueEquality(equality: ValueID, [left, right]: [ValueID, ValueID]): boolean {
+		return this.egraph.mergeApplications(left, right, null, [equality], [this.trueObject]);
+	}
+
+	private handleFalseMembers(): boolean {
+		const falseClass = this.egraph.getTagged("indexByFn", this.falseObject);
+		if (falseClass === null) {
+			return false;
+		}
+
 		let progress = false;
 		const disequalities = [];
-		for (const falseMember of falseClass.members) {
-			const definition = this.fns.get(falseMember.term as FnID);
-			if (definition !== undefined && definition.semantics.eq === true) {
-				const left = falseMember.operands[0] as ValueID;
-				const right = falseMember.operands[1] as ValueID;
-				const disequality = { equality: falseMember.id as ValueID, left, right };
-				disequalities.push(disequality);
-				progress = this.checkDisequality(disequality) || progress;
+		for (const [fn, applications] of falseClass) {
+			const fnDefinition = this.fns.get(fn)!;
+			if (fnDefinition.semantics.eq === true) {
+				for (const application of applications) {
+					const left = application.operands[0] as ValueID;
+					const right = application.operands[1] as ValueID;
+					const disequality = { equality: application.id as ValueID, left, right };
+					disequalities.push(disequality);
+					progress = this.checkDisequality(disequality) || progress;
+				}
 			}
 		}
 
@@ -655,103 +652,84 @@ export class UFSolver<Reason> {
 		});
 	}
 
-	private findTransitivityContradictions(): null | InconsistentConstraints<Reason> {
-		// A directed graph for each transitive function.
-		const digraphs = new DefaultMap<FnID, DefaultMap<symbol, { arrowTruth: Equality[], target: symbol }[]>>(f => {
-			return new DefaultMap(k => []);
-		});
-
-		// Retrieve the true/false constraints.
-		trace.start("getClasses");
-		const classes = this.egraph.getClasses(true);
-		trace.stop();
-		const trueClass = classes.get(this.trueObject);
-		const falseClass = classes.get(this.falseObject);
-		if (trueClass === undefined) {
-			throw new Error("findTransitivityContradictions: ICE");
-		} else if (falseClass === undefined) {
-			throw new Error("findTransitivityContradictions: ICE");
-		}
-
+	private handleTransitiveApplications(
+		fnDefinition: Semantics<Reason>,
+		trueApplications: { id: ValueID, operands: [ValueID, ValueID] }[],
+		falseApplications: { id: ValueID, operands: [ValueID, ValueID] }[],
+	): void {
 		// For each transitive function, build a directed graph for each
 		// application in the "true" equality class.
-		trace.start("positive inequalities");
-		for (const app of trueClass.members) {
-			const definition = this.fns.get(app.term as FnID);
-			if (definition !== undefined && definition.semantics.transitive === true) {
-				if (app.operands.length !== 2) {
-					throw new Error("findTransitivityContradictions: ICE");
-				}
+		trace.start("build digraph");
+		const digraph = new DefaultMap<ValueID, { arrowTruth: Equality[], target: ValueID }[]>(k => []);
+		for (const trueApplication of trueApplications) {
+			const source = trueApplication.operands[0];
+			const target = trueApplication.operands[1];
+			const sourceRep = this.egraph.getRepresentative(source) as ValueID;
+			const targetRep = this.egraph.getRepresentative(target) as ValueID;
+			digraph.get(sourceRep).push({
+				arrowTruth: [
+					{ left: this.trueObject, right: trueApplication.id },
+					{ left: source, right: sourceRep },
+					{ left: target, right: targetRep },
+				],
+				target: targetRep,
+			});
+		}
+		trace.stop("build digraph");
 
-				const source = app.operands[0] as ValueID;
-				const target = app.operands[1] as ValueID;
-				const sourceRep = this.egraph.getRepresentative(source) as ValueID;
-				const targetRep = this.egraph.getRepresentative(target) as ValueID;
-				digraphs.get(app.term as FnID).get(sourceRep).push({
-					arrowTruth: [
-						{ left: this.trueObject, right: app.id as ValueID },
+		trace.start("search for negative paths in digraph");
+		for (const falseApplication of falseApplications) {
+			const source = falseApplication.operands[0];
+			const target = falseApplication.operands[1];
+			const sourceRep = this.egraph.getRepresentative(source) as ValueID;
+			const targetRep = this.egraph.getRepresentative(target) as ValueID;
+
+			// Naively performs a DFS on the set of `<` edges, searching for
+			// a contradiction.
+			const transitiveChain = transitivitySearch(digraph, sourceRep, targetRep);
+			if (transitiveChain !== null) {
+				this.pendingInconsistencies.push({
+					equalityConstraints: [
 						{ left: source, right: sourceRep },
 						{ left: target, right: targetRep },
+						{ left: falseApplication.id as ValueID, right: this.falseObject },
+						...transitiveChain,
 					],
-					target: targetRep,
 				});
 			}
 		}
 		trace.stop();
 
-		// Find each negative transitive constraint.
-		trace.start("negative inequalities");
-		for (const app of falseClass.members) {
-			const definition = this.fns.get(app.term as FnID);
-			if (definition !== undefined && definition.semantics.transitive === true) {
-				if (app.operands.length !== 2) {
-					throw new Error("findTransitivityContradictions: ICE");
-				}
-				const source = app.operands[0] as ValueID;
-				const target = app.operands[1] as ValueID;
-				const sourceRep = this.egraph.getRepresentative(source) as ValueID;
-				const targetRep = this.egraph.getRepresentative(target) as ValueID;
-
-				// Naively performs a DFS on the set of `<` edges, searching for
-				// a contradiction.
-				const transitiveChain = transitivitySearch(digraphs.get(app.term as FnID), sourceRep, targetRep);
+		if (fnDefinition.transitiveAcyclic === true) {
+			trace.start("transitiveAcyclic");
+			for (const [source, _] of digraph) {
+				const transitiveChain = transitivitySearch(digraph, source, source);
 				if (transitiveChain !== null) {
-					trace.stop();
-					return {
-						equalityConstraints: [
-							{ left: source, right: sourceRep },
-							{ left: target, right: targetRep },
-							{ left: app.id as ValueID, right: this.falseObject },
-							...transitiveChain,
-						],
-					};
+					this.pendingInconsistencies.push({
+						equalityConstraints: transitiveChain,
+					});
 				}
 			}
+			trace.stop();
 		}
-		trace.stop();
+	}
 
-		// Find violations of transitive-acyclic semantics.
-		for (const [id] of classes) {
-			if (this.egraph.getRepresentative(id) !== id) {
-				// Only consider e-class representatives.
-				continue;
-			}
-
-			// Search for a path from the group to itself.
-			for (const [fnID, digraph] of digraphs) {
-				const definition = this.fns.get(fnID)!;
-				if (definition.semantics.transitiveAcyclic === true) {
-					const transitiveChain = transitivitySearch(digraph, id, id);
-					if (transitiveChain !== null) {
-						return {
-							equalityConstraints: transitiveChain,
-						};
-					}
-				}
+	private findTransitivityContradictions(): void {
+		// Retrieve the true/false constraints for each transtive function.
+		const trueClass = this.egraph.getTagged("indexByFn", this.trueObject);
+		const falseClass = this.egraph.getTagged("indexByFn", this.falseObject);
+		const empty = new Map<FnID, TreeBag<{ id: ValueID, operands: ValueID[] }>>();
+		const zipped = zipMaps(trueClass || empty, falseClass || empty);
+		for (const [fn, trueApplicationsBag, falseApplicationsBag] of zipped) {
+			const fnDefinition = this.fns.get(fn)!.semantics;
+			if (fnDefinition.transitive === true) {
+				const trueApplications = trueApplicationsBag ? [...trueApplicationsBag] : [];
+				const falseApplications = falseApplicationsBag ? [...falseApplicationsBag] : [];
+				this.handleTransitiveApplications(fnDefinition,
+					trueApplications as { id: ValueID, operands: [ValueID, ValueID] }[],
+					falseApplications as { id: ValueID, operands: [ValueID, ValueID] }[]);
 			}
 		}
-
-		return null;
 	}
 }
 

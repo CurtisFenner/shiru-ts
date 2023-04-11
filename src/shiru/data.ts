@@ -219,11 +219,26 @@ export class TreeBag<T> {
 	}
 
 	*[Symbol.iterator](): Iterator<T> {
-		yield* this.list;
 		if (this.children !== null) {
-			for (const child of this.children) {
-				yield* child;
+			while (this.children.length > 0) {
+				this.list.push(...this.children.pop()!);
 			}
+			this.children = null;
+		}
+		yield* this.list;
+	}
+}
+
+export function* zipMaps<K, A, B>(
+	left: Map<K, A>,
+	right: Map<K, B>,
+): Generator<[K, A | undefined, B | undefined]> {
+	for (const key of left.keys()) {
+		yield [key, left.get(key), right.get(key)];
+	}
+	for (const key of right.keys()) {
+		if (!left.has(key)) {
+			yield [key, undefined, right.get(key)!];
 		}
 	}
 }

@@ -1,4 +1,4 @@
-import { DefaultMap } from "./data";
+import { DefaultMap, TreeBag } from "./data";
 import * as egraph from "./egraph";
 import * as ir from "./ir";
 import * as smt from "./smt";
@@ -54,7 +54,7 @@ export interface Semantics<Reason> {
 	interpreter?: (...args: (unknown | null)[]) => unknown | null,
 
 	generalInterpreter?: (
-		matcher: EMatcher<Reason>,
+		matcher: UFSolver<Reason>,
 		id: ValueID,
 		operands: ValueID[],
 	) => "change" | "no-change",
@@ -121,117 +121,12 @@ interface InconsistentConstraints<Reason> {
 	simpleReasons?: Reason[],
 }
 
-export class EMatcher<Reason> {
-	private membersByClassAndTerm = new Map<egraph.EObject, Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>>();
-
-	constructor(
-		private solver: UFSolver<Reason>,
-		private egraph: egraph.EGraph<FnID | VarID, UFTags, Reason>,
-		eclasses: Map<egraph.EObject, egraph.EClassDescription<FnID | VarID>>,
-	) {
-		for (const { members, representative } of eclasses.values()) {
-			const map = new Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>();
-			for (const member of members) {
-				let byTerm = map.get(member.term);
-				if (byTerm === undefined) {
-					byTerm = { members: [], representative };
-					map.set(member.term, byTerm);
-				}
-				byTerm.members.push(member);
-			}
-			this.membersByClassAndTerm.set(representative, map);
-		}
-	}
-
-	hasApplication(f: FnID | VarID, operands: ValueID[]): ValueID | null {
-		return this.egraph.hasStructure(f, operands) as ValueID;
-	}
-
-	areCongruent(a: ValueID, b: ValueID): boolean {
-		return this.egraph.getRepresentative(a) === this.egraph.getRepresentative(b);
-	}
-
-	/**
-	 * merges the objects `a` and `b` so that they are subsequently congurent.
-	 * 
-	 * The reason given is that the elements of `lefts` are index-wise congruent
-	 * to the elements of `rights`.
-	 */
-	mergeBecauseCongruent(a: ValueID, b: ValueID, lefts: ValueID[], rights: ValueID[]): boolean {
-		// TODO: Currently, this EMatcher's state is not updated when a merge is
-		//  performed, meaning that `matchAsApplication` does not return some
-		//  matches that it could.
-		return this.egraph.mergeApplications(a, b, null, lefts, rights);
-	}
-
-	evaluateConstant(value: ValueID): { constant: unknown, constantID: ValueID, } | null {
-		return this.solver.evaluateConstant(value);
-	}
-
-	createConstant(constant: unknown): ValueID {
-		const id = this.solver.createConstant(constant);
-		const representative = this.egraph.getRepresentative(id);
-		if (!this.membersByClassAndTerm.has(representative)) {
-			// If this is a new object, it must be tracked by this EMatcher so
-			// that subsequent calls to `matchAsApplication` behave correctly.
-			const map = new Map<FnID | VarID, egraph.EClassDescription<FnID | VarID>>();
-			const definition = this.egraph.getDefinition(id);
-			map.set(definition.term, {
-				representative,
-				members: [
-					{
-						id,
-						term: definition.term,
-						operands: definition.operands,
-					},
-				],
-			});
-			this.membersByClassAndTerm.set(representative, map);
-		}
-		return id;
-	}
-
-	/**
-	 * `matchAsApplication(obj, term)` searches for objects within the matched
-	 * `EGraph` which are equal to `obj` and with the given `term` in its
-	 * definition.
-	 *
-	 * Note: For now, this does not reflect equalities generated with `merge`
-	 * since the creation of this `EMatcher`.
-	 */
-	matchAsApplication(
-		obj: ValueID,
-		term: FnID,
-	): Array<{
-		id: ValueID,
-		term: FnID,
-		operands: ValueID[],
-	}> {
-		const eclass = this.membersByClassAndTerm.get(this.egraph.getRepresentative(obj));
-		if (eclass === undefined) {
-			throw new Error("matchAsApplication: obj (" + String(obj) + ") is not contained in this membersByClassAndTerm index");
-		}
-
-		const byTerm = eclass.get(term);
-		if (byTerm === undefined) {
-			return [];
-		}
-
-		const out = [];
-		for (let i = 0; i < byTerm.members.length; i++) {
-			const member = byTerm.members[i];
-			out.push({
-				id: member.id as ValueID,
-				term,
-				operands: member.operands as ValueID[],
-			});
-		}
-		return out;
-	}
-}
-
 type UFTags = {
 	constant: { valueID: ValueID, constantValue: unknown },
+	/**
+	 * All the applications of the given fn in this component.
+	 */
+	indexByFn: Map<FnID, TreeBag<{ id: ValueID, operands: ValueID[] }>>,
 };
 
 export class UFSolver<Reason> {
@@ -249,6 +144,23 @@ export class UFSolver<Reason> {
 		}, {
 			constant(child, parent) {
 				return parent;
+			},
+			indexByFn(child, parent) {
+				const out = new Map<FnID, TreeBag<{ id: ValueID, operands: ValueID[] }>>();
+				for (const [key, value] of child.entries()) {
+					const other = parent.get(key);
+					if (other === undefined) {
+						out.set(key, value);
+					} else {
+						out.set(key, value.union(other));
+					}
+				}
+				for (const [key, value] of parent.entries()) {
+					if (!child.has(key)) {
+						out.set(key, value);
+					}
+				}
+				return out;
 			},
 		});
 		this.trueObject = this.createConstant(true);
@@ -293,6 +205,9 @@ export class UFSolver<Reason> {
 		}
 		const object = this.egraph.add(fn, args) as ValueID;
 		this.values.set(object, { type: definition.returnType, tag: "app", fn, args });
+		this.egraph.addTag(object, "indexByFn", new Map([
+			[fn, TreeBag.of({ id: object, operands: args })],
+		]));
 		return object;
 	}
 
@@ -327,6 +242,30 @@ export class UFSolver<Reason> {
 	getType(value: ValueID): ir.Type | "unknown" {
 		const definition = this.getDefinition(value);
 		return definition.type;
+	}
+
+	areCongruent(a: ValueID, b: ValueID): boolean {
+		return this.egraph.areCongruent(a, b);
+	}
+
+	mergeBecauseCongruent(
+		a: ValueID,
+		b: ValueID,
+		lefts: ValueID[],
+		rights: ValueID[],
+	): boolean {
+		return this.egraph.mergeApplications(a, b, null, lefts, rights);
+	}
+
+	matchAsApplication(value: ValueID, fn: FnID): TreeBag<{
+		id: ValueID,
+		operands: ValueID[],
+	}> {
+		const tag = this.egraph.getTagged("indexByFn", value)?.get(fn);
+		if (tag === undefined) {
+			return TreeBag.of();
+		}
+		return tag;
 	}
 
 	private pendingInconsistencies: InconsistentConstraints<Reason>[] = [];
@@ -637,7 +576,6 @@ export class UFSolver<Reason> {
 		while (true) {
 			let iterationMadeChanges = false;
 			const eclasses = this.egraph.getClasses();
-			const matcher = new EMatcher(this, this.egraph, eclasses);
 			for (const { members } of eclasses.values()) {
 				for (const member of members) {
 					const definition = this.fns.get(member.term as FnID);
@@ -645,14 +583,14 @@ export class UFSolver<Reason> {
 						const semantics = definition.semantics;
 						const simpleInterpreter = semantics.interpreter;
 						if (simpleInterpreter !== undefined) {
-							const changeMade = this.propagateSimpleInterpreter(matcher, member, simpleInterpreter);
+							const changeMade = this.propagateSimpleInterpreter(member, simpleInterpreter);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
 						}
 						const generalInterpreter = semantics.generalInterpreter;
 						if (generalInterpreter !== undefined) {
-							const changeMade = generalInterpreter(matcher, member.id as ValueID, member.operands as ValueID[]);
+							const changeMade = generalInterpreter(this, member.id as ValueID, member.operands as ValueID[]);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
@@ -669,24 +607,22 @@ export class UFSolver<Reason> {
 	}
 
 	private propagateGeneralInterpreter(
-		matcher: EMatcher<Reason>,
 		member: { id: egraph.EObject, operands: egraph.EObject[] },
 		interpreter: (
-			matcher: EMatcher<Reason>,
+			matcher: UFSolver<Reason>,
 			id: ValueID,
 			operands: ValueID[],
 		) => "change" | "no-change",
 	): "change" | "no-change" {
-		return interpreter(matcher, member.id as ValueID, member.operands as ValueID[]);
+		return interpreter(this, member.id as ValueID, member.operands as ValueID[]);
 	}
 
 	private propagateSimpleInterpreter(
-		matcher: EMatcher<Reason>,
 		member: { id: egraph.EObject, operands: egraph.EObject[] },
 		interpreter: (...args: unknown[]) => unknown,
 	): "change" | "no-change" {
-		return this.propagateGeneralInterpreter(matcher, member, (
-			matcher: EMatcher<Reason>,
+		return this.propagateGeneralInterpreter(member, (
+			matcher: UFSolver<Reason>,
 			id: ValueID,
 			operands: ValueID[],
 		): "change" | "no-change" => {

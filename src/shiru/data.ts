@@ -190,3 +190,40 @@ export class DisjointSet<E> {
 		return [...components.values()];
 	}
 }
+
+export class TreeBag<T> {
+	readonly size: number;
+	private constructor(private list: T[], private children: TreeBag<T>[] | null) {
+		let childrenSizes = 0;
+		if (children !== null) {
+			for (const child of children) {
+				childrenSizes += child.size;
+			}
+		}
+		this.size = list.length + childrenSizes;
+	}
+
+	static of<T>(...ts: T[]) {
+		return new TreeBag([...ts], null);
+	}
+
+	union(other: TreeBag<T>): TreeBag<T> {
+		if (other.size === 0) {
+			return this;
+		} else if (this.size === 0) {
+			return other;
+		} else if (this.size + other.size < 9) {
+			return new TreeBag([...this, ...other], null);
+		}
+		return new TreeBag([], [this, other]);
+	}
+
+	*[Symbol.iterator](): Iterator<T> {
+		yield* this.list;
+		if (this.children !== null) {
+			for (const child of this.children) {
+				yield* child;
+			}
+		}
+	}
+}

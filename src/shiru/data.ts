@@ -190,3 +190,55 @@ export class DisjointSet<E> {
 		return [...components.values()];
 	}
 }
+
+export class TreeBag<T> {
+	readonly size: number;
+	private constructor(private list: T[], private children: TreeBag<T>[] | null) {
+		let childrenSizes = 0;
+		if (children !== null) {
+			for (const child of children) {
+				childrenSizes += child.size;
+			}
+		}
+		this.size = list.length + childrenSizes;
+	}
+
+	static of<T>(...ts: T[]) {
+		return new TreeBag([...ts], null);
+	}
+
+	union(other: TreeBag<T>): TreeBag<T> {
+		if (other.size === 0) {
+			return this;
+		} else if (this.size === 0) {
+			return other;
+		} else if (this.size + other.size < 9) {
+			return new TreeBag([...this, ...other], null);
+		}
+		return new TreeBag([], [this, other]);
+	}
+
+	*[Symbol.iterator](): Iterator<T> {
+		if (this.children !== null) {
+			while (this.children.length > 0) {
+				this.list.push(...this.children.pop()!);
+			}
+			this.children = null;
+		}
+		yield* this.list;
+	}
+}
+
+export function* zipMaps<K, A, B>(
+	left: Map<K, A>,
+	right: Map<K, B>,
+): Generator<[K, A | undefined, B | undefined]> {
+	for (const key of left.keys()) {
+		yield [key, left.get(key), right.get(key)];
+	}
+	for (const key of right.keys()) {
+		if (!left.has(key)) {
+			yield [key, undefined, right.get(key)!];
+		}
+	}
+}

@@ -15,7 +15,7 @@ export const foreignOperations: Record<string, {
 	getInterpreter?(foreignFns: (name: string) => uf.FnID[]): {
 		interpreter?: (...args: (unknown | null)[]) => unknown | null,
 		generalInterpreter?: (
-			matcher: uf.EMatcher<number>,
+			matcher: uf.UFSolver<number>,
 			id: uf.ValueID,
 			operands: uf.ValueID[],
 		) => "change" | "no-change",
@@ -257,7 +257,7 @@ export const foreignOperations: Record<string, {
 				},
 
 				generalInterpreter(
-					matcher: uf.EMatcher<number>,
+					matcher: uf.UFSolver<number>,
 					id: uf.ValueID,
 					operands: uf.ValueID[],
 				): "change" | "no-change" {
@@ -550,7 +550,7 @@ export const foreignOperations: Record<string, {
 				},
 
 				generalInterpreter(
-					matcher: uf.EMatcher<number>,
+					matcher: uf.UFSolver<number>,
 					id: uf.ValueID,
 					operands: uf.ValueID[],
 				): "change" | "no-change" {

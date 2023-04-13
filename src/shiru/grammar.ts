@@ -133,7 +133,7 @@ class StructParser<T extends { location: SourceLocation }, R> extends Parser<T, 
 		const firstToken = stream[from].location;
 
 		const result = this.parser.parse(stream, from, debugContext);
-		if (result === null || "message" in result) {
+		if (result === null) {
 			return result;
 		}
 

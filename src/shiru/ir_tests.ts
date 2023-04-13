@@ -84,29 +84,29 @@ export const tests = {
 		// `R[X, Y]`.
 		assert(leftFull, "is equal to", {
 			tag: "type-compound",
-			base: "R",
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
-					id: "X",
+					id: "X" as TypeVariableID,
 				},
 				{
 					tag: "type-variable",
-					id: "Y",
+					id: "Y" as TypeVariableID,
 				},
 			],
 		});
 		assert(rightFull, "is equal to", {
 			tag: "type-compound",
-			base: "R",
+			base: "R" as RecordID,
 			type_arguments: [
 				{
 					tag: "type-variable",
-					id: "X",
+					id: "X" as TypeVariableID,
 				},
 				{
 					tag: "type-variable",
-					id: "Y",
+					id: "Y" as TypeVariableID,
 				},
 			],
 		});

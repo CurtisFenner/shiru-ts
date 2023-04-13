@@ -1,4 +1,5 @@
 built/
+data/
+dist/
 node_modules/
 sat-instances/
-data/

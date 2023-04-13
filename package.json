@@ -5,6 +5,7 @@
 		"cmd": "node --enable-source-maps built/shiru/cmd.js",
 		"build": "tsc",
 		"pack-amd": "tsc --project tsconfig-amd.json",
+		"pack-es6": "tsc --project tsconfig-es6.json",
 		"test-satchecker": "node --enable-source-maps built/shiru/satchecker/checker.js"
 	},
 	"dependencies": {
@@ -12,7 +13,7 @@
 	},
 	"license": "LGPL-3.0-only",
 	"devDependencies": {
-		"typescript": "^4.2.3"
+		"typescript": "^5.0.0"
 	},
 	"engines": {
 		"node": ">=16.6.0"

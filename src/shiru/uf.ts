@@ -1,8 +1,8 @@
-import { DefaultMap, TreeBag, zipMaps } from "./data";
-import * as egraph from "./egraph";
-import * as ir from "./ir";
-import * as smt from "./smt";
-import * as trace from "./trace";
+import { DefaultMap, TreeBag, zipMaps } from "./data.js";
+import * as egraph from "./egraph.js";
+import * as ir from "./ir.js";
+import * as smt from "./smt.js";
+import * as trace from "./trace.js";
 
 export interface UFCounterexample { model: {} }
 

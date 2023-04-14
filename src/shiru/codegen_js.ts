@@ -1,5 +1,5 @@
-import * as ir from "./ir";
-import * as codegen from "./codegen";
+import * as ir from "./ir.js";
+import * as codegen from "./codegen.js";
 
 export function codegenJs(program: ir.Program): codegen.BuiltFile[] {
 	const implementation = new codegen.SourceUTF8Generator();

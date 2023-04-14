@@ -1,5 +1,19 @@
-import { SourceLocation } from "./ir";
-import { ErrorElement, IdenToken, KeywordToken, NumberLiteralToken, OperatorToken, PUNCTUATION, PunctuationToken, StringLiteralToken, Token, tokenize, TypeIdenToken, TypeKeywordToken, TypeVarToken } from "./lexer";
+import { SourceLocation } from "./ir.js";
+import {
+	ErrorElement,
+	IdenToken,
+	KeywordToken,
+	NumberLiteralToken,
+	OperatorToken,
+	PUNCTUATION,
+	PunctuationToken,
+	StringLiteralToken,
+	Token,
+	tokenize,
+	TypeIdenToken,
+	TypeKeywordToken,
+	TypeVarToken,
+} from "./lexer.js";
 import {
 	choice,
 	ChoiceParser,
@@ -15,7 +29,7 @@ import {
 	RepeatParser,
 	TokenParser,
 	TokenSpan,
-} from "./parser";
+} from "./parser.js";
 
 function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken & { keyword: K }> {
 	return new TokenParser((t) => {

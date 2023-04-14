@@ -1,9 +1,9 @@
 {
 	"compilerOptions": {
-		"module": "ES2022",
+		"module": "ES2020",
+		"moduleResolution": "node16",
 		"outDir": "dist/shiru-es6",
 		"declaration": true,
-		"moduleResolution": "node16"
 	},
 	"include": [
 		"src/shiru/library.ts"

@@ -1,5 +1,5 @@
-import { RecordID, Type, typeRecursiveSubstitute, typeSubstitute, TypeVariableID, unifyTypes } from "./ir";
-import { assert } from "./test";
+import { RecordID, Type, typeRecursiveSubstitute, typeSubstitute, TypeVariableID, unifyTypes } from "./ir.js";
+import { assert } from "./test.js";
 
 export const tests = {
 	"basic-unification-fails"() {

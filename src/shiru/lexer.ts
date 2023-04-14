@@ -1,4 +1,4 @@
-import { SourceLocation } from "./ir";
+import { SourceLocation } from "./ir.js";
 
 export type ErrorElement = string | SourceLocation;
 

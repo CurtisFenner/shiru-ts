@@ -1,5 +1,5 @@
-import { SMTSolver } from "./smt";
-import { assert } from "./test";
+import { SMTSolver } from "./smt.js";
+import { assert } from "./test.js";
 
 
 type BoundedExpr = number | string | [BoundedExpr, "+" | "*", BoundedExpr];

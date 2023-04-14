@@ -15,7 +15,7 @@ jobs:
       run: yarn install --frozen-lockfile
     - name: Build
       run: yarn build
-    - name: Install minisat
-      run: sudo apt-get install -y minisat
+    - name: Install reference SAT solver (logic-solver@2.0.1)
+      run: yarn add logic-solver@2.0.1
     - name: Run regression test
       run: yarn test-satchecker

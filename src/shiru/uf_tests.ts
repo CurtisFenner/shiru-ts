@@ -1,6 +1,6 @@
-import * as ir from "./ir";
-import * as uf from "./uf";
-import { assert } from "./test";
+import * as ir from "./ir.js";
+import * as uf from "./uf.js";
+import { assert } from "./test.js";
 
 export const tests = {
 	"UFTheory-basic-equality-refuted"() {

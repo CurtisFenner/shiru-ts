@@ -1,10 +1,10 @@
-import * as diagnostics from "./diagnostics";
-import * as grammar from "./grammar";
-import * as interpreter from "./interpreter";
-import * as ir from "./ir";
-import * as lexer from "./lexer";
-import * as semantics from "./semantics";
-import * as verify from "./verify";
+import * as diagnostics from "./diagnostics.js";
+import * as grammar from "./grammar.js";
+import * as interpreter from "./interpreter.js";
+import * as ir from "./ir.js";
+import * as lexer from "./lexer.js";
+import * as semantics from "./semantics.js";
+import * as verify from "./verify.js";
 
 export interface SourceFile {
 	path: string,

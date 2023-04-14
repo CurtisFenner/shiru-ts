@@ -1,5 +1,5 @@
-import * as trace from "./trace";
-import * as sat from "./sat";
+import * as trace from "./trace.js";
+import * as sat from "./sat.js";
 
 /// SMTSolver represents an "satisfiability modulo theories" instance, with
 /// support for quantifier instantiation.

@@ -1,9 +1,9 @@
-import * as grammar from "./grammar";
-import * as ir from "./ir";
-import * as diagnostics from "./diagnostics";
-import * as lexer from "./lexer";
-import { DefaultMap } from "./data";
-import * as builtin from "./builtin";
+import * as grammar from "./grammar.js";
+import * as ir from "./ir.js";
+import * as diagnostics from "./diagnostics.js";
+import * as lexer from "./lexer.js";
+import { DefaultMap } from "./data.js";
+import * as builtin from "./builtin.js";
 
 interface FieldBinding {
 	nameLocation: ir.SourceLocation,

@@ -1,5 +1,5 @@
-import * as ir from "./ir";
-import { ErrorElement } from "./lexer";
+import * as ir from "./ir.js";
+import { ErrorElement } from "./lexer.js";
 
 export type Value = RecordValue | EnumValue | BooleanValue | BytesValue | IntValue;
 

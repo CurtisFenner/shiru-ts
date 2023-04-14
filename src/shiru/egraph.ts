@@ -1,5 +1,5 @@
-import { Components } from "./components";
-import { DefaultMap, TrieMap } from "./data";
+import { Components } from "./components.js";
+import { DefaultMap, TrieMap } from "./data.js";
 
 export type EObject = symbol & { __brand: "EObject" };
 

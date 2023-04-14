@@ -1,12 +1,12 @@
 import * as fs from "fs";
 import path = require("path");
 import * as process from "process";
-import { codegenJs } from "./codegen_js";
-import * as diagnostics from "./diagnostics";
-import * as grammar from "./grammar";
-import * as ir from "./ir";
-import * as lexer from "./lexer";
-import * as library from "./library";
+import { codegenJs } from "./codegen_js.js";
+import * as diagnostics from "./diagnostics.js";
+import * as grammar from "./grammar.js";
+import * as ir from "./ir.js";
+import * as lexer from "./lexer.js";
+import * as library from "./library.js";
 
 export function processCommands(args: string[]): number {
 	if (args[0] === "interpret") {

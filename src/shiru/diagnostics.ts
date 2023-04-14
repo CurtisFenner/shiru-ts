@@ -1,5 +1,5 @@
-import { SourceLocation } from "./ir";
-import { ErrorElement } from "./lexer";
+import { SourceLocation } from "./ir.js";
+import { ErrorElement } from "./lexer.js";
 
 function pluralize(n: number, singular: string, plural = singular + "s"): string {
 	if (n === 1) {

@@ -1,6 +1,5 @@
-import { TrieMap, DisjointSet } from "./data";
-import { assert } from "./test";
-
+import { TrieMap, DisjointSet } from "./data.js";
+import { assert } from "./test.js";
 
 export const tests = {
 	"TrieMap-basic"() {

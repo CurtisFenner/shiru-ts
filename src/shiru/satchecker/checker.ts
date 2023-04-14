@@ -1,101 +1,77 @@
-import * as child_process from "child_process";
-import { solveDimacs } from "../dimacs.js";
 import { Histogram } from "./histogram.js";
-import { generateInstance as generateRandom3CNF } from "./random3cnf.js";
+import * as sat from "../sat.js";
 
-function runSync(command: string, input?: string): string {
-	if (input !== undefined) {
-		return child_process.execSync(command, { input }).toString("utf8");
-	} else {
-		return child_process.execSync(command).toString("utf8");
-	}
+// @ts-expect-error
+import { default as logic } from "logic-solver";
+
+function randomLiteralForTerm(n: number): number {
+	return Math.random() < 0.5 ? -n : +n;
 }
 
-export function minisat(dimacs: string): "UNSATISFIABLE" | "SATISFIABLE" {
-	let stdout: string;
-	try {
-		stdout = runSync("minisat -verb=0", dimacs);
-	} catch (e: any) {
-		// minisat returns an exit code for satisfiable or not, but instead we're parsing STDOUT to be more resilient.
-		stdout = e.stdout.toString("utf8");
-		if (typeof stdout !== "string") {
-			throw new Error("unexpected error from runSync");
-		}
+/**
+ * @returns a random 3-SAT instance of the indicated size.
+ */
+export function random3CNFInstance(numTerms: number, numClauses: number): number[][] {
+	if (numTerms !== numTerms || numTerms < 4) {
+		throw new Error("invalid numTerms");
+	} else if (numClauses !== numClauses || numClauses < 1) {
+		throw new Error("invalid numClauses");
 	}
-	const lines = stdout.toString().trim().split("\n");
-	const result = lines[lines.length - 1].trim();
-	if (result !== "UNSATISFIABLE" && result !== "SATISFIABLE") {
-		throw new Error("minisat: unexpected minisat output last line `" + result + "`");
+
+	const clauses = [];
+	for (let i = 0; i < numClauses; i++) {
+		let a = Math.floor(Math.random() * numTerms);
+		let b = a;
+		while (b == a) b = Math.floor(Math.random() * numTerms);
+		let c = b;
+		while (c == a || c == b) c = Math.floor(Math.random() * numTerms);
+
+		const clause = [
+			randomLiteralForTerm(a + 1),
+			randomLiteralForTerm(b + 1),
+			randomLiteralForTerm(c + 1),
+		];
+		clauses.push(clause);
 	}
-	return result;
+
+	return clauses;
 }
 
-function shiru(dimacs: string): "UNSATISFIABLE" | "SATISFIABLE" {
-	const result = solveDimacs(dimacs);
-	if (result === "unsatisfiable") {
+export function minisat(clauses: number[][]): "UNSATISFIABLE" | "SATISFIABLE" {
+	const solver = new logic.Solver();
+	for (const clause of clauses) {
+		solver.require(logic.or(...clause.map(literal => {
+			return literal > 0
+				? "v" + literal
+				: "-v" + (-literal);
+		})));
+	}
+	const solution = solver.solve();
+	if (solution === null) {
 		return "UNSATISFIABLE";
-	} else {
-		return "SATISFIABLE";
 	}
+	return "SATISFIABLE";
 }
 
-function table() {
-	const TRIALS = 40;
-	console.log("Fraction of satisfiable instances among " + TRIALS + " random 3-sat instances.");
-	console.log("Num Terms,Num clauses...");
-	let clauseHeading = [""];
-
-	const MIN_CLAUSE = 20;
-	const MAX_CLAUSES = 200;
-	const CLAUSE_STEP = 5;
-
-	for (let numClauses = MIN_CLAUSE; numClauses <= MAX_CLAUSES; numClauses += CLAUSE_STEP) {
-		clauseHeading.push(numClauses + " clauses");
-	}
-
-	console.log(clauseHeading.join(","));
-	const timingRows: any[][] = [];
-	for (let numTerms = 4; numTerms <= 30; numTerms++) {
-		let fractionRow = [numTerms];
-		const timeRow = [numTerms];
-		for (let numClauses = MIN_CLAUSE; numClauses <= MAX_CLAUSES; numClauses += CLAUSE_STEP) {
-			let satisfiable = 0;
-			let totalElapsed = 0;
-			for (let trial = 0; trial < TRIALS; trial++) {
-				const instance = generateRandom3CNF(numTerms, numClauses);
-				const before = Date.now();
-				const result = minisat(instance);
-				const elapsed = Date.now() - before;
-				totalElapsed += elapsed;
-				if (result === "SATISFIABLE") {
-					satisfiable += 1;
-				} else if (result == "UNSATISFIABLE") {
-					// Nothing.
-				} else {
-					throw new Error("unreachable `" + (result as any) + "`");
-				}
-			}
-			fractionRow.push(satisfiable / TRIALS);
-			timeRow.push(totalElapsed / TRIALS);
+function shiru(clauses: number[][]): "UNSATISFIABLE" | "SATISFIABLE" {
+	const solver = new sat.SATSolver();
+	for (const clause of clauses) {
+		for (const literal of clause) {
+			solver.initTerms(Math.abs(literal));
 		}
-		console.log(fractionRow.join(","));
-		timingRows.push(timeRow);
+		solver.addClause(clause);
 	}
 
-	console.log("");
-	console.log("Average solve time (milliseconds)");
-	console.log("Num terms,Num clauses...");
-	console.log(clauseHeading.join(","));
-	for (let row of timingRows) {
-		console.log(row.join(","));
-	}
+	return solver.solve() === "unsatisfiable"
+		? "UNSATISFIABLE"
+		: "SATISFIABLE";
 }
 
 const satHisto = new Histogram(25, 10);
 const unsatHisto = new Histogram(25, 10);
 
-function compareSolvers(instance: string) {
-	const before = Date.now();
+function compareSolvers(instance: number[][]) {
+	const before = performance.now();
 	let shiruResult;
 	try {
 		shiruResult = shiru(instance);
@@ -104,7 +80,7 @@ function compareSolvers(instance: string) {
 		console.log(instance);
 		throw e;
 	}
-	const after = Date.now();
+	const after = performance.now();
 
 	if (after - before > 1000) {
 		console.error("Slow instance (" + (after - before) + " ms):");
@@ -138,48 +114,47 @@ function fuzzSolvers() {
 
 	let numClauses = Math.floor(numVariables * ratio + 0.5);
 
-	const instance = generateRandom3CNF(numVariables, numClauses);
-	const result = compareSolvers(instance);
+	const instance = random3CNFInstance(numVariables, numClauses);
+	compareSolvers(instance);
 }
 
-if (require.main === module) {
-	const before = Date.now();
-
-	let NUM_FUZZES: number | null = null;
-	const commands = process.argv;
-	if (commands.length === 3) {
-		NUM_FUZZES = parseInt(commands[2]);
-	} else if (commands.length === 2) {
-		NUM_FUZZES = 1_000;
-	}
-
-	if (NUM_FUZZES === null || NUM_FUZZES !== NUM_FUZZES || NUM_FUZZES < 1) {
-		console.error("USAGE:");
-		console.error("\t<node> <checker.js> <instance count=1000>");
-		console.error("\t\tgenerates the given number of 3-sat instances and compares Shiru's result with minisat's.");
-
-		process.exit(1);
-	}
-
-	for (let i = 0; i < NUM_FUZZES; i++) {
-		fuzzSolvers();
-		if (i % 10 == 9 || i + 1 >= NUM_FUZZES) {
-			console.log("");
-			satHisto.print("Satisfiable Instances", (lo, hi, last) => {
-				if (last) {
-					return lo + "+ ms";
-				}
-				return lo + "-" + hi + " ms";
-			});
-			unsatHisto.print("Unsatisfiable Instances", (lo, hi, last) => {
-				if (last) {
-					return lo + "+ ms";
-				}
-				return lo + "-" + hi + " ms";
-			});
-		}
-	}
-	const after = Date.now();
-
-	console.log("Completed " + NUM_FUZZES + " 3-sat instances in " + (after - before) + " milliseconds.");
+let NUM_FUZZES: number | null = null;
+const commands = process.argv;
+if (commands.length === 3) {
+	NUM_FUZZES = parseInt(commands[2]);
+} else if (commands.length === 2) {
+	NUM_FUZZES = 1_000;
 }
+
+if (NUM_FUZZES === null || NUM_FUZZES !== NUM_FUZZES || NUM_FUZZES < 1) {
+	console.error("USAGE:");
+	console.error("\t<node> <checker.js> <instance count=1000>");
+	console.error("\t\tgenerates the given number of 3-sat instances and compares Shiru's result with minisat's.");
+
+	process.exit(1);
+}
+
+const before = performance.now();
+for (let i = 0; i < NUM_FUZZES; i++) {
+	fuzzSolvers();
+	if (i % 10 == 9 || i + 1 >= NUM_FUZZES) {
+		const satLines = satHisto.print("Satisfiable Instances", (lo, hi, last) => {
+			if (last) {
+				return lo + "+ ms";
+			}
+			return lo + "-" + hi + " ms";
+		});
+		const unsatLines = unsatHisto.print("Unsatisfiable Instances", (lo, hi, last) => {
+			if (last) {
+				return lo + "+ ms";
+			}
+			return lo + "-" + hi + " ms";
+		});
+		console.log("");
+		console.log(satLines.join("\n"));
+		console.log(unsatLines.join("\n"));
+	}
+}
+const after = performance.now();
+
+console.log("Completed " + NUM_FUZZES + " 3-sat instances in " + (after - before).toFixed(0) + " milliseconds.");

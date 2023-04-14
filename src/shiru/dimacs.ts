@@ -1,7 +1,6 @@
-import { readFileSync, readSync } from "fs";
-import { SATSolver } from "./sat.js";
+import { SATResult, SATSolver } from "./sat.js";
 
-export function solveDimacs(instance: string) {
+export function parseDimacs(instance: string): number[][] {
 	const cells = instance.split("\n")
 		.filter(line => line[0] !== "c")
 		.join(" ")
@@ -15,76 +14,38 @@ export function solveDimacs(instance: string) {
 	}
 
 	// Ignore elements [2] and [3].
-
-	let cnf = new SATSolver();
+	const clauses = [];
 	let clause = [];
 	for (let i = 4; i < cells.length; i++) {
 		const v = parseInt(cells[i]);
 		if (v !== v) {
 			console.error("Unexpected cell `" + cells[i] + "`");
 			continue;
-		}
-		if (v === 0) {
+		} else if (v === 0) {
 			if (clause.length === 0) {
 				continue;
 			}
-			cnf.addClause(clause);
+			clauses.push(clause);
 			clause = [];
 		} else {
 			clause.push(v);
-
-			cnf.initTerms(Math.abs(v));
 		}
 	}
-
-	const result = cnf.solve();
-	return result;
+	if (clause.length !== 0) {
+		console.error("unfinished clause (" + clause.join(" | ") + ")");
+	}
+	return clauses;
 }
 
-
-if (require.main === module) {
-	const commands = process.argv;
-
-	if (commands.length !== 3 && commands.length !== 2) {
-		console.error("USAGE:");
-		console.error("\t<node> <dimacs.js> <inputfile.cnf>");
-		console.error("\t\tsolves the CNF in the indicated file represented in DIMACS CNF format");
-		console.error("\t<node> <dimacs.js>");
-		console.error("\t\tsolves the CNF in standard-in represented in DIMACS CNF format.");
-
-		process.exit(1);
+export function solveDimacs(instance: string): SATResult {
+	const clauses = parseDimacs(instance);
+	const sat = new SATSolver();
+	for (const clause of clauses) {
+		for (const literal of clause) {
+			sat.initTerms(Math.abs(literal));
+		}
+		sat.addClause(clause);
 	}
 
-	// does this work on Windows?
-	const dimacsFileName = commands[2];
-
-	let file = "";
-	if (!dimacsFileName) {
-		// Read the DIMACS file from standard-input.
-		let read: number;
-		const buffer = Buffer.alloc(1024 * 1024);
-		do {
-			try {
-				read = readSync(process.stdin.fd, buffer, 0, buffer.length, null);
-			} catch (e: any) {
-				// https://github.com/nodejs/node/issues/35997
-				if (e.code === "EOF") {
-					read = 0;
-				} else {
-					throw e;
-				}
-			}
-			file += buffer.slice(0, read).toString();
-		} while (read !== 0);
-	} else {
-		file = readFileSync(dimacsFileName, { encoding: "utf-8" });
-	}
-
-	const result = solveDimacs(file);
-	if (result === "unsatisfiable") {
-		console.log("UNSATISFIABLE");
-	} else {
-		console.log(JSON.stringify(result, null, "\t"));
-		console.log("SATISFIABLE");
-	}
+	return sat.solve();
 }

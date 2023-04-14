@@ -1,7 +1,6 @@
 {
 	"scripts": {
 		"test": "node --trace-sigint --enable-source-maps built/shiru/test.js",
-		"dimacs": "node --enable-source-maps built/shiru/dimacs.js",
 		"cmd": "node --enable-source-maps built/shiru/cmd.js",
 		"build": "tsc",
 		"pack-es6": "tsc --project tsconfig-es6.json",

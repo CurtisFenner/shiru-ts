@@ -1,20 +1,20 @@
-import * as components_tests from "./components_tests";
-import * as data_tests from "./data_tests";
-import * as egraph_tests from "./egraph_tests";
-import * as grammar_tests from "./grammar_tests";
-import * as interpreter_tests from "./interpreter_tests";
-import * as lexer_tests from "./lexer_tests";
-import * as parser_tests from "./parser_tests";
-import * as sat_tests from "./sat_tests";
-import * as semantics_tests from "./semantics_tests";
-import * as smt_tests from "./smt_tests";
-import * as uf_tests from "./uf_tests";
-import * as verify_tests from "./verify_tests";
-import * as ir_tests from "./ir_tests";
+import * as components_tests from "./components_tests.js";
+import * as data_tests from "./data_tests.js";
+import * as egraph_tests from "./egraph_tests.js";
+import * as grammar_tests from "./grammar_tests.js";
+import * as interpreter_tests from "./interpreter_tests.js";
+import * as lexer_tests from "./lexer_tests.js";
+import * as parser_tests from "./parser_tests.js";
+import * as sat_tests from "./sat_tests.js";
+import * as semantics_tests from "./semantics_tests.js";
+import * as smt_tests from "./smt_tests.js";
+import * as uf_tests from "./uf_tests.js";
+import * as verify_tests from "./verify_tests.js";
+import * as ir_tests from "./ir_tests.js";
 
 import * as util from "util";
 import * as fs from "fs";
-import * as trace from "./trace";
+import * as trace from "./trace.js";
 
 export type Run = PassRun | FailRun;
 

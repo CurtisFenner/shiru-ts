@@ -1,6 +1,5 @@
-import { Components } from "./components";
-import { assert, specPredicate, specSetEq } from "./test";
-
+import { Components } from "./components.js";
+import { assert, specPredicate, specSetEq } from "./test.js";
 
 export const tests = {
 	"simple-search"() {

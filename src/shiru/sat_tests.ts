@@ -1,5 +1,5 @@
-import { SATSolver } from "./sat";
-import { assert } from "./test";
+import { SATSolver } from "./sat.js";
+import { assert } from "./test.js";
 
 class Arithmetic {
 	private sat = new SATSolver();

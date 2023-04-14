@@ -1,5 +1,5 @@
-import { LexError, tokenize } from "./lexer";
-import { assert } from "./test";
+import { LexError, tokenize } from "./lexer.js";
+import { assert } from "./test.js";
 
 export const tests = {
 	"simple"() {

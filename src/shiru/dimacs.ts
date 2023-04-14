@@ -1,5 +1,5 @@
 import { readFileSync, readSync } from "fs";
-import { SATSolver } from "./sat";
+import { SATSolver } from "./sat.js";
 
 export function solveDimacs(instance: string) {
 	const cells = instance.split("\n")

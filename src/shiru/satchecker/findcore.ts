@@ -1,5 +1,5 @@
 import { readFileSync } from "fs";
-import { minisat } from "./checker";
+import { minisat } from "./checker.js";
 const instance = readFileSync("sat-instances/slow3.cnf").toString().split("\n");
 
 // Now, make a queue, filtering out one line at a time until SAT.

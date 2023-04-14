@@ -1,6 +1,6 @@
-import * as grammar from "./grammar";
-import { Token, tokenize } from "./lexer";
-import { assert } from "./test";
+import * as grammar from "./grammar.js";
+import { Token, tokenize } from "./lexer.js";
+import { assert } from "./test.js";
 
 
 export const tests = {

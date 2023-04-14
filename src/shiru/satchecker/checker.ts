@@ -1,7 +1,7 @@
 import * as child_process from "child_process";
-import { solveDimacs } from "../dimacs";
-import { Histogram } from "./histogram";
-import { generateInstance as generateRandom3CNF } from "./random3cnf";
+import { solveDimacs } from "../dimacs.js";
+import { Histogram } from "./histogram.js";
+import { generateInstance as generateRandom3CNF } from "./random3cnf.js";
 
 function runSync(command: string, input?: string): string {
 	if (input !== undefined) {

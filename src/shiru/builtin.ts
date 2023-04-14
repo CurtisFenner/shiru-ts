@@ -1,6 +1,5 @@
-import * as egraph from "./egraph";
-import * as ir from "./ir";
-import * as uf from "./uf";
+import * as ir from "./ir.js";
+import * as uf from "./uf.js";
 
 function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 	return {

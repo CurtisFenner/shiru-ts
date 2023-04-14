@@ -1,9 +1,9 @@
-import * as grammar from "./grammar";
-import * as ir from "./ir";
-import * as semantics from "./semantics";
-import * as uf from "./uf";
-import * as verify from "./verify";
-import { assert, specDescribe } from "./test";
+import * as grammar from "./grammar.js";
+import * as ir from "./ir.js";
+import * as semantics from "./semantics.js";
+import * as uf from "./uf.js";
+import * as verify from "./verify.js";
+import { assert, specDescribe } from "./test.js";
 
 export const tests = {
 	"empty-verification"() {

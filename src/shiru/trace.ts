@@ -17,22 +17,64 @@ export type TraceBranch = {
 	parent: TraceBranch | null,
 };
 
-let root: TraceBranch = {
-	tag: "trace-branch",
-	title: "root",
-	start: performance.now(),
-	end: null,
-	children: [],
-	parent: null,
-};
+export class Stopwatch {
+	constructor(private internalClock: () => number) { }
 
-let activeStack: TraceBranch = root;
+	state: {
+		tag: "paused",
+		runForMs: number,
+		pausedAtMs: number,
+	} | {
+		tag: "playing",
+		runForMs: number,
+		playedAtMs: number,
+	} = {
+			tag: "paused",
+			runForMs: 0,
+			pausedAtMs: this.internalClock(),
+		};
+
+
+	resume() {
+		if (this.state.tag === "playing") {
+			return;
+		}
+		this.state = {
+			tag: "playing",
+			runForMs: this.state.runForMs,
+			playedAtMs: this.internalClock(),
+		};
+	}
+
+	pause() {
+		if (this.state.tag === "paused") {
+			return;
+		}
+		const now = this.internalClock();
+		this.state = {
+			tag: "paused",
+			runForMs: this.state.runForMs + now - this.state.playedAtMs,
+			pausedAtMs: now,
+		};
+	}
+
+	measureMs(): number {
+		if (this.state.tag === "paused") {
+			return this.state.runForMs;
+		} else {
+			const now = this.internalClock();
+			return this.state.runForMs + now - this.state.playedAtMs;
+		}
+	}
+}
+
+const stopwatch = new Stopwatch(performance.now);
 
 export function clear(title: string) {
 	root = {
 		tag: "trace-branch",
 		title,
-		start: performance.now(),
+		start: stopwatch.measureMs(),
 		end: null,
 		children: [],
 		parent: null,
@@ -40,6 +82,17 @@ export function clear(title: string) {
 
 	activeStack = root;
 }
+
+let root: TraceBranch = {
+	tag: "trace-branch",
+	title: "root",
+	start: stopwatch.measureMs(),
+	end: null,
+	children: [],
+	parent: null,
+};
+
+let activeStack: TraceBranch = root;
 
 let slow = false;
 
@@ -51,7 +104,7 @@ export function start(title: string | unknown[]): void {
 	const e: TraceBranch = {
 		tag: "trace-branch",
 		title,
-		start: performance.now(),
+		start: stopwatch.measureMs(),
 		end: null,
 		children: [],
 		parent: activeStack,
@@ -61,23 +114,25 @@ export function start(title: string | unknown[]): void {
 }
 
 export function mark(title: string | unknown[], details?: () => string): void {
+	stopwatch.pause();
 	const e: TraceDetails = {
 		tag: "trace-details",
 		title,
 		details: details
 			? (slow ? details() : "(details skipped because trace.slow is false)")
 			: null,
-		time: performance.now(),
+		time: stopwatch.measureMs(),
 		parent: activeStack,
 	};
 	activeStack.children.push(e);
+	stopwatch.resume();
 }
 
 export function stop(title?: string): void {
 	if (title !== undefined && title !== activeStack.title) {
 		throw new Error("mismatched stack:\n\t" + JSON.stringify(title) + "\n\t!=\n\t" + JSON.stringify(activeStack.title));
 	}
-	activeStack.end = performance.now();
+	activeStack.end = stopwatch.measureMs();
 	const parent = activeStack.parent;
 	if (!parent) {
 		throw new Error("mismatched stack:\n\tno stack open for\n\t" + JSON.stringify(title));
@@ -159,7 +214,7 @@ export function renderTree(stack: Trace, out: string[], settings: { open: boolea
 }
 
 export function publish(): TraceBranch {
-	root.end = performance.now();
+	root.end = stopwatch.measureMs();
 	return root;
 }
 

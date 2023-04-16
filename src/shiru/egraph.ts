@@ -367,22 +367,15 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 		return this.components.representative(obj);
 	}
 
-	getClasses(duplicate?: boolean): Map<EObject, EClassDescription<Term>> {
-		const mapping: Map<EObject, EClassDescription<Term>> = new Map();
-		for (const [k, id] of this.tuples) {
-			const representative = this.components.representative(id);
-			let eclass = mapping.get(representative);
-			if (eclass === undefined) {
-				eclass = { members: [], representative };
-				mapping.set(representative, eclass);
-			}
-			if (duplicate) {
-				mapping.set(id, eclass);
-			}
-			const term = k[0];
-			const operands = k.slice(1) as EObject[];
-			eclass.members.push({ id, term, operands });
+	getAllApplications(fn: Term): { id: EObject, operands: EObject[] }[] {
+		const applications = this.tuples.getSuffixes(fn);
+		const out: { id: EObject, operands: EObject[] }[] = [];
+		if (applications === undefined) {
+			return out;
 		}
-		return mapping;
+		for (const [operands, id] of applications) {
+			out.push({ id, operands: operands.slice(0) });
+		}
+		return out;
 	}
 }

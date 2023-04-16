@@ -572,22 +572,21 @@ export class UFSolver<Reason> {
 		let madeChanges = false;
 		while (true) {
 			let iterationMadeChanges = false;
-			const eclasses = this.egraph.getClasses();
-			for (const { members } of eclasses.values()) {
-				for (const member of members) {
-					const definition = this.fns.get(member.term as FnID);
-					if (definition !== undefined) {
-						const semantics = definition.semantics;
-						const simpleInterpreter = semantics.interpreter;
+			for (const [fn, { semantics }] of this.fns) {
+				const simpleInterpreter = semantics.interpreter;
+				const generalInterpreter = semantics.generalInterpreter;
+				if (simpleInterpreter !== undefined || generalInterpreter !== undefined) {
+					const applications = this.egraph.getAllApplications(fn) as
+						{ id: ValueID, operands: ValueID[] }[];
+					for (const application of applications) {
 						if (simpleInterpreter !== undefined) {
-							const changeMade = this.propagateSimpleInterpreter(member, simpleInterpreter);
+							const changeMade = this.propagateSimpleInterpreter(application, simpleInterpreter);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
 						}
-						const generalInterpreter = semantics.generalInterpreter;
 						if (generalInterpreter !== undefined) {
-							const changeMade = generalInterpreter(this, member.id as ValueID, member.operands as ValueID[]);
+							const changeMade = generalInterpreter(this, application.id, application.operands);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
@@ -595,6 +594,7 @@ export class UFSolver<Reason> {
 					}
 				}
 			}
+
 			if (!iterationMadeChanges) {
 				break;
 			}

@@ -129,17 +129,13 @@ export const tests = {
 			let madeChange = true;
 			while (madeChange) {
 				madeChange = false;
-				for (const [eclass, { members }] of eg.getClasses()) {
-					for (const member of members) {
-						if (member.term === "+") {
-							const cs = getTags(eg, "constant", member.operands);
-							if (cs !== null) {
-								const sum = cs.values[0].number + cs.values[1].number;
-								const sumObject = eg.add(sum, []);
-								eg.addTag(sumObject, "constant", { id: sumObject, number: sum });
-								madeChange = eg.mergeApplications(sumObject, member.id, cs.reasons, [], []) || madeChange;
-							}
-						}
+				for (const member of eg.getAllApplications("+")) {
+					const cs = getTags(eg, "constant", member.operands);
+					if (cs !== null) {
+						const sum = cs.values[0].number + cs.values[1].number;
+						const sumObject = eg.add(sum, []);
+						eg.addTag(sumObject, "constant", { id: sumObject, number: sum });
+						madeChange = eg.mergeApplications(sumObject, member.id, cs.reasons, [], []) || madeChange;
 					}
 				}
 

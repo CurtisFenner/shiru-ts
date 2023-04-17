@@ -4,6 +4,7 @@
 		"cmd": "node --enable-source-maps built/shiru/cmd.js",
 		"build": "tsc",
 		"pack-es6": "tsc --project tsconfig-es6.json",
+		"prepack-es6": "node -e \" require('node:fs').rmSync('dist/shiru-es6', {recursive: true, force: true}); \"",
 		"test-satchecker": "node --enable-source-maps built/shiru/satchecker/checker.js"
 	},
 	"dependencies": {

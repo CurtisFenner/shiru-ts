@@ -68,7 +68,7 @@ export class Stopwatch {
 	}
 }
 
-const stopwatch = new Stopwatch(performance.now);
+const stopwatch = new Stopwatch(() => performance.now());
 
 export function clear(title: string) {
 	root = {

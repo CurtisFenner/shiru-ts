@@ -370,39 +370,14 @@ export class UFSolver<Reason> {
 			trace.stop();
 
 			if (this.pendingInconsistencies.length !== 0) {
-				trace.start("diagnose inconsistencies");
-				// Convert the inconsistencies to sets of incompatible reasons
-				// which can be understood by the SAT solver.
-				const reasonSets: Set<Reason>[] = [];
-				for (const inconsistency of this.pendingInconsistencies) {
-					const conjunction = new Set<Reason>();
-					const subConjunctions: Set<Reason>[] = [];
-					for (const equality of inconsistency.equalityConstraints) {
-						const subConjunction = this.egraph.explainCongruence(equality.left, equality.right);
-						subConjunctions.push(subConjunction);
-						for (const r of subConjunction) {
-							conjunction.add(r);
-						}
-					}
-					if (inconsistency.simpleReasons && inconsistency.simpleReasons.length !== 0) {
-						for (const simpleReason of inconsistency.simpleReasons) {
-							conjunction.add(simpleReason);
-						}
-					}
-					reasonSets.push(conjunction);
-					// Marks?
-					trace.mark("inconsistency " + conjunction.size, () => {
-						const out: string[] = [];
-						for (const equality of inconsistency.equalityConstraints) {
-							out.push(String(equality.left) + " =?= " + String(equality.right));
-							out.push(...[...subConjunctions.shift()!].map(x => String(x)));
-							out.push("");
-						}
-						return out.join("\n");
-					});
-				}
-				trace.stop("diagnose inconsistencies");
-				return { tag: "inconsistent", inconsistencies: reasonSets };
+				trace.start("diagnoseInconsistencies");
+				const inconsistencies = this.pendingInconsistencies
+					.map(x => this.diagnoseInconsistency(x));
+				trace.stop("diagnoseInconsistencies");
+				return {
+					tag: "inconsistent",
+					inconsistencies
+				};
 			}
 		}
 
@@ -424,6 +399,46 @@ export class UFSolver<Reason> {
 			model: { model: {} },
 			answers,
 		};
+	}
+
+	/**
+	 * Convert the set of theory constraints to a conjunction of `Reason`s which
+	 * are inconsistent in this theory.
+	 */
+	private diagnoseInconsistency(inconsistency: InconsistentConstraints<Reason>): Set<Reason> {
+		trace.mark([
+			"diagnoseInconsistency",
+			inconsistency.equalityConstraints.length,
+			"eqs",
+			inconsistency.simpleReasons,
+		], () => {
+			const lines: string[] = [];
+			const stringified = JSON.stringify(inconsistency, (_, value) => {
+				if (typeof value === "symbol") {
+					return String(value);
+				} else if (typeof value === "bigint") {
+					return String(value);
+				}
+				return value;
+			}, "\t");
+			lines.push(stringified);
+			return lines.join("\n");
+		});
+		const conjunction = new Set<Reason>();
+		const subConjunctions: Set<Reason>[] = [];
+		for (const equality of inconsistency.equalityConstraints) {
+			const subConjunction = this.egraph.explainCongruence(equality.left, equality.right);
+			subConjunctions.push(subConjunction);
+			for (const r of subConjunction) {
+				conjunction.add(r);
+			}
+		}
+		if (inconsistency.simpleReasons && inconsistency.simpleReasons.length !== 0) {
+			for (const simpleReason of inconsistency.simpleReasons) {
+				conjunction.add(simpleReason);
+			}
+		}
+		return conjunction;
 	}
 
 	private handleTrueMembers(): boolean {
@@ -572,22 +587,21 @@ export class UFSolver<Reason> {
 		let madeChanges = false;
 		while (true) {
 			let iterationMadeChanges = false;
-			const eclasses = this.egraph.getClasses();
-			for (const { members } of eclasses.values()) {
-				for (const member of members) {
-					const definition = this.fns.get(member.term as FnID);
-					if (definition !== undefined) {
-						const semantics = definition.semantics;
-						const simpleInterpreter = semantics.interpreter;
+			for (const [fn, { semantics }] of this.fns) {
+				const simpleInterpreter = semantics.interpreter;
+				const generalInterpreter = semantics.generalInterpreter;
+				if (simpleInterpreter !== undefined || generalInterpreter !== undefined) {
+					const applications = this.egraph.getAllApplications(fn) as
+						{ id: ValueID, operands: ValueID[] }[];
+					for (const application of applications) {
 						if (simpleInterpreter !== undefined) {
-							const changeMade = this.propagateSimpleInterpreter(member, simpleInterpreter);
+							const changeMade = this.propagateSimpleInterpreter(application, simpleInterpreter);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
 						}
-						const generalInterpreter = semantics.generalInterpreter;
 						if (generalInterpreter !== undefined) {
-							const changeMade = generalInterpreter(this, member.id as ValueID, member.operands as ValueID[]);
+							const changeMade = generalInterpreter(this, application.id, application.operands);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
@@ -595,6 +609,7 @@ export class UFSolver<Reason> {
 					}
 				}
 			}
+
 			if (!iterationMadeChanges) {
 				break;
 			}

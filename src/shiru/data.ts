@@ -1,3 +1,7 @@
+type Tail<T extends readonly unknown[]> = T extends [unknown, ... infer Tail]
+	? Tail
+	: never;
+
 /**
  * TrieMap implements a map where keys are arrays (or tuples).
  * This is implemented using a "trie" of ES6 Map objects.
@@ -6,6 +10,17 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	private map: Map<KS[number], TrieMap<KS, V>> = new Map();
 	private value: V | undefined = undefined;
 	size: number = 0;
+
+	/**
+	 * Note that the returned map should NOT be mutated.
+	 */
+	getSuffixes(key: KS[0]): TrieMap<Tail<KS>, V> | undefined {
+		const at = this.map.get(key);
+		if (at === undefined) {
+			return undefined;
+		}
+		return at as unknown as TrieMap<Tail<KS>, V>;
+	}
 
 	get(key: KS, from: number = 0): V | undefined {
 		let cursor: TrieMap<KS, V> | undefined = this;

@@ -171,6 +171,7 @@ export abstract class SMTSolver<E, Counterexample> {
 		// Use the SMT solver's clauses, rather than the SAT solver's clauses,
 		// to exclude any learned CDCL clauses.
 		const simplified = solver.simplifyClauses([...this.clauses, ...this.unscopedClauses]);
+		const simplifyingAssignment = new Set(solver.getAssignment());
 
 		trace.mark("Result of partial solving", () => {
 			const lines = this.showFormula(simplified);
@@ -236,7 +237,9 @@ export abstract class SMTSolver<E, Counterexample> {
 					// this.
 					solver.rollbackToDecisionLevel(-1);
 					if (theoryClauses.length === 0) {
-						throw new Error("SMTSolver.attemptRefutation: expected at least one clause from theory refutation");
+						throw new Error(
+							"SMTSolver.attemptRefutation: expected at least one clause from theory refutation"
+						);
 					}
 
 					trace.start(["learned ", theoryClauses.length, " theory clauses"]);
@@ -248,6 +251,11 @@ export abstract class SMTSolver<E, Counterexample> {
 						trace.mark(["learned clause of", theoryClause.length, "terms"], () => {
 							const lines: string[] = [];
 							this.showClause(theoryClause, new Set(), lines);
+							return lines.join("\n");
+						});
+						trace.mark("simplified version", () => {
+							const lines: string[] = [];
+							this.showClause(theoryClause, simplifyingAssignment, lines);
 							return lines.join("\n");
 						});
 

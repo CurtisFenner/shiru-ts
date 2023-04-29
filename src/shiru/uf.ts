@@ -446,23 +446,24 @@ export class UFSolver<Reason> {
 		const trueApplications = this.egraph.getTagged("indexByFn", this.trueObject);
 		if (trueApplications !== null) {
 			for (const [fn, applications] of trueApplications) {
+				trace.start([String(fn), "has", applications.size, "applications"]);
 				const fnDefinition = this.fns.get(fn)!;
 				if (fnDefinition.semantics.eq === true) {
 					for (const application of applications) {
-						const changeMade = this.handleTrueEquality(
-							application.id,
-							application.operands as [ValueID, ValueID],
+						const changeMade = this.egraph.mergeApplications(
+							application.operands[0],
+							application.operands[1],
+							null,
+							[application.id],
+							[this.trueObject],
 						);
 						progress = progress || changeMade;
 					}
 				}
+				trace.stop();
 			}
 		}
 		return progress;
-	}
-
-	private handleTrueEquality(equality: ValueID, [left, right]: [ValueID, ValueID]): boolean {
-		return this.egraph.mergeApplications(left, right, null, [equality], [this.trueObject]);
 	}
 
 	private handleFalseMembers(): boolean {

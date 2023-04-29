@@ -257,3 +257,13 @@ export function* zipMaps<K, A, B>(
 		}
 	}
 }
+
+export function measureCommonPrefix<T>(a: T[], b: T[]): number {
+	const length = Math.min(a.length, b.length);
+	for (let i = 0; i < length; i++) {
+		if (a[i] !== b[i]) {
+			return i;
+		}
+	}
+	return length;
+}

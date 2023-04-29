@@ -1,5 +1,6 @@
-import * as trace from "./trace.js";
+import * as data from "./data.js";
 import * as sat from "./sat.js";
+import * as trace from "./trace.js";
 
 /// SMTSolver represents an "satisfiability modulo theories" instance, with
 /// support for quantifier instantiation.
@@ -206,72 +207,90 @@ export abstract class SMTSolver<E, Counterexample> {
 		});
 
 		trace.start("solving");
+		let lastUndeterminedBooleanModel: sat.Literal[] = [];
 		while (true) {
 			const booleanModel = solver.solve();
 			if (booleanModel === "unsatisfiable") {
 				trace.stop("solving");
 				return "refuted";
-			} else {
-				// Clausal proof adds additional constraints to the formula, which
-				// preserve satisfiablity (but not necessarily logical equivalence).
-				// These are useful in subsequent runs of the solver; HOWEVER,
-				// clauses which merely preserve satisfiability and not logical
-				// equivalence must be pruned.
-				// TODO: Remove (and attempt to re-add) any non-implied clauses.
-				const restrictedBooleanModel = booleanModel.filter(literal => {
-					const term = literal > 0 ? +literal : -literal;
-					return instantiationTerms.has(term) || termsRequiringAssignment.has(term);
-				});
-				trace.start("rejectBooleanModel");
-				trace.mark(["booleanModel (not passed to theory) size:", booleanModel.length], () => {
-					return booleanModel.map(x => this.showLiteral(x)).join("\n");
-				});
-				trace.mark(["restrictedBooleanModel size:", restrictedBooleanModel.length], () => {
-					return restrictedBooleanModel.map(x => this.showLiteral(x)).join("\n");
-				});
-				const theoryClauses = this.rejectBooleanModel(restrictedBooleanModel);
-				if (Array.isArray(theoryClauses)) {
-					// Completely undo the assignment.
-					// TODO: theoryClauses should contain an asserting clause,
-					// so the logic in backtracking should be able to replace
-					// this.
-					solver.rollbackToDecisionLevel(-1);
-					if (theoryClauses.length === 0) {
-						throw new Error(
-							"SMTSolver.attemptRefutation: expected at least one clause from theory refutation"
-						);
-					}
-
-					trace.start(["learned ", theoryClauses.length, " theory clauses"]);
-					for (const theoryClause of theoryClauses) {
-						if (theoryClause.length === 0) {
-							throw new Error("SMTSolver.attemptRefutation: expected theoryClause to not be empty");
-						}
-
-						trace.mark(["learned clause of", theoryClause.length, "terms"], () => {
-							const lines: string[] = [];
-							this.showClause(theoryClause, new Set(), lines);
-							return lines.join("\n");
-						});
-						trace.mark("simplified version", () => {
-							const lines: string[] = [];
-							this.showClause(theoryClause, simplifyingAssignment, lines);
-							return lines.join("\n");
-						});
-
-						solver.addClause(theoryClause);
-					}
-					trace.stop();
-					trace.stop();
-				} else {
-					trace.stop();
-					// TODO: Instantiation may need to take place here.
-					// The SAT+SMT solver has failed to refute the formula.
-					solver.rollbackToDecisionLevel(-1);
-					trace.stop("solving");
-					return theoryClauses;
-				}
 			}
+
+			const instantiationBooleanModel = booleanModel.filter(literal => {
+				const term = literal > 0 ? +literal : -literal;
+				return instantiationTerms.has(term);
+			});
+			const undeterminedBooleanModel = booleanModel.filter(literal => {
+				const term = literal > 0 ? +literal : -literal;
+				return termsRequiringAssignment.has(term);
+			});
+			trace.start("rejectBooleanModel");
+			trace.mark([
+				"booleanModel (not passed to theory) size:",
+				booleanModel.length,
+				"=",
+				instantiationBooleanModel.length,
+				"instantiation",
+				"+",
+				undeterminedBooleanModel.length,
+				"undetermined",
+			], () => {
+				return booleanModel.map(x => this.showLiteral(x)).join("\n");
+			});
+
+			const commonWithLast = data.measureCommonPrefix(lastUndeterminedBooleanModel, undeterminedBooleanModel);
+			lastUndeterminedBooleanModel = undeterminedBooleanModel.slice(0);
+			const notCommon = lastUndeterminedBooleanModel.length - commonWithLast;
+			const partialModel = commonWithLast + notCommon / 1.5;
+
+			// Attempt to reject using a smaller boolean model
+			const smallerTheoryClauses = this.rejectBooleanModel((undeterminedBooleanModel.slice(0, partialModel)));
+
+			const theoryClauses = Array.isArray(smallerTheoryClauses)
+				? smallerTheoryClauses
+				: this.rejectBooleanModel(instantiationBooleanModel.concat(undeterminedBooleanModel));
+
+			if (Array.isArray(theoryClauses)) {
+				// Completely undo the assignment.
+				// TODO: theoryClauses should contain an asserting clause,
+				// so the logic in backtracking should be able to replace
+				// this.
+				solver.rollbackToDecisionLevel(-1);
+				if (theoryClauses.length === 0) {
+					throw new Error(
+						"SMTSolver.attemptRefutation: expected at least one clause from theory refutation"
+					);
+				}
+
+				trace.start(["learned ", theoryClauses.length, " theory clauses"]);
+				for (const theoryClause of theoryClauses) {
+					if (theoryClause.length === 0) {
+						throw new Error("SMTSolver.attemptRefutation: expected theoryClause to not be empty");
+					}
+
+					trace.mark(["learned clause of", theoryClause.length, "terms"], () => {
+						const lines: string[] = [];
+						this.showClause(theoryClause, new Set(), lines);
+						return lines.join("\n");
+					});
+					trace.mark("simplified version", () => {
+						const lines: string[] = [];
+						this.showClause(theoryClause, simplifyingAssignment, lines);
+						return lines.join("\n");
+					});
+
+					solver.addClause(theoryClause);
+				}
+				trace.stop();
+				trace.stop();
+			} else {
+				trace.stop();
+				// TODO: Instantiation may need to take place here.
+				// The SAT+SMT solver has failed to refute the formula.
+				solver.rollbackToDecisionLevel(-1);
+				trace.stop("solving");
+				return theoryClauses;
+			}
+
 		}
 	}
 

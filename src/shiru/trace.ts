@@ -178,7 +178,8 @@ export function renderTree(stack: Trace, out: string[], settings: { open: boolea
 		out.push("<summary>");
 		out.push("<div class=perf-spark>");
 		const totalPercentage = 100 * getDurationMs(stack) / settings.totalTimeMs;
-		out.push(`<div class=bar style="width: ${totalPercentage.toFixed(2)}%"></div>`);
+		const startPercentage = 100 * stack.start / settings.totalTimeMs;
+		out.push(`<div class=bar style="left: ${startPercentage.toFixed(2)}%; width: ${totalPercentage.toFixed(2)}%"></div>`);
 		out.push("</div>");
 		const durationText = stack.end ? getDurationMs(stack).toFixed(1) : "?";
 		out.push("<span class=numeral>" + durationText + " ms</span> &mdash; ");

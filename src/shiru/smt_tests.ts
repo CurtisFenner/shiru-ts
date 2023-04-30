@@ -49,7 +49,7 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 	protected learnAdditional(
 		partialAssignment: number[],
 		unassigned: number[],
-	): number[] | "unsatisfiable" {
+	): number[][] | "unsatisfiable" {
 		return [];
 	}
 

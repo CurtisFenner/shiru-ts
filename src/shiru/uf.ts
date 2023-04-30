@@ -759,20 +759,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	// constraints.
 	private solver: UFSolver<ReasonSatLiteral> = new UFSolver();
 
-	// The next SAT term to vend in clausification.
-	private nextSatTerm = 1;
-
-	// The SAT term associated with a given Boolean-typed object tracked by the
-	// solver.
-	private termByObject = new DefaultMap<ValueID, number>(object => {
-		const term = this.nextSatTerm;
-		this.nextSatTerm += 1;
-		this.objectByTerm.set(term, object);
-		return term;
-	});
-
-	// The Boolean-typed object associated with the given SAT term.
-	private objectByTerm = new Map<number, ValueID>();
 
 	createVariable(type: ir.Type, debugName: string): ValueID {
 		const v = this.solver.createVariable(type, debugName);
@@ -835,24 +821,86 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return this.solver.createApplication(fnID, args);
 	}
 
-	private toSatLiteral(valueID: ValueID): number {
-		const value = this.solver.getDefinition(valueID);
-		if (value.tag === "app") {
-			const semantics = this.solver.getFnSemantics(value.fn);
+	private toSatLiteralMap = new Map<ValueID, number>();
+
+	// The Boolean-typed object associated with the given SAT term.
+	private objectByTerm = new Map<number, ValueID>();
+
+	private toSatLiteral(valueID: ValueID, additionalClauses: number[][]): number {
+		const existing = this.toSatLiteralMap.get(valueID);
+		if (existing !== undefined) {
+			return existing;
+		}
+
+		const vend = (positiveValue: ValueID): number => {
+			const term = this.toSatLiteralMap.size + 1;
+			this.toSatLiteralMap.set(positiveValue, term);
+			this.objectByTerm.set(term, positiveValue);
+			return term;
+		};
+
+		const out = this.toSatLiteralInternal(valueID, vend, additionalClauses);
+		if (!this.objectByTerm.has(Math.abs(out))) {
+			throw new Error("UFTheory.toSatLiteral: toSatLiteralInternal returned a literal for an undefined term");
+		}
+		this.toSatLiteralMap.set(valueID, out);
+		return out;
+	}
+
+	/**
+	 * @returns a SAT term assocaited with a Boolean-typed object tracked by the
+	 * solver.
+	 */
+	private toSatLiteralInternal(
+		valueID: ValueID,
+		vendTerm: (positiveValue: ValueID) => number,
+		additionalClauses: number[][],
+	): number {
+		const definition = this.solver.getDefinition(valueID);
+		if (definition.tag === "app") {
+			const semantics = this.solver.getFnSemantics(definition.fn);
 			if (semantics.not === true) {
-				return -this.toSatLiteral(value.args[0]);
+				return -this.toSatLiteral(definition.args[0], additionalClauses);
+			} else if (semantics.eq === true) {
+				const [leftID, rightID] = definition.args;
+				const left = this.solver.getDefinition(leftID);
+				const right = this.solver.getDefinition(rightID);
+				if (left.type !== "unknown" && right.type !== "unknown") {
+					if (ir.equalTypes(ir.T_BOOLEAN, left.type) && ir.equalTypes(ir.T_BOOLEAN, right.type)) {
+						// E == (A == B)
+						// (~A | ~B | E) & (~A | B | ~E) & (A | ~B | ~C) & (A | B | C)
+						const leftLiteral = this.toSatLiteral(leftID, additionalClauses);
+						const rightLiteral = this.toSatLiteral(rightID, additionalClauses);
+
+						// Create a new variable
+						const equalityLiteral = vendTerm(valueID);
+
+						// Add clauses to explain the truth table to the SAT solver.
+						additionalClauses.push(
+							[leftLiteral, rightLiteral, equalityLiteral],
+							[-leftLiteral, -rightLiteral, equalityLiteral],
+							[-leftLiteral, rightLiteral, -equalityLiteral],
+							[leftLiteral, -rightLiteral, -equalityLiteral],
+						);
+						return equalityLiteral;
+					}
+				}
 			}
 		}
-		return this.termByObject.get(valueID);
+
+		// Define a new term
+		return vendTerm(valueID);
 	}
 
 	clausify(disjunction: ValueID[]): number[][] {
+		const clauses: number[][] = [];
 		const clause = [];
 		for (const value of disjunction) {
-			clause.push(this.toSatLiteral(value));
+			clause.push(this.toSatLiteral(value, clauses));
 		}
+		clauses.push(clause);
 
-		return [clause];
+		return clauses;
 	}
 
 	override showLiteral(literal: number): string {
@@ -884,7 +932,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	protected learnAdditional(
 		partialAssignment: number[],
 		unassigned: number[],
-	): number[] | "unsatisfiable" {
+	): number[][] | "unsatisfiable" {
 		trace.start("learnAdditional");
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of partialAssignment) {
@@ -910,13 +958,13 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			return "unsatisfiable";
 		}
 
-		const learnedLiterals: number[] = [];
+		const learnedClauses: number[][] = [];
 		for (const [object, assignment] of result.answers) {
-			const term = this.termByObject.get(object);
-			learnedLiterals.push(assignment ? +term : -term);
+			const term = this.toSatLiteral(object, learnedClauses);
+			learnedClauses.push([assignment ? +term : -term]);
 		}
 		trace.stop();
-		return learnedLiterals;
+		return learnedClauses;
 	}
 
 	rejectBooleanModel(literals: number[]): UFCounterexample | number[][] {

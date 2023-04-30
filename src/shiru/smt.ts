@@ -149,17 +149,17 @@ export abstract class SMTSolver<E, Counterexample> {
 					unassigned.push(term);
 				}
 			}
-			const additional = this.learnAdditional(partialAssignment, unassigned);
-			if (additional === "unsatisfiable") {
+			const additionalClauses = this.learnAdditional(partialAssignment, unassigned);
+			if (additionalClauses === "unsatisfiable") {
 				trace.stop("partial-theory-simplification");
 				return "refuted";
-			} else if (additional.length === 0) {
-				// No unit clauses were added.
+			} else if (additionalClauses.length === 0) {
+				// No clauses were learned.
 				break;
 			}
-			for (const literal of additional) {
-				// Add additional unit clauses that are implied by the theory.
-				solver.addClause([literal]);
+			for (const clause of additionalClauses) {
+				// Add additional clauses that are implied by the theory.
+				solver.addClause(clause);
 			}
 		}
 		trace.stop("partial-theory-simplification");
@@ -312,7 +312,7 @@ export abstract class SMTSolver<E, Counterexample> {
 	protected abstract learnAdditional(
 		partialAssignment: sat.Literal[],
 		unassigned: sat.Literal[],
-	): sat.Literal[] | "unsatisfiable";
+	): sat.Literal[][] | "unsatisfiable";
 
 	/// clausify returns a set of clauses to add to the underlying SAT solver.
 	/// This modifies state, associating literals (and other internal variables)

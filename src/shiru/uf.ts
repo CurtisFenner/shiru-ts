@@ -315,11 +315,19 @@ export class UFSolver<Reason> {
 	 * `refuteUsingTheory` is _sound with respect to refutation_; when
 	 * `"inconsistent"` is returned, the theory-solver has proven that the
 	 * assumptions are definitely inconsistent.
+	 * 
+	 * @param queriesNeedReasons indicates that `answers` should indicate the
+	 * reason for the truth, and not just the truth value.
 	 */
 	refuteUsingTheory(
 		assumptions: Assumption<Reason>[],
 		queries: ValueID[] = [],
-	): UFInconsistency<Reason> | { tag: "model", model: UFCounterexample, answers: Map<ValueID, boolean> } {
+		queriesNeedReasons: boolean = true,
+	): UFInconsistency<Reason> | {
+		tag: "model",
+		model: UFCounterexample,
+		answers: Map<ValueID, { assignment: boolean, reason: Set<Reason> }>
+	} {
 		trace.start("initialize");
 		this.egraph.reset();
 		this.pendingInconsistencies.length = 0;
@@ -382,12 +390,18 @@ export class UFSolver<Reason> {
 		}
 
 		trace.start("queries");
-		const answers = new Map<ValueID, boolean>();
+		const answers = new Map<ValueID, { assignment: boolean, reason: Set<Reason> }>();
 		for (const query of queries) {
 			if (this.egraph.areCongruent(query, this.falseObject)) {
-				answers.set(query, false);
+				let reason = queriesNeedReasons
+					? this.egraph.explainCongruence(query, this.falseObject)
+					: new Set<Reason>();
+				answers.set(query, { assignment: false, reason });
 			} else if (this.egraph.areCongruent(query, this.trueObject)) {
-				answers.set(query, true);
+				let reason = queriesNeedReasons
+					? this.egraph.explainCongruence(query, this.trueObject)
+					: new Set<Reason>();
+				answers.set(query, { assignment: true, reason });
 			}
 		}
 		trace.stop("queries");
@@ -546,7 +560,9 @@ export class UFSolver<Reason> {
 		return progress;
 	}
 
-	private checkDisequality({ equality, left, right }: { equality: ValueID, left: ValueID, right: ValueID }): boolean {
+	private checkDisequality(
+		{ equality, left, right }: { equality: ValueID, left: ValueID, right: ValueID },
+	): boolean {
 		if (this.egraph.areCongruent(left, right)) {
 			this.pendingInconsistencies.push({
 				equalityConstraints: [
@@ -817,6 +833,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			} else if (right === this.solver.falseObject) {
 				return this.createApplication(this.notFn, [left]);
 			}
+
+			const symmetric = this.solver.hasApplication(fnID, [right, left]);
+			if (symmetric !== null) {
+				return symmetric;
+			}
 		}
 		return this.solver.createApplication(fnID, args);
 	}
@@ -841,7 +862,10 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 
 		const out = this.toSatLiteralInternal(valueID, vend, additionalClauses);
 		if (!this.objectByTerm.has(Math.abs(out))) {
-			throw new Error("UFTheory.toSatLiteral: toSatLiteralInternal returned a literal for an undefined term");
+			throw new Error(
+				"UFTheory.toSatLiteral: " +
+				"toSatLiteralInternal returned a literal for an undefined term",
+			);
 		}
 		this.toSatLiteralMap.set(valueID, out);
 		return out;
@@ -892,7 +916,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return vendTerm(valueID);
 	}
 
-	clausify(disjunction: ValueID[]): number[][] {
+	override clausify(disjunction: ValueID[]): number[][] {
 		const clauses: number[][] = [];
 		const clause = [];
 		for (const value of disjunction) {
@@ -929,10 +953,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return lines;
 	}
 
-	protected learnAdditional(
+	override learnTheoryClauses(
 		partialAssignment: number[],
 		unassigned: number[],
-	): number[][] | "unsatisfiable" {
+	): { tag: "implied", impliedClauses: number[][], model: UFCounterexample }
+		| { tag: "unsatisfiable", conflictClauses: number[][] } {
 		trace.start("learnAdditional");
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of partialAssignment) {
@@ -954,46 +979,28 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		const result = this.solver.refuteUsingTheory(assumptions, queries);
 
 		if (result.tag === "inconsistent") {
-			trace.stop();
-			return "unsatisfiable";
-		}
-
-		const learnedClauses: number[][] = [];
-		for (const [object, assignment] of result.answers) {
-			const term = this.toSatLiteral(object, learnedClauses);
-			learnedClauses.push([assignment ? +term : -term]);
-		}
-		trace.stop();
-		return learnedClauses;
-	}
-
-	rejectBooleanModel(literals: number[]): UFCounterexample | number[][] {
-		const assumptions: Assumption<ReasonSatLiteral>[] = [];
-		for (const literal of literals) {
-			const term = literal > 0 ? +literal : -literal;
-			const object = this.objectByTerm.get(term)!;
-			assumptions.push({
-				constraint: object,
-				assignment: literal > 0,
-				reason: literal,
-			});
-		}
-
-		trace.start("refuteUsingTheory");
-		const result = this.solver.refuteUsingTheory(assumptions, []);
-		trace.stop();
-		if (result.tag === "inconsistent") {
-			const learnedClauses = [];
+			const conflictClauses = [];
 			for (const inconsistent of result.inconsistencies) {
 				const learnedClause = [];
 				for (const element of inconsistent) {
 					learnedClause.push(-element);
 				}
-				learnedClauses.push(learnedClause);
+				conflictClauses.push(learnedClause);
 			}
-			return learnedClauses;
+			trace.stop();
+			return {
+				tag: "unsatisfiable",
+				conflictClauses,
+			};
 		}
-		return result.model;
+
+		const impliedClauses: number[][] = [];
+		for (const [object, { assignment, reason }] of result.answers) {
+			const term = this.toSatLiteral(object, impliedClauses);
+			impliedClauses.push([...[...reason].map(literal => -literal), assignment ? +term : -term]);
+		}
+		trace.stop();
+		return { tag: "implied", impliedClauses, model: result.model };
 	}
 
 	generateTestCode(): string {

@@ -10,13 +10,18 @@ type BoundedConfig = [string, number[]];
 
 /// Defines a simple SMTTheory where string variables can take on values from a
 /// finite set of numbers, and can have simple arithmetic expressions evaluated.
-class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>> {
+type BoundedModel = Record<string, number>;
+
+class BoundedTheory extends SMTSolver<BoundedRelation[], BoundedModel> {
 	private variables: Record<string, number[]> = {};
 	private constraints: Record<number, BoundedRelation> = {};
-	private constraintKey: Record<string, number> = {};
+	private constraintKey: BoundedModel = {};
 	private nextTerm = 1;
 
-	private evaluate(environment: Record<string, number>, expr: BoundedExpr): number {
+	private evaluate(
+		environment: BoundedModel,
+		expr: BoundedExpr,
+	): number {
 		if (typeof expr === "number") {
 			return expr;
 		} else if (typeof expr === "string") {
@@ -32,7 +37,14 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 		}
 	}
 
-	private check(environment: Record<string, number>, relation: BoundedRelation): boolean {
+	override showLiteral(literal: number): string {
+		return literal.toFixed(0);
+	}
+
+	private check(
+		environment: BoundedModel,
+		relation: BoundedRelation,
+	): boolean {
 		const left = this.evaluate(environment, relation[0]);
 		const right = this.evaluate(environment, relation[2]);
 		if (relation[1] === "!=") {
@@ -46,25 +58,24 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 		this.variables[configuration[0]] = configuration[1];
 	}
 
-	protected learnAdditional(
+	override learnTheoryClauses(
 		partialAssignment: number[],
 		unassigned: number[],
-	): number[][] | "unsatisfiable" {
-		return [];
-	}
-
-	rejectBooleanModel(concrete: number[]): number[][] | Record<string, number> {
-		let environments: Record<string, number>[] = [{}];
+	): { tag: "implied", impliedClauses: number[][], model: BoundedModel }
+		| { tag: "unsatisfiable", conflictClauses: number[][] } {
+		let environments: BoundedModel[] = [{}];
 		for (let v in this.variables) {
 			const domain = this.variables[v];
-			const empty: Record<string, number>[] = [];
-			const withValue = domain.map(value => environments.map(r => ({ ...r, [v]: value })));
+			const empty: BoundedModel[] = [];
+			const withValue = domain.map(value => {
+				return environments.map(r => ({ ...r, [v]: value }));
+			});
 			environments = empty.concat(...withValue);
 		}
 
 		for (let environment of environments) {
 			let all = true;
-			for (let signedConstraint of concrete) {
+			for (let signedConstraint of partialAssignment) {
 				const term = Math.abs(signedConstraint);
 				const constraint = this.constraints[term];
 				const actual = this.check(environment, constraint);
@@ -76,12 +87,19 @@ class BoundedTheory extends SMTSolver<BoundedRelation[], Record<string, number>>
 			}
 			if (all) {
 				// Found a model which is consistent with this theory.
-				return environment;
+				return {
+					tag: "implied",
+					impliedClauses: [],
+					model: environment,
+				};
 			}
 		}
 
-		// At least one must change.
-		return [concrete.map(x => -x)];
+		// At least one assignment must change.
+		return {
+			tag: "unsatisfiable",
+			conflictClauses: [partialAssignment.map(x => -x)],
+		};
 	}
 
 	clausify(constraint: BoundedRelation[]): number[][] {

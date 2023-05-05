@@ -833,6 +833,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			} else if (right === this.solver.falseObject) {
 				return this.createApplication(this.notFn, [left]);
 			}
+
+			const symmetric = this.solver.hasApplication(fnID, [right, left]);
+			if (symmetric !== null) {
+				return symmetric;
+			}
 		}
 		return this.solver.createApplication(fnID, args);
 	}

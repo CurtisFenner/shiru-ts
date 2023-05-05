@@ -2,22 +2,35 @@ import * as data from "./data.js";
 import * as sat from "./sat.js";
 import * as trace from "./trace.js";
 
-/// SMTSolver represents an "satisfiability modulo theories" instance, with
-/// support for quantifier instantiation.
-/// With respect to refutation, SMTSolver is sound but not complete -- some
-/// returned "satisfactions" do not actually satisfy the instance, but all
-/// refutation results definitely refute the instance.
-export abstract class SMTSolver<E, Counterexample> {
+/**
+ * `SMTSolver` represents a "satisfiability modulo theories" instance.
+ * With respect to refutation, SMTSolver is sound, but not complete: some
+ * "models" are not actually feasible in the represented theory. However, all
+ * refutations definitely refute the instance in the given theory.
+ */
+export abstract class SMTSolver<E, Model> {
 	protected clauses: sat.Literal[][] = [];
 	protected unscopedClauses: sat.Literal[][] = [];
 	private scopes: { clauseCount: number }[] = [];
 
+	/**
+	 * Update this SMT instance so that all subsequent solves within the
+	 * containing scope must also ensure that `constraint` is satisfied by a
+	 * model.
+	 * 
+	 * @see pushScope
+	 * @see popScope
+	 */
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
 			this.addClausified(clause, this.clauses);
 		}
 	}
 
+	/**
+	 * Update this SMT instance so that all subsequent solves must also
+	 * ensure that `constraint` is satisfied by a model.
+	 */
 	addUnscopedConstraint(constraint: E) {
 		for (const clause of this.clausify(constraint)) {
 			this.addClausified(clause, this.unscopedClauses);
@@ -48,18 +61,13 @@ export abstract class SMTSolver<E, Counterexample> {
 		this.clauses.splice(scope.clauseCount);
 	}
 
-	attemptRefutation() {
-		trace.start("attemptRefutation");
-		const out = this._attemptRefutation();
-		trace.stop("attemptRefutation");
-		return out;
-	}
+	abstract showLiteral(literal: number): string;
 
-	showLiteral(literal: number): string {
-		return literal.toString();
-	}
-
-	showClause(clause: number[], assignment: Set<number>, lines: string[] = []) {
+	showClause(
+		clause: number[],
+		assignment: Set<number>,
+		lines: string[],
+	): boolean {
 		let first = true;
 		const satisfiedLiteral = clause.find(x => assignment.has(x));
 		if (satisfiedLiteral !== undefined) {
@@ -85,7 +93,11 @@ export abstract class SMTSolver<E, Counterexample> {
 		return true;
 	}
 
-	showFormula(clauses: number[][], partialAssignment: number[] = [], indent = ""): string[] {
+	showFormula(
+		clauses: number[][],
+		partialAssignment: number[] = [],
+		indent = "",
+	): string[] {
 		const literals = new Set(partialAssignment);
 
 		const lines: string[] = [];
@@ -99,12 +111,21 @@ export abstract class SMTSolver<E, Counterexample> {
 		];
 	}
 
-	/// RETURNS "refuted" when the given constraints can provably not be
-	/// satisfied.
-	/// RETURNS a counter example (satisfaction) when refutation fails; this may
-	/// not be a truly realizable counter-examples, as instantiation and the
-	/// theory solver may be incomplete.
-	_attemptRefutation(): "refuted" | Counterexample {
+	/**
+	 * @returns `"refuted"` when th given constraints can provably not be
+	 * satisfied in the theory.
+	 * @returns a `Model` that may satisfy the constraints when refutation
+	 * fails. this model may not actually be feasible in the theory: solving is
+	 * sound but not complete with respect to refutation.
+	 */
+	attemptRefutation(): "refuted" | Model {
+		trace.start("attemptRefutation");
+		const out = this._attemptRefutation();
+		trace.stop("attemptRefutation");
+		return out;
+	}
+
+	_attemptRefutation(): "refuted" | Model {
 		trace.mark("initial SMT instance", () => {
 			return this.showFormula(this.clauses).join("\n");
 		});
@@ -149,15 +170,15 @@ export abstract class SMTSolver<E, Counterexample> {
 					unassigned.push(term);
 				}
 			}
-			const additionalClauses = this.learnAdditional(partialAssignment, unassigned);
-			if (additionalClauses === "unsatisfiable") {
+			const additionalClauses = this.learnTheoryClauses(partialAssignment, unassigned);
+			if (additionalClauses.tag === "unsatisfiable") {
 				trace.stop("partial-theory-simplification");
 				return "refuted";
-			} else if (additionalClauses.length === 0) {
+			} else if (additionalClauses.impliedClauses.length === 0) {
 				// No clauses were learned.
 				break;
 			}
-			for (const clause of additionalClauses) {
+			for (const clause of additionalClauses.impliedClauses) {
 				// Add additional clauses that are implied by the theory.
 				solver.addClause(clause);
 			}
@@ -223,8 +244,7 @@ export abstract class SMTSolver<E, Counterexample> {
 				const term = literal > 0 ? +literal : -literal;
 				return termsRequiringAssignment.has(term);
 			});
-			trace.start("rejectBooleanModel");
-			trace.mark([
+			trace.start([
 				"booleanModel (not passed to theory) size:",
 				booleanModel.length,
 				"=",
@@ -233,38 +253,50 @@ export abstract class SMTSolver<E, Counterexample> {
 				"+",
 				undeterminedBooleanModel.length,
 				"undetermined",
-			], () => {
+			]);
+			trace.mark("full booleanModel", () => {
 				return booleanModel.map(x => this.showLiteral(x)).join("\n");
 			});
 
-			const commonWithLast = data.measureCommonPrefix(lastUndeterminedBooleanModel, undeterminedBooleanModel);
+			const commonWithLast = data.measureCommonPrefix(
+				lastUndeterminedBooleanModel,
+				undeterminedBooleanModel,
+			);
 			lastUndeterminedBooleanModel = undeterminedBooleanModel.slice(0);
 			const notCommon = lastUndeterminedBooleanModel.length - commonWithLast;
-			const partialModel = commonWithLast + notCommon / 1.5;
+			const partialModelSize = commonWithLast + notCommon / 1.5;
 
 			// Attempt to reject using a smaller boolean model
-			const smallerTheoryClauses = this.rejectBooleanModel((undeterminedBooleanModel.slice(0, partialModel)));
+			const partialModel = undeterminedBooleanModel.slice(0, partialModelSize);
+			const smallerTheoryClauses = this.learnTheoryClauses(partialModel, []);
 
-			const theoryClauses = Array.isArray(smallerTheoryClauses)
+			const theoryClauses = smallerTheoryClauses.tag === "unsatisfiable"
 				? smallerTheoryClauses
-				: this.rejectBooleanModel(instantiationBooleanModel.concat(undeterminedBooleanModel));
+				: this.learnTheoryClauses(
+					instantiationBooleanModel.concat(undeterminedBooleanModel),
+					[],
+				);
 
-			if (Array.isArray(theoryClauses)) {
+			if (theoryClauses.tag === "unsatisfiable") {
 				// Completely undo the assignment.
 				// TODO: theoryClauses should contain an asserting clause,
 				// so the logic in backtracking should be able to replace
 				// this.
 				solver.rollbackToDecisionLevel(-1);
-				if (theoryClauses.length === 0) {
+				if (theoryClauses.conflictClauses.length === 0) {
 					throw new Error(
-						"SMTSolver.attemptRefutation: expected at least one clause from theory refutation"
+						"SMTSolver.attemptRefutation: " +
+						"expected at least one clause from theory refutation",
 					);
 				}
 
-				trace.start(["learned ", theoryClauses.length, " theory clauses"]);
-				for (const theoryClause of theoryClauses) {
+				trace.start(["learned ", theoryClauses.conflictClauses.length, " theory clauses"]);
+				for (const theoryClause of theoryClauses.conflictClauses) {
 					if (theoryClause.length === 0) {
-						throw new Error("SMTSolver.attemptRefutation: expected theoryClause to not be empty");
+						throw new Error(
+							"SMTSolver.attemptRefutation: " +
+							"expected theoryClause to not be empty",
+						);
 					}
 
 					trace.mark(["learned clause of", theoryClause.length, "terms"], () => {
@@ -288,31 +320,22 @@ export abstract class SMTSolver<E, Counterexample> {
 				// The SAT+SMT solver has failed to refute the formula.
 				solver.rollbackToDecisionLevel(-1);
 				trace.stop("solving");
-				return theoryClauses;
+				return theoryClauses.model;
 			}
 
 		}
 	}
 
 	/**
-	 * `rejectBooleanModel` use a theory-solver to produce new clauses to add
-	 * to the SAT solver which reject this concrete assignment.
-	 *
-	 * The returned clauses should include an asserting clause in reference to
-	 * the concrete assignment.
+	 * `learnTheoryClauses(partialAssignment, unassigned)` uses a theory-solver
+	 * to produce additional facts about the given `unassigned` terms, and to
+	 * reject partial assignments which are not feasible in the theory.
 	 */
-	protected abstract rejectBooleanModel(
-		concrete: sat.Literal[],
-	): Counterexample | sat.Literal[][];
-
-	/**
-	 * `learnAdditional(partialAssignment, unassigned)` uses a theory-solver to
-	 * produce additional facts about the given `unassigned` terms.
-	 */
-	protected abstract learnAdditional(
+	protected abstract learnTheoryClauses(
 		partialAssignment: sat.Literal[],
 		unassigned: sat.Literal[],
-	): sat.Literal[][] | "unsatisfiable";
+	): { tag: "implied", impliedClauses: sat.Literal[][], model: Model }
+		| { tag: "unsatisfiable", conflictClauses: sat.Literal[][] };
 
 	/// clausify returns a set of clauses to add to the underlying SAT solver.
 	/// This modifies state, associating literals (and other internal variables)

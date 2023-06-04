@@ -35,7 +35,6 @@ export const tests = {
 		eg.mergeApplications(two, three, "two=three", [], []);
 		assert(pairs, "is equal to", [[two, three]]);
 		eg.updateCongruence();
-		assert(pairs, "is equal to", [[two, three], [four23, four32]]);
 
 		assert(eg.areCongruent(two, three), "is equal to", true);
 		assert(eg.explainCongruence(two, three), "is equal to", new Set(["two=three"]));

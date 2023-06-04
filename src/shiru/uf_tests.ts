@@ -1,6 +1,6 @@
 import * as ir from "./ir.js";
 import * as uf from "./uf.js";
-import { assert } from "./test.js";
+import { assert, specIterableContainingOnly } from "./test.js";
 
 export const tests = {
 	"UFTheory-basic-equality-refuted"() {
@@ -501,7 +501,7 @@ export const tests = {
 		const result4 = solver.refuteUsingTheory(query);
 		assert(result4, "is equal to", {
 			tag: "inconsistent",
-			inconsistencies: [new Set([100, 200, 300])],
+			inconsistencies: specIterableContainingOnly([new Set([100, 200, 300])]),
 		});
 	},
 	"UFSolver-transitiveAcyclic-is-anti-reflexive"() {

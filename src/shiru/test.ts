@@ -38,6 +38,7 @@ export class TestRunner {
 	constructor(private testNameFilters: string[]) { }
 
 	runTest(name: string, body: () => void) {
+		Error.stackTraceLimit = 100;
 		let keep = this.testNameFilters.length === 0;
 		for (const filter of this.testNameFilters) {
 			if (name.indexOf(filter) >= 0) {
@@ -135,6 +136,31 @@ export function specSupersetOf<T>(subset: Set<T>): Spec<Set<T>> {
 			return "(any superset of) " + util.inspect(subset, options);
 		},
 	}
+}
+
+export function specIterableContainingOnly<T, IT extends Iterable<T>>(elements: IT): Spec<IT> {
+	const set = new Set(elements);
+	return {
+		[spec](test: Iterable<T>) {
+			for (const e of test) {
+				if (!set.has(e)) {
+					let found = false;
+					for (const candidate of set) {
+						if (deepEqual(e, candidate).eq) {
+							found = true;
+						}
+					}
+					if (!found) {
+						return { eq: false, path: [e] };
+					}
+				}
+			}
+			return { eq: true };
+		},
+		[util.inspect.custom]: (depth: number, options: any) => {
+			return "(iterable containing only) " + util.inspect(set, options);
+		},
+	};
 }
 
 export function specEq<T>(value: Spec<T>): Spec<T> {

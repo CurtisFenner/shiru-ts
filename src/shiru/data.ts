@@ -11,9 +11,6 @@ export class TrieMap<KS extends readonly unknown[], V> {
 	private value: V | undefined = undefined;
 	size: number = 0;
 
-	/**
-	 * Note that the returned map should NOT be mutated.
-	 */
 	getSuffixes(key: KS[0]): TrieMap<Tail<KS>, V> | undefined {
 		const at = this.map.get(key);
 		if (at === undefined) {
@@ -153,6 +150,32 @@ export class DisjointSet<E> {
 	}
 
 	/**
+	 * @return which object would be the new representative and old
+	 * representative if union(a, b) was invoked in the current state.
+	 */
+	chooseParent(a: E, b: E): { child: E, parent: E, childRank: number, parentRank: number } {
+		const ra = this.representative(a);
+		const rb = this.representative(b);
+		const rankA = this.ranks.get(ra)!;
+		const rankB = this.ranks.get(rb)!;
+		if (rankA < rankB) {
+			return {
+				child: ra,
+				parent: rb,
+				childRank: rankA,
+				parentRank: rankB,
+			};
+		} else {
+			return {
+				child: rb,
+				parent: ra,
+				childRank: rankB,
+				parentRank: rankA,
+			};
+		}
+	}
+
+	/**
 	 * union updates this data-structure to merge the equivalence classes of a
 	 * and b.
 	 * 
@@ -169,20 +192,10 @@ export class DisjointSet<E> {
 			return false;
 		}
 
-		let child: E;
-		let parent: E;
-		const rankA = this.ranks.get(ra)!;
-		const rankB = this.ranks.get(rb)!;
-		if (rankA < rankB) {
-			child = ra;
-			parent = rb;
-		} else {
-			child = rb;
-			parent = ra;
-		}
+		const { child, parent, childRank, parentRank } = this.chooseParent(a, b);
 
 		this.parents.set(child, parent);
-		if (rankA === rankB) {
+		if (childRank === parentRank) {
 			this.ranks.set(parent, this.ranks.get(parent)! + 1);
 		}
 		return true;

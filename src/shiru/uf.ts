@@ -9,18 +9,9 @@ export interface UFCounterexample { model: {} }
 type VarID = symbol & { __brand: "uf-var" };
 export type FnID = symbol & { __brand: "uf-fn" };
 
-type Value = VarValue | AppValue | ConstantValue;
-
 interface VarValue {
 	tag: "var",
 	var: VarID,
-	type: ir.Type,
-}
-
-interface AppValue {
-	tag: "app",
-	fn: FnID,
-	args: ValueID[],
 	type: ir.Type,
 }
 
@@ -130,7 +121,6 @@ type UFTags = {
 };
 
 export class UFSolver<Reason> {
-	private values = new Map<ValueID, Value>();
 	private fns = new Map<FnID, { returnType: ir.Type, semantics: Semantics<Reason> }>();
 	private egraph: egraph.EGraph<VarID | FnID, UFTags, Reason>;
 
@@ -169,19 +159,17 @@ export class UFSolver<Reason> {
 
 	private constants = new DefaultMap<unknown, ValueID>(constant => {
 		const varID = Symbol("uf-constant") as VarID;
-		const object = this.egraph.add(varID, [], String(constant)) as ValueID;
-		this.egraph.addTag(object, "constant", { valueID: object, constantValue: constant });
 		const type = typeof constant === "boolean"
 			? ir.T_BOOLEAN
 			: "unknown";
-		this.values.set(object, { tag: "constant", constant, type });
+		const object = this.egraph.add(varID, [], String(constant), { tag: "constant", constant, type }) as ValueID;
+		this.egraph.addTag(object, "constant", { valueID: object, constantValue: constant });
 		return object;
 	});
 
 	createVariable(type: ir.Type, debugName: string): ValueID {
 		const varID = Symbol(debugName || "unknown-var") as VarID;
-		const object = this.egraph.add(varID, [], debugName) as ValueID;
-		this.values.set(object, { tag: "var", var: varID, type });
+		const object = this.egraph.add(varID, [], debugName, { tag: "var", var: varID, type }) as ValueID;
 		return object;
 	}
 
@@ -191,6 +179,10 @@ export class UFSolver<Reason> {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
 		this.fns.set(fnID, { returnType, semantics });
+		if (semantics.eq || semantics.not) {
+			this.egraph.excludeCongruenceIndexing.add(fnID);
+		}
+
 		return fnID;
 	}
 
@@ -204,7 +196,6 @@ export class UFSolver<Reason> {
 			throw new Error("UFSolver.createApplication: fn is not defined");
 		}
 		const object = this.egraph.add(fn, args) as ValueID;
-		this.values.set(object, { type: definition.returnType, tag: "app", fn, args });
 		this.egraph.addTag(object, "indexByFn", new Map([
 			[fn, TreeBag.of({ id: object, operands: args })],
 		]));
@@ -215,12 +206,28 @@ export class UFSolver<Reason> {
 		return this.constants.get(literal);
 	}
 
-	getDefinition(valueID: ValueID): Value {
-		const value = this.values.get(valueID);
-		if (value === undefined) {
-			throw new Error("UFSolver.getDefinition: no such value");
+	getDefinition(valueID: ValueID): {
+		tag: "application",
+		fn: FnID,
+		operands: ValueID[]
+	} | {
+		tag: "atom",
+		extra: ConstantValue | VarValue
+	} {
+		const definition = this.egraph.getDefinition(valueID);
+		if (definition.extra !== undefined) {
+			const extra = definition.extra as ConstantValue | VarValue;
+			return {
+				tag: "atom",
+				extra,
+			};
+		} else {
+			return {
+				tag: "application",
+				fn: definition.term as FnID,
+				operands: definition.operands as ValueID[],
+			};
 		}
-		return value;
 	}
 
 	getFnReturnType(fnID: FnID): ir.Type {
@@ -241,7 +248,11 @@ export class UFSolver<Reason> {
 
 	getType(value: ValueID): ir.Type | "unknown" {
 		const definition = this.getDefinition(value);
-		return definition.type;
+		if (definition.tag === "application") {
+			return this.getFnReturnType(definition.fn);
+		} else {
+			return definition.extra.type;
+		}
 	}
 
 	areCongruent(a: ValueID, b: ValueID): boolean {
@@ -585,14 +596,13 @@ export class UFSolver<Reason> {
 		if (constants === null) {
 			return null;
 		}
-		const id = constants.valueID;
-		const valueDefinition = this.values.get(id);
-		if (valueDefinition?.tag !== "constant") {
+		const valueDefinition = this.getDefinition(constants.valueID);
+		if (valueDefinition.tag !== "atom" || valueDefinition.extra.tag !== "constant") {
 			throw new Error("UFSolver.evaluateConstant: non-literal tagged");
 		}
 		return {
-			constant: valueDefinition.constant,
-			constantID: id,
+			constant: valueDefinition.extra.constant,
+			constantID: constants.valueID,
 		};
 	}
 
@@ -872,7 +882,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	}
 
 	/**
-	 * @returns a SAT term assocaited with a Boolean-typed object tracked by the
+	 * @returns a SAT term associated with a Boolean-typed object tracked by the
 	 * solver.
 	 */
 	private toSatLiteralInternal(
@@ -881,16 +891,16 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		additionalClauses: number[][],
 	): number {
 		const definition = this.solver.getDefinition(valueID);
-		if (definition.tag === "app") {
+		if (definition.tag === "application") {
 			const semantics = this.solver.getFnSemantics(definition.fn);
 			if (semantics.not === true) {
-				return -this.toSatLiteral(definition.args[0], additionalClauses);
+				return -this.toSatLiteral(definition.operands[0], additionalClauses);
 			} else if (semantics.eq === true) {
-				const [leftID, rightID] = definition.args;
-				const left = this.solver.getDefinition(leftID);
-				const right = this.solver.getDefinition(rightID);
-				if (left.type !== "unknown" && right.type !== "unknown") {
-					if (ir.equalTypes(ir.T_BOOLEAN, left.type) && ir.equalTypes(ir.T_BOOLEAN, right.type)) {
+				const [leftID, rightID] = definition.operands;
+				const leftType = this.solver.getType(leftID);
+				const rightType = this.solver.getType(rightID);
+				if (leftType !== "unknown" && rightType !== "unknown") {
+					if (ir.equalTypes(ir.T_BOOLEAN, leftType) && ir.equalTypes(ir.T_BOOLEAN, rightType)) {
 						// E == (A == B)
 						// (~A | ~B | E) & (~A | B | ~E) & (A | ~B | ~C) & (A | B | C)
 						const leftLiteral = this.toSatLiteral(leftID, additionalClauses);
@@ -1035,28 +1045,29 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		});
 		const exprs = new DefaultMap<ValueID, string>(value => {
 			const def = this.solver.getDefinition(value);
-			if (def.tag === "var") {
-				const name = "v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
-				const type = showType(def.type);
-				const hint = JSON.stringify(String(value));
-				defs.push(`const ${name} = smt.createVariable(${type}, ${hint});`);
-				return name;
-			} else if (def.tag === "app") {
+			if (def.tag === "atom") {
+				if (def.extra.tag === "var") {
+					const name = "v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+					const type = showType(this.solver.getType(value) as ir.Type);
+					const hint = JSON.stringify(String(value));
+					defs.push(`const ${name} = smt.createVariable(${type}, ${hint});`);
+					return name;
+				} else {
+					const constant = def.extra.constant;
+					const name = "c" + String(constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+					const value = (typeof constant === "bigint")
+						? "BigInt(" + JSON.stringify(constant.toString()) + ")"
+						: JSON.stringify(constant);
+					defs.push(`const ${name} = smt.createConstant(ir.T_INT, ${value});`);
+					return name;
+				}
+			} else {
 				const f = fs.get(def.fn);
 				const name = "f" + String(def.fn).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
-				const args = def.args.map(x => exprs.get(x));
+				const args = def.operands.map(x => exprs.get(x));
 				defs.push(`const ${name} = smt.createApplication(${f}, [${args.join(", ")}]);`);
 				return name;
-			} else if (def.tag === "constant") {
-				const name = "c" + String(def.constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
-				const value = (typeof def.constant === "bigint")
-					? "BigInt(" + JSON.stringify(def.constant.toString()) + ")"
-					: JSON.stringify(def.constant);
-				defs.push(`const ${name} = smt.createConstant(ir.T_INT, ${value});`);
-				return name;
 			}
-			const _: never = def;
-			throw new Error("unreachable");
 		});
 
 		const showLiteral = (literal: number) => {

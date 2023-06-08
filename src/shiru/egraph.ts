@@ -124,59 +124,129 @@ class TagTracker<Key, TagValues extends Record<string, unknown>> {
 export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	private tagTracker: TagTracker<EObject, TagValues>;
 
+	/**
+	 * The `tuples` triemap is used to "hashcons" objects with identical
+	 * definitions.
+	 */
 	private tuples: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
-	private objectDefinition: Map<EObject, { term: Term, operands: EObject[], uniqueObjectCount: number }> = new Map();
+
+	private objectDefinition: Map<
+		EObject,
+		{ term: Term, operands: EObject[], uniqueObjectCount: number, extra: unknown }
+	> = new Map();
 	private components = new Components<EObject, Reason>();
 
 	private lazyCongruence: PendingCongruence[] = [];
 
 	/**
-	 * A canonicalized version of the function is added.
+	 * Applications with at least one operand are recorded in this map.
+	 * 
+	 * Keys are the representatives of each operand. Only one application is
+	 * recorded for each canonicalized operands tuple.
 	 */
-	private functionByRep: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
+	private applicationCanonicalization: TrieMap<[Term, ...EObject[]], EObject> = new TrieMap();
 
-	private references: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
+	/**
+	 * `applicationsByOperand.get(object)` includes the set of applications
+	 * which have an operand congruent to `object`.
+	 */
+	private applicationsByOperand: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
+
+	/**
+	 * Applications of function terms in this set *may* (but not necessarily
+	 * will) have their congruence maintenance skipped as part of
+	 * `this.updateCongruence()`.
+	 * 
+	 * This can be used for performance for applications which won't benefit
+	 * from congruence (for example, due to a small input size or well-defined
+	 * semantics)
+	 */
+	public excludeCongruenceIndexing: Set<Term> = new Set();
 
 	constructor(
-		private preMergeCallback: (a: EObject, b: EObject, simpleReason: Reason | null, lefts: EObject[], rights: EObject[]) => null | "cancel",
+		private preMergeCallback: (
+			a: EObject,
+			b: EObject,
+			simpleReason: Reason | null,
+			lefts: EObject[],
+			rights: EObject[],
+		) => null | "cancel",
 		tagTrackingMerges: { [K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]; },
 	) {
 		this.tagTracker = new TagTracker(tagTrackingMerges);
 	}
 
-	private updateFunctionRep(obj: EObject): [Term, ...EObject[]] {
-		const def = this.objectDefinition.get(obj)!!;
-		const representativeKey: [Term, ...EObject[]] = [def.term];
-		for (const operand of def.operands) {
-			representativeKey.push(this.getRepresentative(operand));
+	/**
+	 * Restores the invariants for applicationCanonicalization with respect to
+	 * the given application.
+	 * 
+	 * This method must be called on each application with an operand whose
+	 * representative has changed.
+	 */
+	private canonicalizeApplication(application: EObject): EObject {
+		const definition = this.getDefinition(application);
+		const operandRepresentatives = definition.operands.map(operand => this.getRepresentative(operand));
+		const key: [Term, ...EObject[]] = [definition.term, ...operandRepresentatives];
+		const canonical = this.applicationCanonicalization.get(key);
+		if (canonical === undefined) {
+			this.applicationCanonicalization.put(key, application);
+			return application;
+		} else if (canonical !== application) {
+			if (!this.areCongruent(canonical, application)) {
+				const canonicalDefinition = this.getDefinition(canonical);
+				this.lazyCongruence.push({
+					left: canonical,
+					right: application,
+					leftOperands: canonicalDefinition.operands,
+					rightOperands: definition.operands,
+				});
+			}
 		}
 
-		const existing = this.functionByRep.get(representativeKey);
-		if (existing !== undefined && existing !== obj) {
-			const existingDef = this.getDefinition(existing);
-			this.lazyCongruence.push({
-				left: existing,
-				right: obj,
-				leftOperands: existingDef.operands,
-				rightOperands: def.operands,
-			});
-		} else {
-			this.functionByRep.put(representativeKey, obj);
+		return canonical;
+	}
+
+	private indexApplication(application: EObject) {
+		const canonical = this.canonicalizeApplication(application);
+		const definition = this.getDefinition(canonical);
+		for (const operand of definition.operands) {
+			const representative = this.getRepresentative(operand);
+			this.applicationsByOperand.get(representative).add(canonical);
 		}
-		return representativeKey;
+	}
+
+	private unindexApplication(application: EObject) {
+		const canonical = this.canonicalizeApplication(application);
+		const definition = this.getDefinition(canonical);
+		for (const operand of definition.operands) {
+			const representative = this.getRepresentative(operand);
+			this.applicationsByOperand.get(representative).delete(canonical);
+		}
 	}
 
 	reset(): void {
 		this.components.reset();
 		this.queryCache.clear();
 		this.tagTracker.clear();
-		this.references.clear();
-		this.functionByRep.clear();
 		this.lazyCongruence = [];
-		for (const [object, { term, operands }] of this.objectDefinition) {
-			this.functionByRep.put([term, ...operands], object);
-			for (const operand of operands) {
-				this.references.get(operand).add(object);
+
+		this.applicationCanonicalization.clear();
+		for (const [key, value] of this.tuples) {
+			this.applicationCanonicalization.put(key, value);
+		}
+
+		this.resetApplicationsByOperand(new Set(this.objectDefinition.keys()));
+	}
+
+	private resetApplicationsByOperand(objects: Set<EObject>): void {
+		this.applicationsByOperand.clear();
+		for (const object of objects) {
+			const definition = this.objectDefinition.get(object)!;
+			if (!this.excludeCongruenceIndexing.has(definition.term)) {
+				this.indexApplication(object);
+			}
+			for (const operand of definition.operands) {
+				objects.add(operand);
 			}
 		}
 	}
@@ -185,12 +255,17 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	 * `getDefinition(id)` returns the `term` and `operands` passed to
 	 * `add(term, operands)` to create the given object.
 	 */
-	getDefinition(id: EObject): { term: Term, operands: EObject[] } {
+	getDefinition(id: EObject): { term: Term, operands: EObject[], extra: unknown } {
 		const definition = this.objectDefinition.get(id);
 		if (definition === undefined) {
 			throw new Error("EGraph.getDefinition: object `" + String(id) + "` not defined");
 		}
-		return { term: definition.term, operands: definition.operands };
+
+		return {
+			term: definition.term,
+			operands: definition.operands,
+			extra: definition.extra,
+		};
 	}
 
 	getTagged<Tag extends keyof TagValues>(
@@ -224,7 +299,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 		this.tagTracker.attach(tag, object, value, true, representative);
 	}
 
-	add(term: Term, operands: EObject[], hint?: string): EObject {
+	add(term: Term, operands: EObject[], hint?: string, extra?: unknown): EObject {
 		const tuple: [Term, ...EObject[]] = [term, ...operands];
 		const existing = this.tuples.get(tuple);
 		if (existing) {
@@ -262,12 +337,12 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 			term,
 			operands,
 			uniqueObjectCount: this.uniqueObjectCount,
+			extra,
 		});
-		this.functionByRep.put(tuple, id);
-		for (const operand of operands) {
-			this.references.get(this.getRepresentative(operand)).add(id);
+		if (!this.excludeCongruenceIndexing.has(term)) {
+			this.indexApplication(id);
 		}
-		this.updateFunctionRep(id);
+		this.canonicalizeApplication(id);
 		return id;
 	}
 
@@ -277,7 +352,13 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	 * 
 	 * @returns false when this fact was already present in this egraph.
 	 */
-	mergeApplications(a: EObject, b: EObject, simpleReason: Reason | null, lefts: EObject[], rights: EObject[]): boolean {
+	mergeApplications(
+		a: EObject,
+		b: EObject,
+		simpleReason: Reason | null,
+		lefts: EObject[],
+		rights: EObject[],
+	): boolean {
 		if (lefts.length !== rights.length) {
 			throw new Error("EGraph.mergeBecauseCongruence: lefts.length !== rights.length");
 		}
@@ -288,8 +369,21 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 			return false;
 		}
 
+		for (let i = 0; i < lefts.length; i++) {
+			if (!this.areCongruent(lefts[i], rights[i])) {
+				throw new Error("EGraph.mergeApplications: bad lefts/rights");
+			}
+		}
+
 		if (this.preMergeCallback(a, b, simpleReason, lefts, rights) === "cancel") {
 			return false;
+		}
+
+		const { child, parent } = this.components.predictRepresentativeOfMerge(a, b);
+
+		const applicationsOfChild = [...this.applicationsByOperand.get(child)];
+		for (const applicationOfChild of applicationsOfChild) {
+			this.unindexApplication(applicationOfChild);
 		}
 
 		const dependencies = [];
@@ -297,20 +391,12 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 			dependencies.push({ left: lefts[i], right: rights[i] });
 		}
 		this.components.addCongruence(a, b, simpleReason, dependencies);
-
-		const parent = this.components.representative(arep);
-		if (parent !== arep && parent !== brep) {
-			throw new Error("EGraph.merge: unexpected new representative");
-		}
-		const child = arep === parent ? brep : arep;
 		this.tagTracker.mergeInto(child, parent);
 
-		// Find all references of the child and process them with
-		// updateFunctionRep
-		const childReferences = this.references.get(child);
-		for (const childReference of childReferences) {
-			this.references.get(parent).add(childReference);
-			this.updateFunctionRep(childReference);
+		// Restore application indexes
+		for (const applicationOfChild of applicationsOfChild) {
+			this.canonicalizeApplication(applicationOfChild);
+			this.indexApplication(applicationOfChild);
 		}
 
 		return true;
@@ -322,7 +408,8 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 			const q = this.lazyCongruence;
 			this.lazyCongruence = [];
 			for (const e of q) {
-				madeChanges = this.mergeApplications(e.left, e.right, null, e.leftOperands, e.rightOperands) || madeChanges;
+				madeChanges = this.mergeApplications(e.left, e.right, null, e.leftOperands, e.rightOperands)
+					|| madeChanges;
 			}
 		}
 		return madeChanges;
@@ -349,7 +436,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 
 		const seq = this.components.findPath(a, b);
 		if (seq === null) {
-			throw new Error("EGraph.explainCongruence: expected missing path");
+			throw new Error(`EGraph.explainCongruence: expected path between ${String(a)} and ${String(b)}`);
 		}
 		if (cacheA === undefined) {
 			cacheA = new Map();

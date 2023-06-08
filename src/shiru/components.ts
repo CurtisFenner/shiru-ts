@@ -38,6 +38,15 @@ export class Components<T, R> {
 		return this.disjointSet.compareEqual(a, b);
 	}
 
+	/**
+	 * @return which object would be the new representative of a and b if
+	 * addCongruence(a, b, ...) was invoked in the current state.
+	 */
+	predictRepresentativeOfMerge(a: T, b: T): { child: T, parent: T } {
+		const { child, parent } = this.disjointSet.chooseParent(a, b);
+		return { child, parent };
+	}
+
 	addCongruence(a: T, b: T, r: R | null, dependencies: { left: T, right: T }[]): number {
 		const queryTime = this.time;
 		const newTime = queryTime + 1;

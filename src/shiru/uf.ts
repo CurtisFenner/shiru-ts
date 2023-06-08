@@ -179,6 +179,10 @@ export class UFSolver<Reason> {
 			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
 		}
 		this.fns.set(fnID, { returnType, semantics });
+		if (semantics.eq || semantics.not) {
+			this.egraph.excludeCongruenceIndexing.add(fnID);
+		}
+
 		return fnID;
 	}
 

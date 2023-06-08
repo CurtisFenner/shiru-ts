@@ -152,6 +152,17 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	 */
 	private applicationsByOperand: DefaultMap<EObject, Set<EObject>> = new DefaultMap(() => new Set());
 
+	/**
+	 * Applications of function terms in this set *may* (but not necessarily
+	 * will) have their congruence maintenance skipped as part of
+	 * `this.updateCongruence()`.
+	 * 
+	 * This can be used for performance for applications which won't benefit
+	 * from congruence (for example, due to a small input size or well-defined
+	 * semantics)
+	 */
+	public excludeCongruenceIndexing: Set<Term> = new Set();
+
 	constructor(
 		private preMergeCallback: (
 			a: EObject,
@@ -231,7 +242,9 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 		this.applicationsByOperand.clear();
 		for (const object of objects) {
 			const definition = this.objectDefinition.get(object)!;
-			this.indexApplication(object);
+			if (!this.excludeCongruenceIndexing.has(definition.term)) {
+				this.indexApplication(object);
+			}
 			for (const operand of definition.operands) {
 				objects.add(operand);
 			}
@@ -326,7 +339,9 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 			uniqueObjectCount: this.uniqueObjectCount,
 			extra,
 		});
-		this.indexApplication(id);
+		if (!this.excludeCongruenceIndexing.has(term)) {
+			this.indexApplication(id);
+		}
 		this.canonicalizeApplication(id);
 		return id;
 	}

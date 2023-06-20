@@ -123,7 +123,9 @@ export const foreignOperations: Record<string, {
 					location: ir.NONE,
 				},
 			],
-			semantics: {},
+			semantics: {
+				not: true,
+			},
 		},
 	},
 	// Integer less-than function.

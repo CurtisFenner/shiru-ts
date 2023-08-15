@@ -3,7 +3,7 @@ import { assert, specPredicate, specSetEq } from "./test.js";
 
 export const tests = {
 	"simple-search"() {
-		const cs = new Components<string, number>();
+		const cs = new Components<string, number, number>(() => 1, (a, b) => a + b);
 		const addAB = cs.addCongruence("alpha", "beta", 100, []);
 		const addBG = cs.addCongruence("beta", "gamma", 200, []);
 		const addGD = cs.addCongruence("delta", "gamma", 300, []);
@@ -32,7 +32,7 @@ export const tests = {
 		assert(cs.findPathAtTime({ left: "alpha", right: "beta" }, addGD), "is equal to", null);
 	},
 	"simple-dependencies"() {
-		const cs = new Components<string, number>();
+		const cs = new Components<string, number, number>(() => 1, (a, b) => a + b);
 		const addAB = cs.addCongruence("a", "b", 100, []);
 		assert(cs.areCongruent("f(a)", "f(b)"), "is equal to", false);
 		const addFAFB = cs.addCongruence("f(a)", "f(b)", 200, [{ left: "a", right: "b" }]);

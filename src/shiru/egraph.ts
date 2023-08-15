@@ -134,7 +134,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 		EObject,
 		{ term: Term, operands: EObject[], uniqueObjectCount: number, extra: unknown }
 	> = new Map();
-	private components = new Components<EObject, Reason>();
+	private components = new Components<EObject, Reason, null>(() => null, () => null);
 
 	private lazyCongruence: PendingCongruence[] = [];
 

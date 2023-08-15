@@ -793,4 +793,34 @@ export const tests = {
 		assert(response4, "is equal to", "refuted");
 		smt.popScope();
 	},
+	"UFTheory-basic-fastRefuteUsingTheory"() {
+		const solver = new uf.UFSolver();
+		const predicateA = solver.createVariable(ir.T_BOOLEAN, "predicateA");
+		const predicateB = solver.createVariable(ir.T_BOOLEAN, "predicateB");
+		const predicateC = solver.createVariable(ir.T_BOOLEAN, "predicateC");
+
+		const varB = solver.createVariable(ir.T_INT, "varB");
+		const varC = solver.createVariable(ir.T_INT, "varC");
+		const zero = solver.createConstant(0n);
+
+		const fEq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
+		const fLt = solver.createFn(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "<");
+		const fLeq = solver.createFn(ir.T_BOOLEAN, { transitive: true }, "<=");
+		const fPlus = solver.createFn(ir.T_INT, {}, "+");
+		const eq = (a: uf.ValueID, b: uf.ValueID) => solver.createApplication(fEq, [a, b]);
+		const leq = (a: uf.ValueID, b: uf.ValueID) => solver.createApplication(fLeq, [a, b]);
+		const lt = (a: uf.ValueID, b: uf.ValueID) => solver.createApplication(fLt, [a, b]);
+		const plus = (a: uf.ValueID, b: uf.ValueID) => solver.createApplication(fPlus, [a, b]);
+
+		solver.fastRefuteUsingTheory([
+			{ constraint: eq(predicateA, leq(zero, varB)), assignment: true, reason: 1 },
+			{ constraint: eq(varB, zero), assignment: true, reason: 2, },
+			{ constraint: eq(predicateA, eq(varB, zero)), assignment: true, reason: 3 },
+			{ constraint: eq(predicateB, lt(zero, plus(varB, varC))), assignment: true, reason: 4 },
+			{ constraint: eq(predicateC, lt(varB, plus(varB, varC))), assignment: false, reason: 5 },
+			{ constraint: eq(varB, plus(varB, varC)), assignment: true, reason: 6 },
+			{ constraint: eq(predicateC, eq(varB, plus(varB, varC))), assignment: true, reason: 7 },
+			{ constraint: eq(predicateB, leq(zero, plus(varB, varC))), assignment: true, reason: 8 },
+		]);
+	},
 };

@@ -2,6 +2,61 @@ type Tail<T extends readonly unknown[]> = T extends [unknown, ... infer Tail]
 	? Tail
 	: never;
 
+export function sortedBy<T, K extends unknown[]>(
+	array: T[],
+	ranking: (element: T) => K,
+): T[] {
+	const ranks = array.map((e, i) => ({ rank: ranking(e), i }));
+	ranks.sort((a, b) => {
+		for (let i = 0; i < a.rank.length && i < b.rank.length; i++) {
+			const left = a.rank[i] as any;
+			const right = b.rank[i] as any;
+			if (left < right) {
+				return -1;
+			} else if (right < left) {
+				return 1;
+			}
+		}
+		return a.rank.length - b.rank.length;
+	});
+	return ranks.map(x => array[x.i]);
+}
+
+function leastSignificantBit16(n: bigint): number {
+	if (n & 0b0000_0000_0000_0001n) return 0;
+	if (n & 0b0000_0000_0000_0010n) return 1;
+	if (n & 0b0000_0000_0000_0100n) return 2;
+	if (n & 0b0000_0000_0000_1000n) return 3;
+	if (n & 0b0000_0000_0001_0000n) return 4;
+	if (n & 0b0000_0000_0010_0000n) return 5;
+	if (n & 0b0000_0000_0100_0000n) return 6;
+	if (n & 0b0000_0000_1000_0000n) return 7;
+	if (n & 0b0000_0001_0000_0000n) return 8;
+	if (n & 0b0000_0010_0000_0000n) return 9;
+	if (n & 0b0000_0100_0000_0000n) return 10;
+	if (n & 0b0000_1000_0000_0000n) return 11;
+	if (n & 0b0001_0000_0000_0000n) return 12;
+	if (n & 0b0010_0000_0000_0000n) return 13;
+	if (n & 0b0100_0000_0000_0000n) return 14;
+	return 15;
+}
+
+export function leastSignificantBit(n: bigint): number {
+	if (n <= 0n) {
+		return -1;
+	}
+
+	let limbStart = 0;
+	while (true) {
+		const masked = BigInt.asUintN(16, n);
+		if (masked !== 0n) {
+			return limbStart + leastSignificantBit16(BigInt.asUintN(16, masked));
+		}
+		n = n >> 16n;
+		limbStart += 16;
+	}
+}
+
 /**
  * TrieMap implements a map where keys are arrays (or tuples).
  * This is implemented using a "trie" of ES6 Map objects.
@@ -103,19 +158,27 @@ export class DefaultMap<K, V> {
  * data-structure, which tracks the set of components in an undirected graph as
  * edges are added.
  */
-export class DisjointSet<E> {
-	parents: Map<E, E> = new Map();
-	ranks: Map<E, number> = new Map();
+export class DisjointSet<E, Data> {
+	private parents: Map<E, E> = new Map();
+	private ranks: Map<E, number> = new Map();
+	private data: Map<E, Data> = new Map();
+
+	constructor(
+		private initialDataFor: (e: E) => Data,
+		private mergeDataFor: (childData: Data, parentData: Data) => Data,
+	) { }
 
 	reset() {
 		this.parents.clear();
 		this.ranks.clear();
+		this.data.clear();
 	}
 
 	init(e: E) {
 		if (!this.parents.has(e)) {
 			this.parents.set(e, e);
 			this.ranks.set(e, 0);
+			this.data.set(e, this.initialDataFor(e));
 		}
 	}
 
@@ -198,7 +261,21 @@ export class DisjointSet<E> {
 		if (childRank === parentRank) {
 			this.ranks.set(parent, this.ranks.get(parent)! + 1);
 		}
+
+		const dataChild = this.data.get(child)!;
+		this.unionData(parent, dataChild);
 		return true;
+	}
+
+	getData(e: E): Data {
+		const representative = this.representative(e);
+		return this.data.get(representative)!;
+	}
+
+	unionData(e: E, data: Data): Data {
+		const merged = this.mergeDataFor(this.getData(e), data);
+		this.data.set(this.representative(e), merged);
+		return merged;
 	}
 
 	/**

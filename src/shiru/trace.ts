@@ -129,6 +129,10 @@ export function mark(title: string | unknown[], details?: () => string): void {
 }
 
 export function stop(title?: string): void {
+	stopThreshold(0, title);
+}
+
+export function stopThreshold(thresholdMs: number, title?: string): void {
 	if (title !== undefined && title !== activeStack.title) {
 		throw new Error("mismatched stack:\n\t" + JSON.stringify(title) + "\n\t!=\n\t" + JSON.stringify(activeStack.title));
 	}
@@ -137,6 +141,9 @@ export function stop(title?: string): void {
 	if (!parent) {
 		throw new Error("mismatched stack:\n\tno stack open for\n\t" + JSON.stringify(title));
 	}
+	if (activeStack.end - activeStack.start < thresholdMs) {
+		parent.children.pop();
+	}
 	activeStack = parent;
 }
 
@@ -144,6 +151,8 @@ function showValue(x: unknown): string {
 	const s = JSON.stringify(x, (key, value) => {
 		if (typeof value === "bigint") {
 			return value.toString() + "n";
+		} else if (typeof value === "symbol") {
+			return String(value);
 		} else {
 			return value;
 		}
@@ -172,6 +181,13 @@ function getDurationMs(stack: TraceBranch): number {
 	return stack.end - stack.start;
 }
 
+function displayMillis(n: number) {
+	if (n < 1) {
+		return n.toFixed(2);
+	}
+	return n.toFixed(1);
+}
+
 export function renderTree(stack: Trace, out: string[], settings: { open: boolean, totalTimeMs: number }): void {
 	if (stack.tag === "trace-branch") {
 		out.push("<details " + (settings.open ? "open" : "") + ">");
@@ -181,7 +197,7 @@ export function renderTree(stack: Trace, out: string[], settings: { open: boolea
 		const startPercentage = 100 * stack.start / settings.totalTimeMs;
 		out.push(`<div class=bar style="left: ${startPercentage.toFixed(2)}%; width: ${totalPercentage.toFixed(2)}%"></div>`);
 		out.push("</div>");
-		const durationText = stack.end ? getDurationMs(stack).toFixed(1) : "?";
+		const durationText = stack.end ? displayMillis(getDurationMs(stack)) : "?";
 		out.push("<span class=numeral>" + durationText + " ms</span> &mdash; ");
 		const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
 		for (const element of title) {

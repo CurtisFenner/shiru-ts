@@ -848,7 +848,17 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			if (symmetric !== null) {
 				return symmetric;
 			}
+		} else if (semantics.not) {
+			const operand = args[0];
+			const operandDefinition = this.solver.getDefinition(operand);
+			if (operandDefinition.tag === "application") {
+				const semantics = this.solver.getFnSemantics(operandDefinition.fn);
+				if (semantics.not === true) {
+					return operandDefinition.operands[0];
+				}
+			}
 		}
+
 		return this.solver.createApplication(fnID, args);
 	}
 

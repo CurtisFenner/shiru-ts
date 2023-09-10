@@ -123,7 +123,9 @@ export const foreignOperations: Record<string, {
 					location: ir.NONE,
 				},
 			],
-			semantics: {},
+			semantics: {
+				not: true,
+			},
 		},
 	},
 	// Integer less-than function.
@@ -370,6 +372,21 @@ export const foreignOperations: Record<string, {
 			semantics: {
 				transitive: true,
 			},
+
+		},
+		getInterpreter(foreignFns) {
+			return {
+				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else if (typeof b !== "bigint") {
+						return null;
+					}
+					return (a as bigint) <= (b as bigint);
+				},
+			}
 		},
 	},
 	// Integer addition function.
@@ -639,6 +656,21 @@ export const foreignOperations: Record<string, {
 					location: ir.NONE,
 				},
 			],
+		},
+		getInterpreter(foreignFns) {
+			return {
+				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+					if (a === null || b === null) {
+						return null;
+					} else if (typeof a !== "bigint") {
+						return null;
+					} else if (typeof b !== "bigint") {
+						return null;
+					}
+
+					return (a as bigint) - (b as bigint);
+				},
+			};
 		},
 	},
 	// Integer additive inverse function.

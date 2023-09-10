@@ -915,6 +915,7 @@ class VerificationState {
 				generalInterpreter: interpreters?.generalInterpreter,
 				transitive: signature.semantics?.transitive,
 				transitiveAcyclic: signature.semantics?.transitiveAcyclic,
+				not: signature.semantics?.not,
 			}, op));
 		}
 		return out;

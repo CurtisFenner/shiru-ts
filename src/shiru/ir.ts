@@ -434,6 +434,13 @@ export interface FunctionSignature {
 		/// admit cycles (a < b < c < d < ... < a). This implies that the relation
 		/// is anti-reflexive.
 		transitiveAcyclic?: true,
+
+		/**
+		 * Indicates that this has the definition
+		 * f(true) == false
+		 * f(false) == true
+		 */
+		not?: true,
 	},
 };
 

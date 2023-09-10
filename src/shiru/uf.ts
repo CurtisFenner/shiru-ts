@@ -1,4 +1,5 @@
-import { DefaultMap, TreeBag, zipMaps } from "./data.js";
+import { Components } from "./components.js";
+import { DefaultMap, TreeBag, TrieMap, leastSignificantBit, sortedBy, zipMaps } from "./data.js";
 import * as egraph from "./egraph.js";
 import * as ir from "./ir.js";
 import * as smt from "./smt.js";
@@ -120,6 +121,451 @@ type UFTags = {
 	indexByFn: Map<FnID, TreeBag<{ id: ValueID, operands: ValueID[] }>>,
 };
 
+
+type ValueToken = {
+	tag: "var",
+	var: VarID,
+} | {
+	tag: "constant",
+	constant: unknown,
+} | {
+	tag: "application",
+	fn: FnID,
+	operands: ValueToken[],
+};
+
+type MiniComponentData = {
+	simplestComplexity: number,
+	simplestDefinition: ValueToken,
+
+	/**
+	 * A bitset indexing into the `disequalityList` array, indicating
+	 * that this component is targeted by one of the operands of the
+	 * disequality.
+	 */
+	disequalityBitSet: bigint,
+
+	constant: { token: ValueToken, constant: unknown } | null,
+};
+
+type SimplifiedValue = {
+	result: ValueToken,
+	assumptions: { left: ValueToken, right: ValueToken }[],
+};
+
+class FastSolver<Reason> {
+	constructor(private originalSolver: UFSolver<Reason>) { }
+
+	private getDefinition(valueID: ValueID): {
+		tag: "application",
+		fn: FnID,
+		operands: ValueID[],
+	} | {
+		tag: "atom",
+		extra: ConstantValue | VarValue,
+	} {
+		return this.originalSolver.getDefinition(valueID);
+	}
+
+	private getFnSemantics(fnID: FnID): Semantics<Reason> {
+		return this.originalSolver.getFnSemantics(fnID);
+	}
+
+	private constantCache = new DefaultMap<unknown, ValueToken>(constant => {
+		return {
+			tag: "constant",
+			constant,
+		};
+	});
+
+	private findConstantToken(constantValue: unknown): ValueToken {
+		return this.constantCache.get(constantValue)
+	}
+
+	private varCache = new DefaultMap<VarID, ValueToken>(v => ({ tag: "var", var: v, id: Math.random() }));
+
+	private findVarToken(varName: VarID): ValueToken {
+		return this.varCache.get(varName);
+	}
+
+	private applicationCache = new TrieMap<[FnID, ...ValueToken[]], ValueToken>();
+
+	private findApplicationToken(fn: FnID, ...operands: ValueToken[]): ValueToken {
+		const key: [FnID, ...ValueToken[]] = [fn, ...operands];
+		let existing = this.applicationCache.get(key);
+		if (existing === undefined) {
+			existing = {
+				tag: "application",
+				fn,
+				operands,
+			};
+			this.applicationCache.put(key, existing);
+		}
+
+		return existing;
+	}
+
+	private cs = new Components<ValueToken, Reason, MiniComponentData>(
+		(a: ValueToken) => {
+			let simplestComplexity = 2;
+			if (a.tag === "constant") {
+				return {
+					simplestComplexity: 0,
+					simplestDefinition: a,
+					disequalityBitSet: 0n,
+					constant: { token: a, constant: a.constant },
+				};
+			} else if (a.tag === "var") {
+				return {
+					simplestComplexity: 1,
+					simplestDefinition: a,
+					disequalityBitSet: 0n,
+					constant: null,
+				};
+			}
+			return {
+				simplestComplexity,
+				simplestDefinition: a,
+				disequalityBitSet: 0n,
+				constant: null,
+			};
+		},
+		(a: MiniComponentData, b: MiniComponentData) => {
+			return {
+				simplestComplexity: Math.min(a.simplestComplexity, b.simplestComplexity),
+				simplestDefinition: a.simplestComplexity < b.simplestComplexity
+					? a.simplestDefinition
+					: b.simplestDefinition,
+				disequalityBitSet: a.disequalityBitSet | b.disequalityBitSet,
+				constant: a.constant || b.constant,
+			};
+		}
+	);
+
+	findPaths(
+		pairs: { left: ValueToken, right: ValueToken }[],
+		...additional: Reason[]
+	): Reason[] {
+		const out = [...additional];
+		for (const pair of pairs) {
+			const path = this.cs.findPath(pair.left, pair.right)!;
+			out.push(...path);
+		}
+		return out;
+	};
+
+	simplifyValueInternal(value: ValueID): SimplifiedValue {
+		const definition = this.getDefinition(value);
+		if (definition.tag === "atom") {
+			if (definition.extra.tag === "constant") {
+				const valueToken = this.findConstantToken(definition.extra.constant);
+				return {
+					result: valueToken,
+					assumptions: [],
+				};
+			} else {
+				return {
+					result: this.findVarToken(definition.extra.var),
+					assumptions: [],
+				};
+			}
+		}
+
+		const assumptions = [];
+		const simplifiedOperands: ValueToken[] = [];
+		for (const operand of definition.operands) {
+			const simplifiedOperand = this.simplifyValue(operand);
+			assumptions.push(...simplifiedOperand.assumptions);
+			simplifiedOperands.push(simplifiedOperand.result);
+		}
+
+		const applicationToken = this.findApplicationToken(definition.fn, ...simplifiedOperands);
+		const applicationResult = {
+			result: applicationToken,
+			assumptions,
+		};
+
+		const semantics = this.getFnSemantics(definition.fn);
+		if (semantics.interpreter) {
+			const constantOperands = [];
+			const constantReasons = [];
+			for (let i = 0; i < simplifiedOperands.length; i++) {
+				const data = this.cs.getData(simplifiedOperands[i]);
+				if (data.constant === null) {
+					constantOperands.push(null);
+				} else {
+					constantOperands.push(data.constant.constant);
+					constantReasons.push({ left: data?.constant.token, right: simplifiedOperands[i] });
+				}
+			}
+
+			const interpreterResult = semantics.interpreter(...constantOperands);
+			if (interpreterResult !== null) {
+				const constantToken = this.findConstantToken(interpreterResult);
+				this.addCongruence(
+					applicationResult,
+					{ result: constantToken, assumptions: constantReasons },
+					null
+				);
+			}
+		}
+
+		return applicationResult;
+	}
+
+
+	private originalSimplifications = new Map<ValueID, ValueToken>();
+
+	simplifyValue(value: ValueID) {
+		const before = this.originalSimplifications.get(value);
+		const simplified = this.simplifyValueInternal(value);
+		if (before !== undefined) {
+			// This ensures that congruence deductions that were made during
+			// simplification are reflected in the Components data
+			// structure.
+			this.cs.addCongruence(before, simplified.result, null, simplified.assumptions);
+		} else {
+			// TODO: Justify why we don't need to save the assumptions here.
+			this.originalSimplifications.set(value, simplified.result);
+		}
+
+		const related = this.cs.getData(simplified.result);
+		const simplestDefinition = related.simplestDefinition;
+		return {
+			result: simplestDefinition,
+			assumptions: simplified.result === simplestDefinition
+				? simplified.assumptions
+				: [...simplified.assumptions, { left: simplified.result, right: simplestDefinition }],
+		};
+	};
+
+	private inconsistencies: Set<Reason>[] = [];
+
+	private recordInconsistency(set: Set<Reason>): void {
+		if (set.size === 0) {
+			throw new Error("unexpected empty inconsistency set");
+		}
+		this.inconsistencies.push(set);
+	}
+
+	private disequalityList: {
+		left: SimplifiedValue,
+		right: SimplifiedValue,
+		reason: Reason,
+	}[] = [];
+
+	private disequalityListAlreadyHandled: bigint = 0n;
+
+	private addCongruence(
+		leftValue: SimplifiedValue,
+		rightValue: SimplifiedValue,
+		reasonForCongruence: Reason | null,
+	): void {
+		const emitProblemInconsistentWithEquality = (
+			reasons: Reason[],
+		): void => {
+			const inconsistency = this.findPaths([
+				...leftValue.assumptions,
+				...rightValue.assumptions,
+			], ...(reasonForCongruence === null ? [] : [reasonForCongruence]), ...reasons);
+			this.recordInconsistency(new Set(inconsistency));
+		};
+
+		const leftData = this.cs.getData(leftValue.result);
+		const rightData = this.cs.getData(rightValue.result);
+		if (leftData === rightData) {
+			// The components are already congruent.
+			return;
+		}
+
+		let hasConflictingConstants = false;
+		if (leftData.constant !== null && rightData.constant !== null) {
+			// The components are not congruent, but are both congruent to
+			// constants, which are necessarily distinct.
+			trace.start("cannot merge components because both have constants");
+			emitProblemInconsistentWithEquality(
+				this.findPaths([
+					{ left: leftData.constant?.token, right: leftValue.result },
+					{ left: rightData.constant?.token, right: rightValue.result },
+				]),
+			);
+			trace.stop();
+			hasConflictingConstants = true;
+		}
+
+		const disequalities = leftData.disequalityBitSet & rightData.disequalityBitSet & ~this.disequalityListAlreadyHandled;
+		if (!hasConflictingConstants && disequalities !== 0n) {
+			const disequalityIndex = leastSignificantBit(disequalities);
+			const disequality = this.disequalityList[disequalityIndex];
+			this.disequalityListAlreadyHandled |= 1n << BigInt(disequalityIndex);
+
+			const distinctA = disequality.left;
+			const distinctB = disequality.right;
+
+			let distinctLeft: SimplifiedValue;
+			let distinctRight: SimplifiedValue;
+			if (this.cs.areCongruent(distinctA.result, leftValue.result)) {
+				distinctLeft = distinctA;
+				distinctRight = distinctB;
+			} else if (this.cs.areCongruent(distinctA.result, rightValue.result)) {
+				distinctLeft = distinctB;
+				distinctRight = distinctA;
+			} else {
+				throw new Error(
+					"findProblemsWithEquality: expected at least one of leftValue/rightValue to be congruent to distinctA"
+				);
+			}
+
+			trace.start(["cannot merge components because of a disequality between", disequality.left, "and", disequality.right]);
+			emitProblemInconsistentWithEquality(
+				this.findPaths([
+					...distinctLeft.assumptions,
+					...distinctRight.assumptions,
+					{ left: distinctLeft.result, right: leftValue.result },
+					{ left: distinctRight.result, right: rightValue.result },
+				], disequality.reason)
+			);
+			trace.stop();
+		}
+
+		this.cs.addCongruence(leftValue.result, rightValue.result, reasonForCongruence, [
+			...leftValue.assumptions,
+			...rightValue.assumptions,
+		]);
+	}
+
+	private addDisequality(
+		leftValue: SimplifiedValue,
+		rightValue: SimplifiedValue,
+		disequality: {
+			left: ValueID,
+			right: ValueID,
+			assumption: Assumption<Reason>,
+			definition: {
+				tag: "application";
+				fn: FnID;
+				operands: ValueID[];
+			},
+		},
+	): void {
+		if (this.cs.areCongruent(leftValue.result, rightValue.result)) {
+			trace.start(["explain disequality inconsistency", leftValue.result, rightValue.result]);
+			const inconsistency = this.findPaths([
+				...leftValue.assumptions,
+				...rightValue.assumptions,
+				{ left: leftValue.result, right: rightValue.result },
+			], disequality.assumption.reason);
+			trace.mark(["found", inconsistency.length, "reason clause"]);
+			trace.stop();
+			this.recordInconsistency(new Set(inconsistency));
+		}
+
+		const disequalityBit = 1n << BigInt(this.disequalityList.length);
+		this.disequalityList.push({
+			left: this.simplifyValue(disequality.left),
+			right: this.simplifyValue(disequality.right),
+			reason: disequality.assumption.reason,
+		});
+		const bitData: MiniComponentData = {
+			simplestComplexity: Infinity,
+			simplestDefinition: this.cs.getData(leftValue.result).simplestDefinition,
+			disequalityBitSet: disequalityBit,
+			constant: null,
+		};
+
+		this.cs.mergeData(leftValue.result, bitData);
+		this.cs.mergeData(rightValue.result, bitData);
+	}
+
+	fastRefuteUsingTheory(
+		assumptions: Assumption<Reason>[],
+		queries: ValueID[] = [],
+		queriesNeedReasons: boolean = true,
+	): UFInconsistency<Reason> | {
+		tag: "model",
+		model: UFCounterexample,
+		answers: Map<ValueID, { assignment: boolean, reason: Set<Reason> }>
+	} {
+		const atoms = [];
+		let equalities: {
+			left: ValueID,
+			right: ValueID,
+			assumption: Assumption<Reason>,
+			definition: {
+				tag: "application";
+				fn: FnID;
+				operands: ValueID[];
+			},
+		}[] = [];
+		const uninterpretedRelations = [];
+
+		trace.start("classify predicates");
+		for (const assumption of assumptions) {
+			const definition = this.getDefinition(assumption.constraint);
+			if (definition.tag === "application") {
+				const semantics = this.getFnSemantics(definition.fn);
+				if (semantics.eq) {
+					equalities.push({
+						assumption,
+						definition,
+						left: definition.operands[0],
+						right: definition.operands[1],
+					});
+				} else {
+					uninterpretedRelations.push({
+						assumption,
+						definition,
+					});
+				}
+			} else if (definition.tag === "atom") {
+				atoms.push({
+					assumption,
+					definition,
+				});
+			}
+		}
+		trace.stop();
+
+		trace.start("sort equalities");
+		equalities = sortedBy(equalities, e => {
+			const ofLeft = this.cs.getData(this.simplifyValue(e.left).result).simplestComplexity;
+			const ofRight = this.cs.getData(this.simplifyValue(e.right).result).simplestComplexity;
+			return [Math.min(ofLeft, ofRight), Math.max(ofLeft, ofRight)];
+		});
+		trace.stop();
+
+		// Attempt to simplify each expression as much as possible, so that a
+		// single pass learns as much information as possible.
+		trace.start(["iterate", equalities.length, "equalities"]);
+		for (const equality of equalities) {
+			trace.start(["equality", equality.left, equality.assumption.assignment ? "==" : "!=", equality.right]);
+			const leftValue = this.simplifyValue(equality.left);
+			const rightValue = this.simplifyValue(equality.right);
+
+			if (equality.assumption.assignment) {
+				this.addCongruence(leftValue, rightValue, equality.assumption.reason);
+			} else {
+				this.addDisequality(leftValue, rightValue, equality);
+			}
+			trace.stopThreshold(0.005);
+		}
+		trace.stop();
+
+		if (this.inconsistencies.length !== 0) {
+			return {
+				tag: "inconsistent",
+				inconsistencies: this.inconsistencies,
+			};
+		}
+
+		return {
+			tag: "model",
+			model: { model: {} },
+			answers: new Map(),
+		};
+	}
+}
+
 export class UFSolver<Reason> {
 	private fns = new Map<FnID, { returnType: ir.Type, semantics: Semantics<Reason> }>();
 	private egraph: egraph.EGraph<VarID | FnID, UFTags, Reason>;
@@ -167,9 +613,11 @@ export class UFSolver<Reason> {
 		return object;
 	});
 
+	variableIndex = 1;
 	createVariable(type: ir.Type, debugName: string): ValueID {
-		const varID = Symbol(debugName || "unknown-var") as VarID;
-		const object = this.egraph.add(varID, [], debugName, { tag: "var", var: varID, type }) as ValueID;
+		const varID = Symbol((debugName || "unknown-var") + "_" + this.variableIndex) as VarID;
+		const object = this.egraph.add(varID, [], debugName + "_" + this.variableIndex, { tag: "var", var: varID, type }) as ValueID;
+		this.variableIndex += 1;
 		return object;
 	}
 
@@ -316,6 +764,62 @@ export class UFSolver<Reason> {
 	}
 
 	/**
+	 * A much simpler implementation of the theory decision procedure, which is
+	 * much faster but cannot refute all instances.
+	 */
+	fastRefuteUsingTheoryReducing(
+		assumptions: Assumption<Reason>[],
+		queries: ValueID[] = [],
+		queriesNeedReasons: boolean = true,
+	): UFInconsistency<Reason> | {
+		tag: "model",
+		model: UFCounterexample,
+		answers: Map<ValueID, { assignment: boolean, reason: Set<Reason> }>
+	} {
+		const result = this.fastRefuteUsingTheory(assumptions, queries, queriesNeedReasons);
+		if (result.tag === "inconsistent") {
+			const out: Set<Reason>[] = [];
+			for (const problem of result.inconsistencies) {
+				if (problem.size <= 40) {
+					out.push(problem);
+					continue;
+				}
+				const prefix = [...problem].slice(0, problem.size / 4);
+				const suffix = [...problem].slice(problem.size * 3 / 4);
+				const reduced = new Set(prefix.concat(suffix));
+
+				const reducedAssumptions = assumptions.filter(x => reduced.has(x.reason));
+				const reducedResult = this.fastRefuteUsingTheoryReducing(reducedAssumptions, [], false);
+				if (reducedResult.tag === "inconsistent") {
+					out.push(...reducedResult.inconsistencies)
+				} else {
+					out.push(problem);
+				}
+			}
+			return {
+				...result,
+				inconsistencies: out,
+			};
+		}
+		return result;
+	}
+
+	fastRefuteUsingTheory(
+		assumptions: Assumption<Reason>[],
+		queries: ValueID[] = [],
+		queriesNeedReasons: boolean = true,
+	) {
+
+		trace.start(["fastRefuteUsingTheory", assumptions.length]);
+		const fastSolver = new FastSolver<Reason>(this);
+		const fastOut = fastSolver.fastRefuteUsingTheory(assumptions, queries, queriesNeedReasons);
+		trace.mark(fastOut.tag);
+		trace.stop();
+		return fastOut;
+	}
+
+
+	/**
 	 * `refuteUsingTheory(assumptions, queries)` returns a set of facts which
 	 * the solver has determined are inconsistent, or a model ("counterexample")
 	 * when the facts appear to be consistent.
@@ -390,12 +894,19 @@ export class UFSolver<Reason> {
 
 			if (this.pendingInconsistencies.length !== 0) {
 				trace.start("diagnoseInconsistencies");
-				const inconsistencies = this.pendingInconsistencies
-					.map(x => this.diagnoseInconsistency(x));
+				const seen = new TrieMap<unknown[], true>();
+				let diagnoses = [];
+				for (const inconsistent of this.pendingInconsistencies) {
+					const key = this.inconsistencyKeyForDeduplication(inconsistent);
+					if (seen.get(key) === undefined) {
+						diagnoses.push(this.diagnoseInconsistency(inconsistent));
+						seen.put(key, true);
+					}
+				}
 				trace.stop("diagnoseInconsistencies");
 				return {
 					tag: "inconsistent",
-					inconsistencies
+					inconsistencies: diagnoses,
 				};
 			}
 		}
@@ -426,29 +937,38 @@ export class UFSolver<Reason> {
 		};
 	}
 
+	private objectNumberer: Map<unknown, number> = new Map();
+	private objectNumber(object: unknown): number {
+		let existing = this.objectNumberer.get(object);
+		if (existing !== undefined) {
+			return existing;
+		}
+		existing = this.objectNumberer.size + 1;
+		this.objectNumberer.set(object, existing);
+		return existing;
+	}
+
+	private inconsistencyKeyForDeduplication(inconsistency: InconsistentConstraints<Reason>): unknown[] {
+		const simpleReasons = (inconsistency.simpleReasons || []).map(x => this.objectNumber(x));
+		const equalities = inconsistency.equalityConstraints.flatMap(x => {
+			const left = this.objectNumber(x.left);
+			const right = this.objectNumber(x.right);
+			return [Math.min(left), Math.max(right)];
+		}).sort();
+		return ["equalities", ...equalities, "simpleReasons", ...simpleReasons];
+	}
+
 	/**
 	 * Convert the set of theory constraints to a conjunction of `Reason`s which
 	 * are inconsistent in this theory.
 	 */
 	private diagnoseInconsistency(inconsistency: InconsistentConstraints<Reason>): Set<Reason> {
-		trace.mark([
+		trace.start([
 			"diagnoseInconsistency",
 			inconsistency.equalityConstraints.length,
 			"eqs",
 			inconsistency.simpleReasons,
-		], () => {
-			const lines: string[] = [];
-			const stringified = JSON.stringify(inconsistency, (_, value) => {
-				if (typeof value === "symbol") {
-					return String(value);
-				} else if (typeof value === "bigint") {
-					return String(value);
-				}
-				return value;
-			}, "\t");
-			lines.push(stringified);
-			return lines.join("\n");
-		});
+		]);
 		const conjunction = new Set<Reason>();
 		const subConjunctions: Set<Reason>[] = [];
 		for (const equality of inconsistency.equalityConstraints) {
@@ -463,6 +983,7 @@ export class UFSolver<Reason> {
 				conjunction.add(simpleReason);
 			}
 		}
+		trace.stop();
 		return conjunction;
 	}
 
@@ -785,7 +1306,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	// constraints.
 	private solver: UFSolver<ReasonSatLiteral> = new UFSolver();
 
-
 	createVariable(type: ir.Type, debugName: string): ValueID {
 		const v = this.solver.createVariable(type, debugName);
 		if (ir.equalTypes(ir.T_BOOLEAN, type)) {
@@ -978,7 +1498,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		unassigned: number[],
 	): { tag: "implied", impliedClauses: number[][], model: UFCounterexample }
 		| { tag: "unsatisfiable", conflictClauses: number[][] } {
-		trace.start("learnAdditional");
+		trace.start("learnTheoryClauses");
 		const assumptions: Assumption<ReasonSatLiteral>[] = [];
 		for (const literal of partialAssignment) {
 			const term = literal > 0 ? +literal : -literal;
@@ -996,14 +1516,30 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			const constraint = this.objectByTerm.get(term)!;
 			queries.push(constraint);
 		}
-		const result = this.solver.refuteUsingTheory(assumptions, queries);
+
+		let result: UFInconsistency<ReasonSatLiteral> | {
+			tag: "model",
+			model: UFCounterexample,
+			answers: Map<ValueID, { assignment: boolean, reason: Set<ReasonSatLiteral> }>
+		};
+
+		const fastResult = this.solver.fastRefuteUsingTheory(assumptions, queries);
+
+		result = fastResult;
+
+		if (result.tag !== "inconsistent") {
+			trace.start("slow refuteUsingTheory");
+			const slowResult = this.solver.refuteUsingTheory(assumptions, queries);
+			trace.stop("slow refuteUsingTheory");
+			result = slowResult;
+		}
 
 		if (result.tag === "inconsistent") {
 			const conflictClauses = [];
 			for (const inconsistent of result.inconsistencies) {
 				const learnedClause = [];
-				for (const element of inconsistent) {
-					learnedClause.push(-element);
+				for (const literal of inconsistent) {
+					learnedClause.push(-literal);
 				}
 				conflictClauses.push(learnedClause);
 			}
@@ -1039,32 +1575,64 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			}
 			return JSON.stringify(t);
 		};
-		const fs = new DefaultMap<FnID, string>(value => {
-			const def = this.solver.getFnSemantics(value);
-			const name = "f" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
-			const returnType = showType(this.solver.getFnReturnType(value));
-			const semantics = JSON.stringify(def, (_, value) => {
-				if (typeof value !== "function") {
-					return value;
+
+		let uniqued: Record<string, true> = {};
+		const makeUnique = (name: string): string => {
+			if (name in uniqued) {
+				for (let i = 1; true; i++) {
+					const d = name + "_" + i.toFixed(0);
+					if (d in uniqued) continue;
+					return d;
 				}
-				return value.toString().replace(/\s+/g, " ");
-			}, "\t");
-			const hint = JSON.stringify(String(value));
-			defs.push(`const ${name} = smt.createFunction(${returnType}, ${semantics}, ${hint});`);
+			}
+			uniqued[name] = true;
+			return name;
+		}
+
+		const fs = new DefaultMap<FnID, string>(value => {
+			const name = makeUnique("f" + String(value)
+				.replace(/=/g, "eq")
+				.replace(/</g, "lt")
+				.replace(/>/g, "gt")
+				.replace(/\+/g, "pl")
+				.replace(/-/g, "mn")
+				.replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
+			const returnType = showType(this.solver.getFnReturnType(value));
+
+			const semantics = this.solver.getFnSemantics(value);
+			let semanticsCode = Object.entries(semantics).map(([key, value]) => {
+				if (value === undefined) {
+					return "";
+				}
+				let shown: string = value.toString();
+				if (typeof value === "function" && !shown.startsWith("function ")) {
+					shown = "function " + shown;
+				}
+				return "\t" + JSON.stringify(key) + ": " + shown + "," + "\n";
+			}).join("");
+			if (semanticsCode === "") {
+				semanticsCode = "{}";
+			} else {
+				semanticsCode = "{\n" + semanticsCode + "}";
+			}
+
+
+			const hint = JSON.stringify(value.description);
+			defs.push(`const ${name} = smt.createFunction(${returnType}, ${semanticsCode}, ${hint});`);
 			return name;
 		});
 		const exprs = new DefaultMap<ValueID, string>(value => {
 			const def = this.solver.getDefinition(value);
 			if (def.tag === "atom") {
 				if (def.extra.tag === "var") {
-					const name = "v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+					const name = makeUnique("v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
 					const type = showType(this.solver.getType(value) as ir.Type);
 					const hint = JSON.stringify(String(value));
 					defs.push(`const ${name} = smt.createVariable(${type}, ${hint});`);
 					return name;
 				} else {
 					const constant = def.extra.constant;
-					const name = "c" + String(constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+					const name = makeUnique("c" + String(constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
 					const value = (typeof constant === "bigint")
 						? "BigInt(" + JSON.stringify(constant.toString()) + ")"
 						: JSON.stringify(constant);
@@ -1073,7 +1641,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 				}
 			} else {
 				const f = fs.get(def.fn);
-				const name = "f" + String(def.fn).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length;
+				const name = makeUnique("a" + String(def.fn).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
 				const args = def.operands.map(x => exprs.get(x));
 				defs.push(`const ${name} = smt.createApplication(${f}, [${args.join(", ")}]);`);
 				return name;

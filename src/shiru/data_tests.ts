@@ -1,7 +1,16 @@
-import { TrieMap, DisjointSet } from "./data.js";
+import { leastSignificantBit, TrieMap, DisjointSet } from "./data.js";
 import { assert } from "./test.js";
 
 export const tests = {
+	"leastSignificantBit"() {
+		// Ensure this doesn't hang.
+		// The resulting value is indeterminate.
+		leastSignificantBit(0n);
+
+		assert(leastSignificantBit(1n), "is equal to", 0);
+		assert(leastSignificantBit(1n << 5001n), "is equal to", 5001);
+		assert(leastSignificantBit((1n << 12345n) + (1n << 34567n)), "is equal to", 12345);
+	},
 	"TrieMap-basic"() {
 		const map: TrieMap<number[], string> = new TrieMap();
 
@@ -46,7 +55,7 @@ export const tests = {
 		]);
 	},
 	"DisjointSet-basic"() {
-		const ds = new DisjointSet();
+		const ds = new DisjointSet(() => 1, (a, b) => a + b);
 		assert(ds.compareEqual(0, 0), "is equal to", true);
 		assert(ds.representative(0), "is equal to", 0);
 		assert(ds.compareEqual(1, 2), "is equal to", false);
@@ -73,7 +82,7 @@ export const tests = {
 		]);
 	},
 	"DisjointSet-basic-explainEquality"() {
-		const ds = new DisjointSet();
+		const ds = new DisjointSet(() => 1, (a, b) => a + b);
 		ds.union(0, 1);
 		ds.union(5, 4);
 		ds.union(1, 2);
@@ -85,7 +94,7 @@ export const tests = {
 		assert(ds.compareEqual(1, 1), "is equal to", true);
 	},
 	"DisjointSet-explainEquality-efficient"() {
-		const ds = new DisjointSet();
+		const ds = new DisjointSet(() => 1, (a, b) => a + b);
 
 		const count = 1000;
 		for (let i = 0; i < count; i++) {

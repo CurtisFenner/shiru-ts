@@ -19,10 +19,21 @@ type Neighbor<T, R> = {
  * These paths can be used to "explain" how two elements came to be in the same
  * equivalence class.
  */
-export class Components<T, R> {
-	private disjointSet = new DisjointSet<T>();
+export class Components<T, R, Data> {
+	private disjointSet: DisjointSet<T, Data>;
 	private time = 1;
-	private outEdge = new DefaultMap<T, Neighbor<T, R>[]>(key => [])
+	private outEdge = new DefaultMap<T, Neighbor<T, R>[]>(key => []);
+
+	constructor(
+		initialDataFor: (e: T) => Data,
+		mergeDataFor: (childData: Data, parentData: Data) => Data,
+	) {
+		this.disjointSet = new DisjointSet<T, Data>(initialDataFor, mergeDataFor);
+	}
+
+	getData(e: T): Data {
+		return this.disjointSet.getData(e);
+	}
 
 	reset() {
 		this.disjointSet.reset();
@@ -45,6 +56,10 @@ export class Components<T, R> {
 	predictRepresentativeOfMerge(a: T, b: T): { child: T, parent: T } {
 		const { child, parent } = this.disjointSet.chooseParent(a, b);
 		return { child, parent };
+	}
+
+	mergeData(e: T, data: Data): Data {
+		return this.disjointSet.unionData(e, data);
 	}
 
 	addCongruence(a: T, b: T, r: R | null, dependencies: { left: T, right: T }[]): number {
@@ -83,8 +98,29 @@ export class Components<T, R> {
 			return { rs: [], dependencies: [] };
 		}
 
-		const frontier = [dependency.left, dependency.right];
-		const frontierSource = ["left", "right"];
+		const frontiers: { sources: ("left" | "right")[], values: T[] }[] = [];
+		let frontierTotal = 0;
+		for (let i = 0; i < 10; i++) {
+			frontiers.push({ sources: [], values: [] });
+		}
+
+		const push = (node: T, source: "left" | "right"): void => {
+			frontierTotal += 1;
+			const neighbors = this.outEdge.get(node);
+			let size = neighbors.length >> 2;
+			for (let i = 0; true; i++) {
+				size = size >> 2;
+				if (size === 0) {
+					const frontier = frontiers[i];
+					frontier.sources.push(source);
+					frontier.values.push(node);
+					return;
+				}
+			}
+		};
+
+		push(dependency.left, "left");
+		push(dependency.right, "right");
 
 		const leftParent = new Map<T, Neighbor<T, R> | null>();
 		const rightParent = new Map<T, Neighbor<T, R> | null>();
@@ -92,9 +128,20 @@ export class Components<T, R> {
 		rightParent.set(dependency.right, null);
 
 		let cursor = 0;
-		while (cursor < frontier.length) {
-			const front = frontier[cursor];
-			const source = frontierSource[cursor];
+		let collision: T | null = null;
+		while (frontierTotal !== 0) {
+			let frontier;
+			for (let k = 0; true; k++) {
+				if (frontiers[k].values.length !== 0) {
+					frontier = frontiers[k];
+					break;
+				}
+			}
+			const front = frontier.values.pop()!;
+			const source = frontier.sources.pop()!;
+			frontierTotal -= 1;
+
+			const parent = source === "left" ? leftParent : rightParent;
 			cursor += 1;
 
 			const neighbors = this.outEdge.get(front);
@@ -105,53 +152,61 @@ export class Components<T, R> {
 					break;
 				}
 
-				const parent = source === "left" ? leftParent : rightParent;
 				if (parent.has(neighbor.to)) {
 					// A shorter path to this node from this source has already
 					// been found.
 					continue;
 				}
 				parent.set(neighbor.to, neighbor);
-				frontier.push(neighbor.to);
-				frontierSource.push(source);
+				push(neighbor.to, source);
 
 				const otherParent = source === "left" ? rightParent : leftParent;
 				if (otherParent.has(neighbor.to)) {
 					// A path has been found!
-					const rs: R[] = [];
-					const ds: { time: number, dependencies: Dependency<T>[] }[] = [];
-					for (const parent of [leftParent, rightParent]) {
-						let node = neighbor.to;
-						while (true) {
-							const edge = parent.get(node);
-							if (edge === null) {
-								break;
-							} else if (edge === undefined) {
-								throw new Error("findPathAtTime: ICE, no path");
-							}
-
-							if (edge.r !== null) {
-								// For efficiency, don't include null reasons.
-								rs.push(edge.r);
-							}
-
-							if (edge.dependencies.length !== 0) {
-								// The time to search for the dependencies must be strictly BEFORE
-								// this edge was added.
-								ds.push({ time: edge.time - 1, dependencies: edge.dependencies });
-							}
-
-							node = edge.from;
-						}
-					}
-					return { rs, dependencies: ds };
+					collision = neighbor.to;
+					frontierTotal = 0;
+					break;
 				}
 			}
 		}
-		return null;
+
+		if (collision === null) {
+			return null;
+		}
+		const rs: R[] = [];
+		const ds: { time: number, dependencies: Dependency<T>[] }[] = [];
+		for (const parent of [leftParent, rightParent]) {
+			let node: T = collision;
+			while (true) {
+				const edge = parent.get(node);
+				if (edge === null) {
+					break;
+				} else if (edge === undefined) {
+					throw new Error("findPathAtTime: ICE, no path");
+				}
+
+				if (edge.r !== null) {
+					rs.push(edge.r);
+				}
+
+				if (edge.dependencies.length !== 0) {
+					// The time to search for the dependencies must be strictly BEFORE
+					// this edge was added.
+					ds.push({ time: edge.time - 1, dependencies: edge.dependencies });
+				}
+
+				node = edge.from;
+			}
+		}
+
+		return { rs, dependencies: ds };
 	}
 
 	findPath(initialLeft: T, initialRight: T, initialTime = this.time): Set<R> | null {
+		if (initialLeft === initialRight) {
+			return new Set();
+		}
+
 		const q: { time: number, dependencies: Dependency<T>[] }[] = [
 			{
 				time: initialTime,
@@ -159,10 +214,14 @@ export class Components<T, R> {
 			},
 		];
 
+		const enqueued = new DefaultMap<T, Map<T, number>>(() => new Map());
+
+		let steps = 0;
 		const path = new Set<R>();
 		while (q.length !== 0) {
 			const top = q.pop()!;
 			for (const dependency of top.dependencies) {
+				steps += 1;
 				const answer = this.findPathAtTime(dependency, top.time);
 				if (answer === null) {
 					return null;
@@ -171,7 +230,20 @@ export class Components<T, R> {
 				for (const r of answer.rs) {
 					path.add(r);
 				}
-				q.push(...answer.dependencies);
+				for (const children of answer.dependencies) {
+					for (const child of children.dependencies) {
+						if (child.left === child.right) {
+							continue;
+						}
+
+						const prior = enqueued.get(child.left).get(child.right);
+						if (prior === undefined || prior > children.time) {
+							enqueued.get(child.left).set(child.right, children.time);
+							enqueued.get(child.right).set(child.left, children.time);
+							q.push({ time: children.time, dependencies: [child] });
+						}
+					}
+				}
 			}
 		}
 

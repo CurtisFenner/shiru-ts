@@ -1,8 +1,8 @@
 import * as builtin from "./builtin.js";
-import { DefaultMap } from "./data.js";
+import * as data from "./data.js";
 import * as diagnostics from "./diagnostics.js";
 import * as ir from "./ir.js";
-import { displayType } from "./semantics.js";
+import * as semantics from "./semantics.js";
 import * as trace from "./trace.js";
 import * as uf from "./uf.js";
 
@@ -13,11 +13,11 @@ type CallEdge<T> = {
 };
 
 class CallGraph<T> implements DirectedGraph<CallGraphCall<T>, CallGraphNode> {
-	private callsByStatic = new DefaultMap<ir.FunctionID, { from: CallGraphNode, edges: CallEdge<T>[] }>(functionID => {
+	private callsByStatic = new data.DefaultMap<ir.FunctionID, { from: CallGraphNode, edges: CallEdge<T>[] }>(functionID => {
 		return { from: { tag: "static", functionID }, edges: [] };
 	});
-	private callsByDynamic = new DefaultMap<ir.InterfaceID, DefaultMap<string, { from: CallGraphNode, edges: CallEdge<T>[] }>>(interfaceID => {
-		return new DefaultMap(memberID => {
+	private callsByDynamic = new data.DefaultMap<ir.InterfaceID, data.DefaultMap<string, { from: CallGraphNode, edges: CallEdge<T>[] }>>(interfaceID => {
+		return new data.DefaultMap(memberID => {
 			return { from: { tag: "dynamic", interfaceID, memberID }, edges: [] };
 		});
 	});
@@ -101,7 +101,7 @@ interface CallGraphCall<T> {
 
 class GlobalContext {
 	program: ir.Program;
-	interfaceSignaturesByImplFn: DefaultMap<ir.FunctionID, IndexedImpl[]>;
+	interfaceSignaturesByImplFn: data.DefaultMap<ir.FunctionID, IndexedImpl[]>;
 
 	decreasingCallGraph: CallGraph<"decreasing" | "non-decreasing"> = new CallGraph();
 
@@ -254,8 +254,8 @@ interface IndexedImpl {
 
 function indexInterfaceSignaturesByImplFn(
 	program: ir.Program,
-): DefaultMap<ir.FunctionID, IndexedImpl[]> {
-	const map = new DefaultMap<ir.FunctionID, IndexedImpl[]>(_ => []);
+): data.DefaultMap<ir.FunctionID, IndexedImpl[]> {
+	const map = new data.DefaultMap<ir.FunctionID, IndexedImpl[]>(_ => []);
 
 	// Add each implementation to the map.
 	for (const implID in program.globalVTableFactories) {
@@ -661,8 +661,8 @@ interface VerificationScope {
 }
 
 class DynamicFunctionMap {
-	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, uf.FnID[]>>(
-		i => new DefaultMap(s => {
+	private map = new data.DefaultMap<ir.InterfaceID, data.DefaultMap<ir.FunctionID, uf.FnID[]>>(
+		i => new data.DefaultMap(s => {
 			const interfaceIR = this.program.interfaces[i];
 			const signature = interfaceIR.signatures[s];
 
@@ -703,7 +703,7 @@ class DynamicFunctionMap {
 }
 
 class StaticFunctionMap {
-	private functions: DefaultMap<ir.FunctionID, uf.FnID[]> = new DefaultMap(fnID => {
+	private functions: data.DefaultMap<ir.FunctionID, uf.FnID[]> = new data.DefaultMap(fnID => {
 		const fn = this.program.functions[fnID];
 		if (fn === undefined) {
 			throw new Error("VerificationState.functions.get: undefined `" + fnID + "`");
@@ -748,7 +748,7 @@ interface RecordFns {
 }
 
 class RecordMap {
-	private map = new DefaultMap<ir.RecordID, RecordFns>(r => {
+	private map = new data.DefaultMap<ir.RecordID, RecordFns>(r => {
 		const record = this.program.records[r];
 		const fields: Record<string, uf.FnID> = {};
 		for (const k in record.fields) {
@@ -802,7 +802,7 @@ interface EnumVariantFns {
 };
 
 class EnumMap {
-	private map = new DefaultMap<ir.EnumID, EnumVariantFns>(enumID => {
+	private map = new data.DefaultMap<ir.EnumID, EnumVariantFns>(enumID => {
 
 		const constructors: Record<string, uf.FnID> = {};
 		const destructors: Record<string, uf.FnID> = {};
@@ -899,7 +899,7 @@ class VerificationState {
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
 
-	foreign = new DefaultMap<string, uf.FnID[]>(op => {
+	foreign = new data.DefaultMap<string, uf.FnID[]>(op => {
 		const signature = this.context.program.foreign[op];
 		if (signature === undefined) {
 			throw new Error("VerificationState.foreign.get: undefined `" + op + "`");
@@ -1027,12 +1027,10 @@ class VerificationState {
 	}
 
 	/**
-	 * `pathConstraints` is the stack of conditional constraint-clauses that
+	 * `pathConstraints` is the stack of conditional constraint terms that
 	 * must be true to reach the current position in the program.
-	 * 
-	 * Each clause is a disjunction of boolean-sorted constraints.
 	 */
-	private pathConstraints: uf.ValueID[][] = [];
+	private pathConstraints: uf.ValueID[] = [];
 
 	constructor(
 		context: GlobalContext,
@@ -1083,7 +1081,7 @@ class VerificationState {
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
-		this.pathConstraints.push([c]);
+		this.pathConstraints.push(c);
 	}
 
 	popPathConstraint() {
@@ -1120,15 +1118,14 @@ class VerificationState {
 			createBoundedByComparison(this, left[i], right[i]);
 		}
 
+		this.smt.pushScope();
 		for (const clause of clausified) {
-			this.pathConstraints.push(clause);
+			this.smt.addConstraint(clause);
 		}
 
 		const reply = this.checkReachable(reason);
 
-		for (const clause of clausified) {
-			this.pathConstraints.pop();
-		}
+		this.smt.popScope();
 
 		return reply;
 	}
@@ -1137,29 +1134,38 @@ class VerificationState {
 	/// constraints, combined with all other constraints added to the `smt`
 	/// solver, is reachable or not.
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
-		trace.start("checkReachable");
+		trace.start(["checkReachable", reason]);
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
-			this.smt.addConstraint(constraint);
+			this.smt.addConstraint([constraint]);
 		}
-		trace.mark([reason]);
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
-		trace.stop("checkReachable");
+		trace.stop();
 		return model;
 	}
 
-	/// `markPathUnreachable` ensures that the conjunction of the current path
-	/// constraints is considered not satisfiable in subsequent invocations of
-	/// the `smt` solver.
+	/**
+	 * Modifies this state so that it subsequently assumes that the conjunction
+	 * of all current path constraints imply the truth of this disjunction, even
+	 * after those path constraints go out of scope.
+	 */
+	addStickyScopedConstraint(disjunction: uf.ValueID[]): void {
+		const implication = [];
+		for (const constraint of this.pathConstraints) {
+			implication.push(this.negate(constraint));
+		}
+		implication.push(...disjunction);
+		this.smt.addConstraint(implication);
+	}
+
+	/**
+	 * `markPathUnreachable` updates the state of the SMT solver so that all
+	 * subsequent invocations of the `smt` solver assume that the conjunction of
+	 * the current path constraints is not satisfiable.
+	 */
 	markPathUnreachable() {
-		const pathUnreachable = this.pathConstraints.map(e => {
-			if (e.length !== 1) {
-				throw new Error("VerificationState.markPathUnreachable: every path constraint must be a unit clause");
-			}
-			return this.negate(e[0]);
-		});
-		this.smt.addConstraint(pathUnreachable);
+		this.addStickyScopedConstraint([]);
 	}
 
 	/// `defineVariable` associates the given symbolic value with the given
@@ -1241,7 +1247,8 @@ function traverse(
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
 				if (source === "undef") continue;
-				state.smt.addUnscopedConstraint([
+
+				state.addStickyScopedConstraint([
 					state.negate(symbolicCondition),
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1255,7 +1262,8 @@ function traverse(
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
 				if (source === "undef") continue;
-				state.smt.addUnscopedConstraint([
+
+				state.addStickyScopedConstraint([
 					symbolicCondition,
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1294,7 +1302,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
 		const bounding = state.smt.createApplication(state.boundedByF, [fieldValue, object.value]);
-		state.smt.addUnscopedConstraint([bounding]);
+		state.addStickyScopedConstraint([bounding]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1302,7 +1310,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
+		state.addStickyScopedConstraint(tagInfo.finiteAlternativesClause);
 		state.defineVariable(op.destination, tagInfo.testResult);
 		return;
 	} else if (op.tag === "op-variant") {
@@ -1310,7 +1318,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
+		state.addStickyScopedConstraint(tagInfo.finiteAlternativesClause);
 
 		// Check that the symbolic tag definitely matches this variant.
 		state.pushPathConstraint(
@@ -1324,7 +1332,7 @@ function traverse(
 		};
 		const refutation = state.checkReachable(reason);
 		if (refutation !== "refuted") {
-			reason.enumType = displayType(baseType);
+			reason.enumType = semantics.displayType(baseType);
 			global.failedVerifications.push(reason);
 		}
 
@@ -1334,7 +1342,7 @@ function traverse(
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
 		const bounding = state.smt.createApplication(state.boundedByF, [variantValue, object.value]);
-		state.smt.addUnscopedConstraint([bounding]);
+		state.addStickyScopedConstraint([bounding]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1353,10 +1361,10 @@ function traverse(
 		state.defineVariable(op.destination, enumValue);
 
 		const tagInfo = state.enumMap.hasTag(enumType.base, enumValue, op.variant, state);
-		state.smt.addUnscopedConstraint([tagInfo.testResult]);
+		state.addStickyScopedConstraint([tagInfo.testResult]);
 
 		const destruction = state.enumMap.destruct(enumType.base, enumValue, op.variant);
-		state.smt.addUnscopedConstraint([state.eq(destruction, variantValue)]);
+		state.addStickyScopedConstraint([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(global, new Map(), op.body, state, context);
@@ -1434,10 +1442,18 @@ function createBoundedByComparison(
 
 	if (ir.equalTypes(ir.T_INT, smallerObject.type) && ir.equalTypes(ir.T_INT, largerObject.type)) {
 		// Use a more specific definition for integers in terms of `Int<`:
-		// `a bounds b` means `b is strictly between -a and a`.
+		// For integers, `larger bounds smaller` means
+		// "`smaller` is strictly between `-larger` and `larger`":
+		// 
 		// For now, this will be restricted to the simpler condition
-		// `b between 0 and a`:
-		// `(0 < b < a) or (a < b < 0) or (a != 0 and b = 0).
+		// `smaller between 0 and larger`:
+		// ```
+		// [
+		//     (0 < smaller & smaller < larger) or
+		//     (larger < smaller & smaller < 0) or
+		//     (larger != 0 and smaller = 0)
+		// ] <=> x
+		// ```
 		const lessThanFns = state.foreign.get("Int<");
 		if (lessThanFns.length !== 1) {
 			throw new Error("verify: Expected `Int<` to have exactly one return");
@@ -1445,30 +1461,33 @@ function createBoundedByComparison(
 		const lessThanFn = lessThanFns[0];
 
 		const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+		const zeroLessThanSmaller = state.smt.createApplication(lessThanFn, [zero, smaller]);
+		const smallerLessThanLarger = state.smt.createApplication(lessThanFn, [smaller, larger]);
+		const largerLessThanSmaller = state.smt.createApplication(lessThanFn, [larger, smaller]);
+		const smallerLessThanZero = state.smt.createApplication(lessThanFn, [smaller, zero]);
+		const largerNotZero = state.negate(state.eq(larger, zero));
+		const smallerIsZero = state.eq(smaller, zero);
 
-		// (smaller == 0 and larger != 0) implies cmp
-		// (smaller != 0 or larger == 0) or cmp
-		state.smt.addUnscopedConstraint([
-			state.negate(state.eq(smaller, zero)),
-			state.eq(larger, zero),
-			boundsComparison,
-		]);
+		const negativeBound = state.negate(boundsComparison);
 
-		// (0 < smaller and smaller < larger) implies cmp
-		// (0 !< smaller or smaller !< larger) or cmp
-		state.smt.addUnscopedConstraint([
-			state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
-			boundsComparison,
-		]);
+		const clauses: uf.ValueID[][] = [
+			[zeroLessThanSmaller, largerLessThanSmaller, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, largerNotZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, largerNotZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, smallerIsZero, negativeBound],
+			//
+			[state.negate(zeroLessThanSmaller), state.negate(smallerLessThanLarger), boundsComparison],
+			[state.negate(largerLessThanSmaller), state.negate(smallerLessThanZero), boundsComparison],
+			[state.negate(largerNotZero), state.negate(smallerIsZero), boundsComparison],
+		];
 
-		// (larger < smaller and smaller < 0) implies cmp
-		// (larger !< smaller or smaller !< 0) or cmp
-		state.smt.addUnscopedConstraint([
-			state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
-			boundsComparison,
-		]);
+		for (const clause of clauses) {
+			state.addStickyScopedConstraint(clause);
+		}
 	}
 
 	return boundsComparison;

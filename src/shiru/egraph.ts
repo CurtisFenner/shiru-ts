@@ -323,14 +323,14 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 					}
 				});
 				if (operands.length === 2 && !hint.match(/^[a-zA-Z0-9]*$/)) {
-					hint = `(${operandStrings[0]}) ${hint} (${operandStrings[1]})`;
+					hint = `(${operandStrings[0]} ${hint} ${operandStrings[1]})`;
 				} else {
 					hint = `${hint}(${operandStrings.join(", ")})`;
 				}
 			}
 		}
 
-		const id: EObject = Symbol("egraph-term    " + hint + " #" + this.uniqueObjectCount + "    ") as EObject;
+		const id: EObject = Symbol("egraph-term    " + hint + "    ") as EObject;
 		this.uniqueObjectCount += 1;
 		this.tuples.put(tuple, id);
 		this.objectDefinition.set(id, {

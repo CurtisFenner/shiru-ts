@@ -387,7 +387,7 @@ testRunner.printReport();
 
 
 if ("trace" in commandArguments) {
-	fs.writeFileSync(commandArguments.trace.at(-1)!, trace.render(testRunner.traces));
+	fs.writeFileSync(commandArguments.trace.at(-1)!, await trace.render(testRunner.traces));
 }
 
 if ("perf" in commandArguments) {

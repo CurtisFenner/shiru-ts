@@ -1241,7 +1241,7 @@ function traverse(
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
 				if (source === "undef") continue;
-				state.smt.addUnscopedConstraint([
+				state.smt.addConstraint([
 					state.negate(symbolicCondition),
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1255,7 +1255,7 @@ function traverse(
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
 				if (source === "undef") continue;
-				state.smt.addUnscopedConstraint([
+				state.smt.addConstraint([
 					symbolicCondition,
 					state.eq(phis[i], state.getValue(source.variable).value),
 				]);
@@ -1294,7 +1294,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
 		const bounding = state.smt.createApplication(state.boundedByF, [fieldValue, object.value]);
-		state.smt.addUnscopedConstraint([bounding]);
+		state.smt.addConstraint([bounding]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1302,7 +1302,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
+		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
 		state.defineVariable(op.destination, tagInfo.testResult);
 		return;
 	} else if (op.tag === "op-variant") {
@@ -1310,7 +1310,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addUnscopedConstraint(tagInfo.finiteAlternativesClause);
+		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
 
 		// Check that the symbolic tag definitely matches this variant.
 		state.pushPathConstraint(
@@ -1334,7 +1334,7 @@ function traverse(
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
 		const bounding = state.smt.createApplication(state.boundedByF, [variantValue, object.value]);
-		state.smt.addUnscopedConstraint([bounding]);
+		state.smt.addConstraint([bounding]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1353,10 +1353,10 @@ function traverse(
 		state.defineVariable(op.destination, enumValue);
 
 		const tagInfo = state.enumMap.hasTag(enumType.base, enumValue, op.variant, state);
-		state.smt.addUnscopedConstraint([tagInfo.testResult]);
+		state.smt.addConstraint([tagInfo.testResult]);
 
 		const destruction = state.enumMap.destruct(enumType.base, enumValue, op.variant);
-		state.smt.addUnscopedConstraint([state.eq(destruction, variantValue)]);
+		state.smt.addConstraint([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(global, new Map(), op.body, state, context);
@@ -1448,7 +1448,7 @@ function createBoundedByComparison(
 
 		// (smaller == 0 and larger != 0) implies cmp
 		// (smaller != 0 or larger == 0) or cmp
-		state.smt.addUnscopedConstraint([
+		state.smt.addConstraint([
 			state.negate(state.eq(smaller, zero)),
 			state.eq(larger, zero),
 			boundsComparison,
@@ -1456,7 +1456,7 @@ function createBoundedByComparison(
 
 		// (0 < smaller and smaller < larger) implies cmp
 		// (0 !< smaller or smaller !< larger) or cmp
-		state.smt.addUnscopedConstraint([
+		state.smt.addConstraint([
 			state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
 			state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
 			boundsComparison,
@@ -1464,7 +1464,7 @@ function createBoundedByComparison(
 
 		// (larger < smaller and smaller < 0) implies cmp
 		// (larger !< smaller or smaller !< 0) or cmp
-		state.smt.addUnscopedConstraint([
+		state.smt.addConstraint([
 			state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
 			state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
 			boundsComparison,

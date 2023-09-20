@@ -1027,12 +1027,10 @@ class VerificationState {
 	}
 
 	/**
-	 * `pathConstraints` is the stack of conditional constraint-clauses that
+	 * `pathConstraints` is the stack of conditional constraint literals that
 	 * must be true to reach the current position in the program.
-	 * 
-	 * Each clause is a disjunction of boolean-sorted constraints.
 	 */
-	private pathConstraints: uf.ValueID[][] = [];
+	private pathConstraints: uf.ValueID[] = [];
 
 	constructor(
 		context: GlobalContext,
@@ -1083,7 +1081,7 @@ class VerificationState {
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
-		this.pathConstraints.push([c]);
+		this.pathConstraints.push(c);
 	}
 
 	popPathConstraint() {
@@ -1120,15 +1118,14 @@ class VerificationState {
 			createBoundedByComparison(this, left[i], right[i]);
 		}
 
+		this.smt.pushScope();
 		for (const clause of clausified) {
-			this.pathConstraints.push(clause);
+			this.smt.addConstraint(clause);
 		}
 
 		const reply = this.checkReachable(reason);
 
-		for (const clause of clausified) {
-			this.pathConstraints.pop();
-		}
+		this.smt.popScope();
 
 		return reply;
 	}
@@ -1140,7 +1137,7 @@ class VerificationState {
 		trace.start("checkReachable");
 		this.smt.pushScope();
 		for (const constraint of this.pathConstraints) {
-			this.smt.addConstraint(constraint);
+			this.smt.addConstraint([constraint]);
 		}
 		trace.mark([reason]);
 		const model = this.smt.attemptRefutation();
@@ -1154,10 +1151,7 @@ class VerificationState {
 	/// the `smt` solver.
 	markPathUnreachable() {
 		const pathUnreachable = this.pathConstraints.map(e => {
-			if (e.length !== 1) {
-				throw new Error("VerificationState.markPathUnreachable: every path constraint must be a unit clause");
-			}
-			return this.negate(e[0]);
+			return this.negate(e);
 		});
 		this.smt.addConstraint(pathUnreachable);
 	}

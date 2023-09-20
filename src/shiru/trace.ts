@@ -23,7 +23,6 @@ export class Stopwatch {
 	state: {
 		tag: "paused",
 		runForMs: number,
-		pausedAtMs: number,
 	} | {
 		tag: "playing",
 		runForMs: number,
@@ -31,9 +30,7 @@ export class Stopwatch {
 	} = {
 			tag: "paused",
 			runForMs: 0,
-			pausedAtMs: this.internalClock(),
 		};
-
 
 	resume() {
 		if (this.state.tag === "playing") {
@@ -54,7 +51,6 @@ export class Stopwatch {
 		this.state = {
 			tag: "paused",
 			runForMs: this.state.runForMs + now - this.state.playedAtMs,
-			pausedAtMs: now,
 		};
 	}
 
@@ -202,6 +198,12 @@ function encodeBase64(bytes: Uint8Array): string {
 	return Buffer.from(bytes).toString("base64")
 }
 
+declare class CompressionStream {
+	constructor(format: "gzip");
+	readable: any;
+	writable: any;
+}
+
 async function compressAndBase64Encode(bytes: Uint8Array): Promise<string> {
 	const cs = new CompressionStream("gzip");
 	const writer = cs.writable.getWriter();
@@ -209,7 +211,7 @@ async function compressAndBase64Encode(bytes: Uint8Array): Promise<string> {
 	await writer.close();
 
 	const reader = cs.readable.getReader();
-	const chunks = [];
+	const chunks: BlobPart[] = [];
 	while (true) {
 		const { value, done } = await reader.read();
 

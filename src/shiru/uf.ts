@@ -1312,7 +1312,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			// Boolean-typed variables must be equal to either true or false.
 			// This constraint ensures that the sat solver will commit the
 			// variable to a particular assignment.
-			this.addUnscopedConstraint([
+			this.addConstraint([
 				v,
 				this.createApplication(this.notFn, [v]),
 			]);
@@ -1394,7 +1394,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		}
 
 		const vend = (positiveValue: ValueID): number => {
-			const term = this.toSatLiteralMap.size + 1;
+			const term = this.objectByTerm.size + 1;
 			this.toSatLiteralMap.set(positiveValue, term);
 			this.objectByTerm.set(term, positiveValue);
 			return term;
@@ -1484,9 +1484,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	}
 
 	printInstance(lines: string[] = []): string[] {
-		for (const clause of this.unscopedClauses) {
-			this.printClause(clause, lines);
-		}
 		for (const clause of this.clauses) {
 			this.printClause(clause, lines);
 		}
@@ -1664,17 +1661,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		out.push("");
 		for (const clause of this.clauses) {
 			out.push(`smt.addConstraint([`);
-			for (const literal of clause) {
-				out.push("\t" + showLiteral(literal) + ",");
-			}
-			out.push(`]);`);
-		}
-
-		// Unscoped constraints
-		out.push("// Unscoped constraints");
-		out.push("");
-		for (const clause of this.unscopedClauses) {
-			out.push(`smt.addUnscopedConstraint([`);
 			for (const literal of clause) {
 				out.push("\t" + showLiteral(literal) + ",");
 			}

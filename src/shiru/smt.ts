@@ -10,7 +10,6 @@ import * as trace from "./trace.js";
  */
 export abstract class SMTSolver<E, Model> {
 	protected clauses: sat.Literal[][] = [];
-	protected unscopedClauses: sat.Literal[][] = [];
 	private scopes: { clauseCount: number }[] = [];
 
 	/**
@@ -24,16 +23,6 @@ export abstract class SMTSolver<E, Model> {
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
 			this.addClausified(clause, this.clauses);
-		}
-	}
-
-	/**
-	 * Update this SMT instance so that all subsequent solves must also
-	 * ensure that `constraint` is satisfied by a model.
-	 */
-	addUnscopedConstraint(constraint: E) {
-		for (const clause of this.clausify(constraint)) {
-			this.addClausified(clause, this.unscopedClauses);
 		}
 	}
 
@@ -84,7 +73,7 @@ export abstract class SMTSolver<E, Model> {
 			}
 			hasUnrefuted = true;
 
-			lines.push((first ? "&&" : "") + "\t||\t" + this.showLiteral(literal));
+			lines.push((first ? "&&\t\t" : "\t||\t") + this.showLiteral(literal));
 			first = false;
 		}
 		if (!hasUnrefuted) {
@@ -129,19 +118,7 @@ export abstract class SMTSolver<E, Model> {
 		trace.mark("initial SMT instance", () => {
 			return this.showFormula(this.clauses).join("\n");
 		});
-		trace.mark("initial SMT unscoped instance", () => {
-			return this.showFormula(this.unscopedClauses).join("\n");
-		});
 		const solver = new sat.SATSolver();
-
-		for (const clause of this.unscopedClauses) {
-			if (clause.length === 0) {
-				return "refuted";
-			}
-			const maxTerm = Math.max(...clause.map(x => x > 0 ? x : -x));
-			solver.initTerms(maxTerm);
-			solver.addClause(clause);
-		}
 
 		// Add all the clauses to the SATSolver.
 		for (const clause of this.clauses) {
@@ -192,7 +169,7 @@ export abstract class SMTSolver<E, Model> {
 
 		// Use the SMT solver's clauses, rather than the SAT solver's clauses,
 		// to exclude any learned CDCL clauses.
-		const simplified = solver.simplifyClauses([...this.clauses, ...this.unscopedClauses]);
+		const simplified = solver.simplifyClauses([...this.clauses]);
 		const simplifyingAssignment = new Set(solver.getAssignment());
 
 		trace.mark("Result of partial solving", () => {

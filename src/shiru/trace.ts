@@ -23,7 +23,6 @@ export class Stopwatch {
 	state: {
 		tag: "paused",
 		runForMs: number,
-		pausedAtMs: number,
 	} | {
 		tag: "playing",
 		runForMs: number,
@@ -31,9 +30,7 @@ export class Stopwatch {
 	} = {
 			tag: "paused",
 			runForMs: 0,
-			pausedAtMs: this.internalClock(),
 		};
-
 
 	resume() {
 		if (this.state.tag === "playing") {
@@ -54,7 +51,6 @@ export class Stopwatch {
 		this.state = {
 			tag: "paused",
 			runForMs: this.state.runForMs + now - this.state.playedAtMs,
-			pausedAtMs: now,
 		};
 	}
 
@@ -147,7 +143,7 @@ export function stopThreshold(thresholdMs: number, title?: string): void {
 	activeStack = parent;
 }
 
-function showValue(x: unknown): string {
+function showValue(x: unknown): [string, string] {
 	const s = JSON.stringify(x, (key, value) => {
 		if (typeof value === "bigint") {
 			return value.toString() + "n";
@@ -158,75 +154,38 @@ function showValue(x: unknown): string {
 		}
 	});
 
-	return String(s);
-}
-
-function escapeHtml(text: unknown): string {
-	if (typeof text !== "string") {
-		return "<code>" + escapeHtml(showValue(text)) + "</code>";
+	if (typeof x === "string") {
+		return [x, ""];
 	}
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+	return ["", String(s)];
 }
 
-function renderTrees(stacks: Trace[], out: string[], settings: { totalTimeMs: number }) {
-	for (const child of stacks) {
-		renderTree(child, out, { open: stacks.length < 2, totalTimeMs: settings.totalTimeMs });
+function limitPrecision(n: number | null): number | null {
+	if (n === null) {
+		return null;
 	}
+	return parseFloat(n.toFixed(3));
 }
 
-function getDurationMs(stack: TraceBranch): number {
-	if (stack.end === null) {
-		return 0;
-	}
-	return stack.end - stack.start;
-}
-
-function displayMillis(n: number) {
-	if (n < 1) {
-		return n.toFixed(2);
-	}
-	return n.toFixed(1);
-}
-
-export function renderTree(stack: Trace, out: string[], settings: { open: boolean, totalTimeMs: number }): void {
-	if (stack.tag === "trace-branch") {
-		out.push("<details " + (settings.open ? "open" : "") + ">");
-		out.push("<summary>");
-		out.push("<div class=perf-spark>");
-		const totalPercentage = 100 * getDurationMs(stack) / settings.totalTimeMs;
-		const startPercentage = 100 * stack.start / settings.totalTimeMs;
-		out.push(`<div class=bar style="left: ${startPercentage.toFixed(2)}%; width: ${totalPercentage.toFixed(2)}%"></div>`);
-		out.push("</div>");
-		const durationText = stack.end ? displayMillis(getDurationMs(stack)) : "?";
-		out.push("<span class=numeral>" + durationText + " ms</span> &mdash; ");
-		const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
-		for (const element of title) {
-			out.push(escapeHtml(element));
-		}
-		out.push("</summary>");
-		out.push("<ul>");
-		renderTrees(stack.children, out, { totalTimeMs: settings.totalTimeMs });
-		out.push("</ul>");
-		out.push("</details>");
+function serialize(tree: Trace): unknown {
+	if (tree.tag === "trace-branch") {
+		return {
+			title: typeof tree.title === "string"
+				? [tree.title]
+				: tree.title.flatMap(showValue),
+			start: limitPrecision(tree.start),
+			end: limitPrecision(tree.end),
+			children: tree.children.map(serialize),
+		};
 	} else {
-		if (stack.details === null) {
-			out.push("<li>");
-			const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
-			for (const element of title) {
-				out.push(escapeHtml(element));
-			}
-			out.push("</li>");
-		} else {
-			out.push("<details>");
-			out.push("<summary>");
-			const title: unknown[] = Array.isArray(stack.title) ? stack.title : [stack.title];
-			for (const element of title) {
-				out.push(escapeHtml(element));
-			}
-			out.push("</summary>");
-			out.push("<pre><code>" + escapeHtml(stack.details) + "</code></pre>");
-			out.push("</details>");
-		}
+		return {
+			title: typeof tree.title === "string"
+				? [tree.title]
+				: tree.title.flatMap(showValue),
+			start: limitPrecision(tree.time),
+			details: tree.details,
+		};
 	}
 }
 
@@ -235,8 +194,45 @@ export function publish(): TraceBranch {
 	return root;
 }
 
-export function render(branches: TraceBranch[]): string {
-	const out: string[] = [`
+function encodeBase64(bytes: Uint8Array): string {
+	return Buffer.from(bytes).toString("base64")
+}
+
+declare class CompressionStream {
+	constructor(format: "gzip");
+	readable: any;
+	writable: any;
+}
+
+async function compressAndBase64Encode(bytes: Uint8Array): Promise<string> {
+	const cs = new CompressionStream("gzip");
+	const writer = cs.writable.getWriter();
+	await writer.write(bytes);
+	await writer.close();
+
+	const reader = cs.readable.getReader();
+	const chunks: BlobPart[] = [];
+	while (true) {
+		const { value, done } = await reader.read();
+
+		if (value) {
+			chunks.push(value);
+		}
+		if (done) {
+			break;
+		}
+	}
+
+	const buffer = await new Blob(chunks).arrayBuffer();
+	return encodeBase64(new Uint8Array(buffer));
+}
+
+export async function render(branches: TraceBranch[]): Promise<string> {
+	const data = JSON.stringify(branches.map(serialize));
+	const toEmbed = await compressAndBase64Encode(new TextEncoder().encode(data));
+
+	return `
+<meta charset="utf-8">
 <style>
 body {
 	font-family: sans-serif;
@@ -248,7 +244,7 @@ summary {
 	list-style-position: outside;
 }
 
-details {
+li, details {
 	padding: 0.25em;
 }
 
@@ -300,17 +296,134 @@ pre code {
 </style>
 
 <body>
-<div class=perf-box>
+<script type="text/plain" id="data">
+${toEmbed}
+</script>
+<ul class="perf-box" id="perf-box">
+</ul>
+<script type="module">
 
-`];
-	for (const branch of branches) {
-		renderTree(branch, out, {
-			open: true,
-			totalTimeMs: getDurationMs(branch),
-		});
+async function decodeBase64Short(str) {
+	const dataUrl = "data:application/octet-binary;base64," + str;
+	const r = await fetch(dataUrl);
+	return new Uint8Array(await r.arrayBuffer());
+}
+
+async function decodeBase64(str) {
+	const stride = 100 * 3;
+	const chunks = [];
+	for (let i = 0; i < str.length; i += stride) {
+		const encodedChunk = str.substring(i, Math.min(str.length, i + stride));
+		chunks.push(await decodeBase64Short(encodedChunk));
 	}
-	out.push(`
-</div>
-	`);
-	return out.join("\n");
+
+	return new Blob(chunks);
+}
+
+async function decodeBase64AndDecompress(str) {
+	const compressed = await decodeBase64(str);
+	const ds = new DecompressionStream("gzip");
+	const decompressedStream = compressed.stream().pipeThrough(ds);
+	const decompressed = await new Response(decompressedStream).blob();
+	return await decompressed.text();
+}
+
+const data = document.getElementById("data").textContent.replace(/\\s+/g, "");
+const roots = JSON.parse(await decodeBase64AndDecompress(data));
+
+function formatNumber(n) {
+	if (n < 10) {
+		return n.toFixed(1);
+	} else {
+		return n.toFixed(0);
+	}
+}
+
+function renderTitle(title) {
+	const span = document.createElement("span");
+	let parity = 0;
+	for (let i = 0; i < title.length; i++) {
+		const e = title[i];
+		let node = document.createTextNode(" " + String(e) + " ");
+		if (i % 2 === 1) {
+			if (String(e).trim() === "") {
+				continue;
+			}
+			const code = document.createElement("code");
+			code.appendChild(node);
+			node = code;
+		}
+		span.appendChild(node);
+	}
+	return span;
+}
+
+function renderTree(tree, into, context) {
+	const details = (tree.children || ("details" in tree && tree.details))
+		? document.createElement("details")
+		: document.createElement("li");
+	const summary = document.createElement("summary");
+	let expand = document.createElement("ul");
+	const sparkBox = document.createElement("div");
+	sparkBox.className = "perf-spark";
+	const sparkBar = document.createElement("div");
+	sparkBar.className = "bar";
+	const numeral = document.createElement("span");
+	numeral.className = "numeral";
+
+	const a0 = context.root.start;
+	const a1 = (context.root.end || NaN);
+	const t0 = tree.start;
+	const t1 = tree.end || tree.start;
+	const p0 = (t0 - a0) / (a1 - a0) * 100;
+	const p1 = (t1 - a0) / (a1 - a0) * 100;
+	sparkBar.style.left = p0.toFixed(3) + "%";
+	sparkBar.style.right = (100 - p1).toFixed(3) + "%";
+
+	const gap = document.createElement("span");
+	gap.textContent = " — ";
+
+	const elapsed = tree.end
+		? formatNumber(tree.end - tree.start)
+		: "?";
+	if (!("details" in tree)) {
+		numeral.textContent = elapsed + " ms";
+	} else {
+		gap.style.visibility = "hidden";
+		if (tree.details) {
+			expand = document.createElement("pre");
+			const code = document.createElement("code");
+			code.textContent = tree.details;
+			expand.appendChild(code);
+		}
+	}
+
+	const title = renderTitle(tree.title);
+
+	sparkBox.appendChild(sparkBar);
+	summary.appendChild(sparkBox);
+	summary.appendChild(numeral);
+	summary.appendChild(gap);
+	summary.appendChild(title);
+	details.appendChild(summary);
+	details.appendChild(expand);
+	into.appendChild(details);
+
+	if (tree.children) {
+		for (const child of tree.children) {
+			renderTree(child, expand, context);
+		}
+		if (tree.children.length === 1) {
+			details.open = true;
+		}
+	}
+}
+
+for (const root of roots) {
+	console.log(root);
+	renderTree(root, document.getElementById("perf-box"), {root});
+}
+
+</script>
+`;
 }

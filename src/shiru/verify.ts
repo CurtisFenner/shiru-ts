@@ -1441,30 +1441,33 @@ function createBoundedByComparison(
 		const lessThanFn = lessThanFns[0];
 
 		const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+		const zeroLessThanSmaller = state.smt.createApplication(lessThanFn, [zero, smaller]);
+		const smallerLessThanLarger = state.smt.createApplication(lessThanFn, [smaller, larger]);
+		const largerLessThanSmaller = state.smt.createApplication(lessThanFn, [larger, smaller]);
+		const smallerLessThanZero = state.smt.createApplication(lessThanFn, [smaller, zero]);
+		const largerNotZero = state.negate(state.eq(larger, zero));
+		const smallerIsZero = state.eq(smaller, zero);
 
-		// (smaller == 0 and larger != 0) implies cmp
-		// (smaller != 0 or larger == 0) or cmp
-		state.addDisjunctionInPath([
-			state.negate(state.eq(smaller, zero)),
-			state.eq(larger, zero),
-			boundsComparison,
-		]);
+		const negativeBound = state.negate(boundsComparison);
 
-		// (0 < smaller and smaller < larger) implies cmp
-		// (0 !< smaller or smaller !< larger) or cmp
-		state.addDisjunctionInPath([
-			state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
-			boundsComparison,
-		]);
+		const clauses: uf.ValueID[][] = [
+			[zeroLessThanSmaller, largerLessThanSmaller, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, largerNotZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, largerNotZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, smallerIsZero, negativeBound],
+			//
+			[state.negate(zeroLessThanSmaller), state.negate(smallerLessThanLarger), boundsComparison],
+			[state.negate(largerLessThanSmaller), state.negate(smallerLessThanZero), boundsComparison],
+			[state.negate(largerNotZero), state.negate(smallerIsZero), boundsComparison],
+		];
 
-		// (larger < smaller and smaller < 0) implies cmp
-		// (larger !< smaller or smaller !< 0) or cmp
-		state.addDisjunctionInPath([
-			state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
-			boundsComparison,
-		]);
+		for (const clause of clauses) {
+			state.addDisjunctionInPath(clause);
+		}
 	}
 
 	return boundsComparison;

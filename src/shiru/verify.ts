@@ -1,5 +1,5 @@
 import * as builtin from "./builtin.js";
-import { DefaultMap } from "./data.js";
+import { DefaultMap, TrieMap } from "./data.js";
 import * as diagnostics from "./diagnostics.js";
 import * as ir from "./ir.js";
 import { displayType } from "./semantics.js";
@@ -898,6 +898,7 @@ class VerificationState {
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
+	branchF = this.smt.createFunction(ir.T_ANY, {}, "ifthenelse");
 
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
 		const signature = this.context.program.foreign[op];
@@ -935,6 +936,23 @@ class VerificationState {
 		blockedFunctions: {},
 		blockedInterfaces: {},
 	};
+
+	private ifThenElseCache = new TrieMap<[uf.ValueID, uf.ValueID, uf.ValueID], uf.ValueID>();
+	createIfThenElseValue(
+		condition: uf.ValueID,
+		thenValue: uf.ValueID,
+		elseValue: uf.ValueID,
+		resultType: ir.Type,
+	): uf.ValueID {
+		const key: [uf.ValueID, uf.ValueID, uf.ValueID] = [condition, thenValue, elseValue];
+		const existing = this.ifThenElseCache.get(key);
+		if (existing !== undefined) {
+			return existing;
+		}
+		const fresh = this.smt.createVariable(resultType, "ifthenelse");
+		this.ifThenElseCache.put(key, fresh);
+		return fresh;
+	}
 
 	/// `varScopes` is a stack of variable mappings. SSA variables aren't
 	/// reassigned, but can be shadowed (including within the same block).
@@ -975,6 +993,13 @@ class VerificationState {
 		if (top !== expected) {
 			throw new Error("popHidingTypeScope: did not find expected hiding type scope");
 		}
+	}
+
+	addDisjunctionInPath(disjunction: uf.ValueID[]): void {
+		this.smt.addConstraint([
+			...this.pathConstraints.map(literal => this.negate(literal)),
+			...disjunction,
+		]);
 	}
 
 	private unitTypeID = this.smt.createConstant(ir.T_INT, 21);
@@ -1027,12 +1052,10 @@ class VerificationState {
 	}
 
 	/**
-	 * `pathConstraints` is the stack of conditional constraint-clauses that
+	 * `pathConstraints` is the stack of conditional constraint literals that
 	 * must be true to reach the current position in the program.
-	 * 
-	 * Each clause is a disjunction of boolean-sorted constraints.
 	 */
-	private pathConstraints: uf.ValueID[][] = [];
+	private pathConstraints: uf.ValueID[] = [];
 
 	constructor(
 		context: GlobalContext,
@@ -1083,7 +1106,7 @@ class VerificationState {
 	}
 
 	pushPathConstraint(c: uf.ValueID) {
-		this.pathConstraints.push([c]);
+		this.pathConstraints.push(c);
 	}
 
 	popPathConstraint() {
@@ -1120,15 +1143,14 @@ class VerificationState {
 			createBoundedByComparison(this, left[i], right[i]);
 		}
 
+		this.smt.pushScope();
 		for (const clause of clausified) {
-			this.pathConstraints.push(clause);
+			this.addDisjunctionInPath(clause);
 		}
 
 		const reply = this.checkReachable(reason);
 
-		for (const clause of clausified) {
-			this.pathConstraints.pop();
-		}
+		this.smt.popScope();
 
 		return reply;
 	}
@@ -1139,8 +1161,8 @@ class VerificationState {
 	checkReachable(reason: FailedVerification): uf.UFCounterexample | "refuted" {
 		trace.start("checkReachable");
 		this.smt.pushScope();
-		for (const constraint of this.pathConstraints) {
-			this.smt.addConstraint(constraint);
+		for (const pathConstraint of this.pathConstraints) {
+			this.smt.addConstraint([pathConstraint]);
 		}
 		trace.mark([reason]);
 		const model = this.smt.attemptRefutation();
@@ -1153,13 +1175,7 @@ class VerificationState {
 	/// constraints is considered not satisfiable in subsequent invocations of
 	/// the `smt` solver.
 	markPathUnreachable() {
-		const pathUnreachable = this.pathConstraints.map(e => {
-			if (e.length !== 1) {
-				throw new Error("VerificationState.markPathUnreachable: every path constraint must be a unit clause");
-			}
-			return this.negate(e[0]);
-		});
-		this.smt.addConstraint(pathUnreachable);
+		this.addDisjunctionInPath([]);
 	}
 
 	/// `defineVariable` associates the given symbolic value with the given
@@ -1229,22 +1245,19 @@ function traverse(
 	if (op.tag === "op-branch") {
 		const symbolicCondition: uf.ValueID = state.getValue(op.condition).value;
 
-		const phis: uf.ValueID[] = [];
-		for (const destination of op.destinations) {
-			phis.push(state.smt.createVariable(
-				destination.destination.type, destination.destination.variable));
-		}
+		const truePhis: (uf.ValueID | null)[] = [];
+		const falsePhis: (uf.ValueID | null)[] = [];
 
 		state.pushPathConstraint(symbolicCondition);
 		traverseBlock(global, new Map(), op.trueBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
-				if (source === "undef") continue;
-				state.smt.addConstraint([
-					state.negate(symbolicCondition),
-					state.eq(phis[i], state.getValue(source.variable).value),
-				]);
+				if (source === "undef") {
+					truePhis.push(null);
+				} else {
+					truePhis.push(state.getValue(source.variable).value);
+				}
 			}
 		})
 		state.popPathConstraint();
@@ -1254,17 +1267,38 @@ function traverse(
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
-				if (source === "undef") continue;
-				state.smt.addConstraint([
-					symbolicCondition,
-					state.eq(phis[i], state.getValue(source.variable).value),
-				]);
+				if (source === "undef") {
+					falsePhis.push(null);
+				} else {
+					falsePhis.push(state.getValue(source.variable).value);
+				}
 			}
 		});
 		state.popPathConstraint();
 
 		for (let i = 0; i < op.destinations.length; i++) {
-			state.defineVariable(op.destinations[i].destination, phis[i]);
+			const destination = op.destinations[i].destination;
+			const truePhi = truePhis[i];
+			const falsePhi = falsePhis[i];
+			let phi: uf.ValueID;
+			if (truePhi !== null && falsePhi !== null) {
+				phi = state.createIfThenElseValue(symbolicCondition, truePhi, falsePhi, destination.type);
+				state.addDisjunctionInPath([
+					state.negate(symbolicCondition),
+					state.eq(phi, truePhi),
+				]);
+				state.addDisjunctionInPath([
+					symbolicCondition,
+					state.eq(phi, falsePhi),
+				]);
+			} else if (truePhi !== null) {
+				phi = truePhi;
+			} else if (falsePhi !== null) {
+				phi = falsePhi;
+			} else {
+				throw new Error("unreachable");
+			}
+			state.defineVariable(op.destinations[i].destination, phi);
 		}
 
 		return;
@@ -1294,7 +1328,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.RecordID };
 		const fieldValue = state.recordMap.extractField(baseType.base, op.field, object.value);
 		const bounding = state.smt.createApplication(state.boundedByF, [fieldValue, object.value]);
-		state.smt.addConstraint([bounding]);
+		state.addDisjunctionInPath([bounding]);
 		state.defineVariable(op.destination, fieldValue);
 		return;
 	} else if (op.tag === "op-is-variant") {
@@ -1302,7 +1336,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
+		state.addDisjunctionInPath(tagInfo.finiteAlternativesClause);
 		state.defineVariable(op.destination, tagInfo.testResult);
 		return;
 	} else if (op.tag === "op-variant") {
@@ -1310,7 +1344,7 @@ function traverse(
 		const baseType = object.type as ir.TypeCompound & { base: ir.EnumID };
 
 		const tagInfo = state.enumMap.hasTag(baseType.base, object.value, op.variant, state);
-		state.smt.addConstraint(tagInfo.finiteAlternativesClause);
+		state.addDisjunctionInPath(tagInfo.finiteAlternativesClause);
 
 		// Check that the symbolic tag definitely matches this variant.
 		state.pushPathConstraint(
@@ -1334,7 +1368,7 @@ function traverse(
 		// Extract the field.
 		const variantValue = state.enumMap.destruct(baseType.base, object.value, op.variant);
 		const bounding = state.smt.createApplication(state.boundedByF, [variantValue, object.value]);
-		state.smt.addConstraint([bounding]);
+		state.addDisjunctionInPath([bounding]);
 		state.defineVariable(op.destination, variantValue);
 		return;
 	} else if (op.tag === "op-new-record") {
@@ -1353,10 +1387,10 @@ function traverse(
 		state.defineVariable(op.destination, enumValue);
 
 		const tagInfo = state.enumMap.hasTag(enumType.base, enumValue, op.variant, state);
-		state.smt.addConstraint([tagInfo.testResult]);
+		state.addDisjunctionInPath([tagInfo.testResult]);
 
 		const destruction = state.enumMap.destruct(enumType.base, enumValue, op.variant);
-		state.smt.addConstraint([state.eq(destruction, variantValue)]);
+		state.addDisjunctionInPath([state.eq(destruction, variantValue)]);
 		return;
 	} else if (op.tag === "op-proof") {
 		return traverseBlock(global, new Map(), op.body, state, context);
@@ -1445,30 +1479,33 @@ function createBoundedByComparison(
 		const lessThanFn = lessThanFns[0];
 
 		const zero = state.smt.createConstant(ir.T_INT, BigInt(0));
+		const zeroLessThanSmaller = state.smt.createApplication(lessThanFn, [zero, smaller]);
+		const smallerLessThanLarger = state.smt.createApplication(lessThanFn, [smaller, larger]);
+		const largerLessThanSmaller = state.smt.createApplication(lessThanFn, [larger, smaller]);
+		const smallerLessThanZero = state.smt.createApplication(lessThanFn, [smaller, zero]);
+		const largerNotZero = state.negate(state.eq(larger, zero));
+		const smallerIsZero = state.eq(smaller, zero);
 
-		// (smaller == 0 and larger != 0) implies cmp
-		// (smaller != 0 or larger == 0) or cmp
-		state.smt.addConstraint([
-			state.negate(state.eq(smaller, zero)),
-			state.eq(larger, zero),
-			boundsComparison,
-		]);
+		const negativeBound = state.negate(boundsComparison);
 
-		// (0 < smaller and smaller < larger) implies cmp
-		// (0 !< smaller or smaller !< larger) or cmp
-		state.smt.addConstraint([
-			state.negate(state.smt.createApplication(lessThanFn, [zero, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, larger])),
-			boundsComparison,
-		]);
+		const clauses: uf.ValueID[][] = [
+			[zeroLessThanSmaller, largerLessThanSmaller, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, largerNotZero, negativeBound],
+			[zeroLessThanSmaller, smallerLessThanZero, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, largerNotZero, negativeBound],
+			[smallerLessThanLarger, largerLessThanSmaller, smallerIsZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, largerNotZero, negativeBound],
+			[smallerLessThanLarger, smallerLessThanZero, smallerIsZero, negativeBound],
+			//
+			[state.negate(zeroLessThanSmaller), state.negate(smallerLessThanLarger), boundsComparison],
+			[state.negate(largerLessThanSmaller), state.negate(smallerLessThanZero), boundsComparison],
+			[state.negate(largerNotZero), state.negate(smallerIsZero), boundsComparison],
+		];
 
-		// (larger < smaller and smaller < 0) implies cmp
-		// (larger !< smaller or smaller !< 0) or cmp
-		state.smt.addConstraint([
-			state.negate(state.smt.createApplication(lessThanFn, [larger, smaller])),
-			state.negate(state.smt.createApplication(lessThanFn, [smaller, zero])),
-			boundsComparison,
-		]);
+		for (const clause of clauses) {
+			state.addDisjunctionInPath(clause);
+		}
 	}
 
 	return boundsComparison;

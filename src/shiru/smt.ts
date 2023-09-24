@@ -187,7 +187,7 @@ export abstract class SMTSolver<E, Model> {
 			}
 		}
 
-		trace.mark("termsRequiringAssignment", () => {
+		trace.mark([termsRequiringAssignment.size, "termsRequiringAssignment"], () => {
 			const lines = [...termsRequiringAssignment].map(x => this.showLiteral(x));
 			return lines.join("\n");
 		});
@@ -199,7 +199,7 @@ export abstract class SMTSolver<E, Model> {
 			instantiationTerms.add(Math.abs(literal));
 		}
 
-		trace.mark("instantiationTerms", () => {
+		trace.mark([instantiationTerms.size, "instantiationTerms"], () => {
 			const lines = [...instantiationTerms].map(x => this.showLiteral(x));
 			return lines.join("\n");
 		});

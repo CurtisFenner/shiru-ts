@@ -1,5 +1,5 @@
 import * as builtin from "./builtin.js";
-import { DefaultMap } from "./data.js";
+import { DefaultMap, TrieMap } from "./data.js";
 import * as diagnostics from "./diagnostics.js";
 import * as ir from "./ir.js";
 import { displayType } from "./semantics.js";
@@ -898,6 +898,7 @@ class VerificationState {
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
 	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
+	branchF = this.smt.createFunction(ir.T_ANY, {}, "ifthenelse");
 
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
 		const signature = this.context.program.foreign[op];
@@ -935,6 +936,23 @@ class VerificationState {
 		blockedFunctions: {},
 		blockedInterfaces: {},
 	};
+
+	private ifThenElseCache = new TrieMap<[uf.ValueID, uf.ValueID, uf.ValueID], uf.ValueID>();
+	createIfThenElseValue(
+		condition: uf.ValueID,
+		thenValue: uf.ValueID,
+		elseValue: uf.ValueID,
+		resultType: ir.Type,
+	): uf.ValueID {
+		const key: [uf.ValueID, uf.ValueID, uf.ValueID] = [condition, thenValue, elseValue];
+		const existing = this.ifThenElseCache.get(key);
+		if (existing !== undefined) {
+			return existing;
+		}
+		const fresh = this.smt.createVariable(resultType, "ifthenelse");
+		this.ifThenElseCache.put(key, fresh);
+		return fresh;
+	}
 
 	/// `varScopes` is a stack of variable mappings. SSA variables aren't
 	/// reassigned, but can be shadowed (including within the same block).
@@ -1227,21 +1245,19 @@ function traverse(
 	if (op.tag === "op-branch") {
 		const symbolicCondition: uf.ValueID = state.getValue(op.condition).value;
 
-		const phis: uf.ValueID[] = [];
-		for (const destination of op.destinations) {
-			phis.push(state.smt.createVariable(
-				destination.destination.type, destination.destination.variable));
-		}
+		const truePhis: (uf.ValueID | null)[] = [];
+		const falsePhis: (uf.ValueID | null)[] = [];
 
 		state.pushPathConstraint(symbolicCondition);
 		traverseBlock(global, new Map(), op.trueBranch, state, context, () => {
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.trueSource;
-				if (source === "undef") continue;
-				state.addDisjunctionInPath([
-					state.eq(phis[i], state.getValue(source.variable).value),
-				]);
+				if (source === "undef") {
+					truePhis.push(null);
+				} else {
+					truePhis.push(state.getValue(source.variable).value);
+				}
 			}
 		})
 		state.popPathConstraint();
@@ -1251,16 +1267,38 @@ function traverse(
 			for (let i = 0; i < op.destinations.length; i++) {
 				const destination = op.destinations[i];
 				const source = destination.falseSource;
-				if (source === "undef") continue;
-				state.addDisjunctionInPath([
-					state.eq(phis[i], state.getValue(source.variable).value),
-				]);
+				if (source === "undef") {
+					falsePhis.push(null);
+				} else {
+					falsePhis.push(state.getValue(source.variable).value);
+				}
 			}
 		});
 		state.popPathConstraint();
 
 		for (let i = 0; i < op.destinations.length; i++) {
-			state.defineVariable(op.destinations[i].destination, phis[i]);
+			const destination = op.destinations[i].destination;
+			const truePhi = truePhis[i];
+			const falsePhi = falsePhis[i];
+			let phi: uf.ValueID;
+			if (truePhi !== null && falsePhi !== null) {
+				phi = state.createIfThenElseValue(symbolicCondition, truePhi, falsePhi, destination.type);
+				state.addDisjunctionInPath([
+					state.negate(symbolicCondition),
+					state.eq(phi, truePhi),
+				]);
+				state.addDisjunctionInPath([
+					symbolicCondition,
+					state.eq(phi, falsePhi),
+				]);
+			} else if (truePhi !== null) {
+				phi = truePhi;
+			} else if (falsePhi !== null) {
+				phi = falsePhi;
+			} else {
+				throw new Error("unreachable");
+			}
+			state.defineVariable(op.destinations[i].destination, phi);
 		}
 
 		return;

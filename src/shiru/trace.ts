@@ -144,21 +144,11 @@ export function stopThreshold(thresholdMs: number, title?: string): void {
 }
 
 function showValue(x: unknown): [string, string] {
-	const s = JSON.stringify(x, (key, value) => {
-		if (typeof value === "bigint") {
-			return value.toString() + "n";
-		} else if (typeof value === "symbol") {
-			return String(value);
-		} else {
-			return value;
-		}
-	});
-
 	if (typeof x === "string") {
 		return [x, ""];
 	}
 
-	return ["", String(s)];
+	return ["", String(x)];
 }
 
 function limitPrecision(n: number | null): number | null {

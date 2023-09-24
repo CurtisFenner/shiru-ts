@@ -1309,15 +1309,19 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 	createVariable(type: ir.Type, debugName: string): ValueID {
 		const v = this.solver.createVariable(type, debugName);
 		if (ir.equalTypes(ir.T_BOOLEAN, type)) {
-			// Boolean-typed variables must be equal to either true or false.
-			// This constraint ensures that the sat solver will commit the
-			// variable to a particular assignment.
-			this.addConstraint([
-				v,
-				this.createApplication(this.notFn, [v]),
-			]);
+			this.addBooleanBranchConstraint(v);
 		}
 		return v;
+	}
+
+	private addBooleanBranchConstraint(value: ValueID): void {
+		// Boolean-typed variables must be equal to either true or false.
+		// This constraint ensures that the sat solver will commit the
+		// variable to a particular assignment.
+		this.addConstraint([
+			value,
+			this.createApplication(this.notFn, [value]),
+		]);
 	}
 
 	createConstant(t: ir.Type, c: unknown): ValueID {

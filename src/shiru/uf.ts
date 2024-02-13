@@ -1,5 +1,19 @@
 import { Components } from "./components.js";
-import { DefaultMap, TreeBag, TrieMap, nonEmptyPath, leastSignificantBit, sortedBy, zipMaps } from "./data.js";
+import {
+	BitSet,
+	bitsetEmpty,
+	bitsetIntersect,
+	bitsetLeastSignificantBit,
+	bitsetMinus,
+	bitsetSingleton,
+	bitsetUnion,
+	DefaultMap,
+	nonEmptyPath,
+	sortedBy,
+	TreeBag,
+	TrieMap,
+	zipMaps,
+} from "./data.js";
 import * as egraph from "./egraph.js";
 import * as ir from "./ir.js";
 import * as smt from "./smt.js";
@@ -108,7 +122,7 @@ type MiniComponentData = {
 	 * that this component is targeted by one of the operands of the
 	 * disequality.
 	 */
-	disequalityBitSet: bigint,
+	disequalityBitSet: BitSet,
 
 	constant: { token: ValueToken, constant: unknown } | null,
 };
@@ -177,21 +191,21 @@ class FastSolver<Reason> {
 				return {
 					simplestComplexity: 0,
 					simplestDefinition: a,
-					disequalityBitSet: 0n,
+					disequalityBitSet: bitsetEmpty,
 					constant: { token: a, constant: a.constant },
 				};
 			} else if (a.tag === "var") {
 				return {
 					simplestComplexity: 1,
 					simplestDefinition: a,
-					disequalityBitSet: 0n,
+					disequalityBitSet: bitsetEmpty,
 					constant: null,
 				};
 			}
 			return {
 				simplestComplexity,
 				simplestDefinition: a,
-				disequalityBitSet: 0n,
+				disequalityBitSet: bitsetEmpty,
 				constant: null,
 			};
 		},
@@ -201,7 +215,7 @@ class FastSolver<Reason> {
 				simplestDefinition: a.simplestComplexity < b.simplestComplexity
 					? a.simplestDefinition
 					: b.simplestDefinition,
-				disequalityBitSet: a.disequalityBitSet | b.disequalityBitSet,
+				disequalityBitSet: bitsetUnion(a.disequalityBitSet, b.disequalityBitSet),
 				constant: a.constant || b.constant,
 			};
 		}
@@ -319,7 +333,7 @@ class FastSolver<Reason> {
 		reason: Reason,
 	}[] = [];
 
-	private disequalityListAlreadyHandled: bigint = 0n;
+	private disequalityListAlreadyHandled: BitSet = bitsetEmpty;
 
 	private addCongruence(
 		leftValue: SimplifiedValue,
@@ -358,11 +372,14 @@ class FastSolver<Reason> {
 			hasConflictingConstants = true;
 		}
 
-		const disequalities = leftData.disequalityBitSet & rightData.disequalityBitSet & ~this.disequalityListAlreadyHandled;
-		if (!hasConflictingConstants && disequalities !== 0n) {
-			const disequalityIndex = leastSignificantBit(disequalities);
+		const disequalities = bitsetMinus(
+			bitsetIntersect(leftData.disequalityBitSet, rightData.disequalityBitSet),
+			this.disequalityListAlreadyHandled
+		);
+		if (!hasConflictingConstants && disequalities !== bitsetEmpty) {
+			const disequalityIndex = bitsetLeastSignificantBit(disequalities);
 			const disequality = this.disequalityList[disequalityIndex];
-			this.disequalityListAlreadyHandled |= 1n << BigInt(disequalityIndex);
+			this.disequalityListAlreadyHandled = bitsetUnion(this.disequalityListAlreadyHandled, bitsetSingleton(disequalityIndex));
 
 			const distinctA = disequality.left;
 			const distinctB = disequality.right;
@@ -425,7 +442,7 @@ class FastSolver<Reason> {
 			this.recordInconsistency(new Set(inconsistency));
 		}
 
-		const disequalityBit = 1n << BigInt(this.disequalityList.length);
+		const disequalityBit = bitsetSingleton(this.disequalityList.length);
 		this.disequalityList.push({
 			left: this.simplifyValue(disequality.left),
 			right: this.simplifyValue(disequality.right),

@@ -1,15 +1,27 @@
-import { leastSignificantBit, TrieMap, DisjointSet } from "./data.js";
+import {
+	BitSet,
+	bitsetLeastSignificantBit,
+	bitsetSingleton,
+	bitsetUnion,
+	DisjointSet,
+	TrieMap,
+} from "./data.js";
 import { assert } from "./test.js";
 
 export const tests = {
-	"leastSignificantBit"() {
+	"bitsetLeastSignificantBit"() {
 		// Ensure this doesn't hang.
 		// The resulting value is indeterminate.
-		leastSignificantBit(0n);
+		bitsetLeastSignificantBit(0n as BitSet);
 
-		assert(leastSignificantBit(1n), "is equal to", 0);
-		assert(leastSignificantBit(1n << 5001n), "is equal to", 5001);
-		assert(leastSignificantBit((1n << 12345n) + (1n << 34567n)), "is equal to", 12345);
+		assert(bitsetLeastSignificantBit(bitsetSingleton(0)),
+			"is equal to", 0);
+		assert(bitsetLeastSignificantBit(bitsetSingleton(5001)), "is equal to", 5001);
+		assert(
+			bitsetLeastSignificantBit(bitsetUnion(bitsetSingleton(12345), bitsetSingleton(34567))),
+			"is equal to",
+			12345
+		);
 	},
 	"TrieMap-basic"() {
 		const map: TrieMap<number[], string> = new TrieMap();

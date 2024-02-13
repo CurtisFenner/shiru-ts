@@ -22,7 +22,14 @@ export function sortedBy<T, K extends unknown[]>(
 	return ranks.map(x => array[x.i]);
 }
 
-function leastSignificantBit16(n: bigint): number {
+export type BitSet = bigint & { __brand: "solver.BitSet" };
+export type BitSet16 = BitSet & { __brand2: "solver.BitSet16" };
+
+export function bitsetLeast16(n: bigint): BitSet16 {
+	return BigInt.asUintN(16, n) as BitSet16;
+}
+
+export function bitset16LeastSignificantBit(n: BitSet16): number {
 	if (n & 0b0000_0000_0000_0001n) return 0;
 	if (n & 0b0000_0000_0000_0010n) return 1;
 	if (n & 0b0000_0000_0000_0100n) return 2;
@@ -41,19 +48,36 @@ function leastSignificantBit16(n: bigint): number {
 	return 15;
 }
 
-export function leastSignificantBit(n: bigint): number {
-	if (n <= 0n) {
+export function bitsetIntersect(a: BitSet, b: BitSet): BitSet {
+	return (a & b) as BitSet;
+}
+
+export function bitsetUnion(a: BitSet, b: BitSet): BitSet {
+	return (a | b) as BitSet;
+}
+
+export function bitsetSingleton(index: number): BitSet {
+	return 1n << BigInt(index) as BitSet;
+}
+
+export function bitsetMinus(a: BitSet, b: BitSet): BitSet {
+	return (a & ~b) as BitSet;
+}
+
+export const bitsetEmpty = 0n as BitSet;
+
+export function bitsetLeastSignificantBit(n: BitSet): number {
+	if (n <= bitsetEmpty) {
 		return -1;
 	}
 
-	let limbStart = 0;
-	while (true) {
-		const masked = BigInt.asUintN(16, n);
+	let shifting: bigint = n;
+	for (let limbStart = 0; true; limbStart += 16) {
+		const masked = bitsetLeast16(shifting);
 		if (masked !== 0n) {
-			return limbStart + leastSignificantBit16(BigInt.asUintN(16, masked));
+			return limbStart + bitset16LeastSignificantBit(masked);
 		}
-		n = n >> 16n;
-		limbStart += 16;
+		shifting = shifting >> 16n;
 	}
 }
 

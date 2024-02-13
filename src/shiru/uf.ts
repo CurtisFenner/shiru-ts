@@ -1,5 +1,5 @@
 import { Components } from "./components.js";
-import { DefaultMap, TreeBag, TrieMap, leastSignificantBit, sortedBy, zipMaps } from "./data.js";
+import { DefaultMap, TreeBag, TrieMap, nonEmptyPath, leastSignificantBit, sortedBy, zipMaps } from "./data.js";
 import * as egraph from "./egraph.js";
 import * as ir from "./ir.js";
 import * as smt from "./smt.js";
@@ -52,41 +52,6 @@ export interface Semantics<Reason> {
 	) => "change" | "no-change",
 }
 
-function transitivitySearch<Node>(
-	digraphOutEdges: DefaultMap<Node, { arrowTruth: Equality[], target: Node }[]>,
-	source: Node,
-	target: Node,
-): Equality[] | null {
-	const reached = new Map<Node, { parent: Node, arrowTruth: Equality[] }>();
-	const frontier = [source];
-
-	while (frontier.length !== 0) {
-		const top = frontier.pop()!;
-		const outEdges = digraphOutEdges.get(top);
-		for (const outEdge of outEdges) {
-			if (!reached.has(outEdge.target)) {
-				reached.set(outEdge.target, { parent: top, arrowTruth: outEdge.arrowTruth });
-				if (outEdge.target === target) {
-					// Follow the path backwards to construct the full set of
-					// inequalities that were followed.
-					const out: Equality[] = [...outEdge.arrowTruth];
-					let cursor: Node = top;
-					while (cursor !== source) {
-						const parent = reached.get(cursor);
-						if (parent === undefined) {
-							break;
-						}
-						out.push(...parent.arrowTruth);
-						cursor = parent.parent;
-					}
-					return out;
-				}
-				frontier.push(outEdge.target);
-			}
-		}
-	}
-	return null;
-}
 
 export interface Assumption<Reason> {
 	constraint: ValueID,
@@ -823,14 +788,14 @@ export class UFSolver<Reason> {
 	 * `refuteUsingTheory(assumptions, queries)` returns a set of facts which
 	 * the solver has determined are inconsistent, or a model ("counterexample")
 	 * when the facts appear to be consistent.
-	 * 
+	 *
 	 * The model will include boolean assignments for any `queries` that are
 	 * known.
 	 *
 	 * `refuteUsingTheory` is _sound with respect to refutation_; when
 	 * `"inconsistent"` is returned, the theory-solver has proven that the
 	 * assumptions are definitely inconsistent.
-	 * 
+	 *
 	 * @param queriesNeedReasons indicates that `answers` should indicate the
 	 * reason for the truth, and not just the truth value.
 	 */
@@ -1249,7 +1214,7 @@ export class UFSolver<Reason> {
 
 			// Naively performs a DFS on the set of `<` edges, searching for
 			// a contradiction.
-			const transitiveChain = transitivitySearch(digraph, sourceRep, targetRep);
+			const transitiveChain = nonEmptyPath(digraph, sourceRep, targetRep);
 			if (transitiveChain !== null) {
 				this.pendingInconsistencies.push({
 					equalityConstraints: [
@@ -1266,7 +1231,7 @@ export class UFSolver<Reason> {
 		if (fnDefinition.transitiveAcyclic === true) {
 			trace.start("transitiveAcyclic");
 			for (const [source, _] of digraph) {
-				const transitiveChain = transitivitySearch(digraph, source, source);
+				const transitiveChain = nonEmptyPath(digraph, source, source);
 				if (transitiveChain !== null) {
 					this.pendingInconsistencies.push({
 						equalityConstraints: transitiveChain,

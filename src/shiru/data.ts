@@ -114,7 +114,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 
 	/**
 	 * Iterate over [K[], V] pairs in this map.
-	 * 
+	 *
 	 * Warning: The key array is retained and mutate by this generator, so it
 	 * should not be retained or modified by the caller.
 	 */
@@ -186,7 +186,7 @@ export class DisjointSet<E, Data> {
 	 * representative returns a "representative" element of the given object's
 	 * equivalence class, such that two elements are members of the same
 	 * equivalence class if and only if their representatives are the same.
-	 * 
+	 *
 	 * After a union is performed, the new representative will be the
 	 * former representative of the unioned elements.
 	 */
@@ -241,7 +241,7 @@ export class DisjointSet<E, Data> {
 	/**
 	 * union updates this data-structure to merge the equivalence classes of a
 	 * and b.
-	 * 
+	 *
 	 * returns false when the objects were already members of the same
 	 * equivalence class.
 	 */
@@ -356,4 +356,41 @@ export function measureCommonPrefix<T>(a: T[], b: T[]): number {
 		}
 	}
 	return length;
+}
+
+export function nonEmptyPath<Node, E>(
+	digraphOutEdges: DefaultMap<Node, { arrowTruth: E[], target: Node }[]>,
+	source: Node,
+	target: Node,
+): E[] | null {
+	const reached = new Map<Node, { parent: Node, arrowTruth: E[] }>();
+	const frontier = [source];
+
+	while (frontier.length !== 0) {
+		const top = frontier.pop()!;
+		const outEdges = digraphOutEdges.get(top);
+		for (const outEdge of outEdges) {
+			if (reached.has(outEdge.target)) {
+				continue;
+			}
+			reached.set(outEdge.target, { parent: top, arrowTruth: outEdge.arrowTruth });
+			if (outEdge.target === target) {
+				// Follow the path backwards to construct the full set of
+				// inequalities that were followed.
+				const out: E[] = [...outEdge.arrowTruth];
+				let cursor: Node = top;
+				while (cursor !== source) {
+					const parent = reached.get(cursor);
+					if (parent === undefined) {
+						break;
+					}
+					out.push(...parent.arrowTruth);
+					cursor = parent.parent;
+				}
+				return out;
+			}
+			frontier.push(outEdge.target);
+		}
+	}
+	return null;
 }

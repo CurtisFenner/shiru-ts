@@ -81,6 +81,7 @@ export type RecordID = string & { __brand: "record-id" };
 export type EnumID = string & { __brand: "enum-id" };
 export type InterfaceID = string & { __brand: "interface-id" };
 export type TypeVariableID = string & { __brand: "type-variable-id" };
+export type ForeignID = string & { __brand: "foreign-id" };
 
 export interface VariableDefinition {
 	variable: VariableID,
@@ -127,7 +128,7 @@ export interface OpCopy {
 
 /**
  * `OpProofEq` determines whether or not two objects are the same.
- * 
+ *
  * This operation is only valid in proof contexts.
  */
 export interface OpProofEq {
@@ -143,7 +144,7 @@ export interface OpProofEq {
  * `OpProofBounds` determines whether or not `smaller` is "smaller than"
  * `larger`. This forms a well-founded transitive relation between any values,
  * even of unrelated types.
- * 
+ *
  * This operation is only valid in proof contexts.
  */
 export interface OpProofBounds {
@@ -420,19 +421,25 @@ export interface FunctionSignature {
 	postconditions: Postcondition[],
 
 	semantics?: {
-		/// Indicates that this is a congruence relation, which is an
-		/// equivalence relation that respects extensionality.
-		/// That is, a == b implies f(a) == f(b).
+		/**
+		 * Indicates that this is a congruence relation, which is an
+		 * equivalent relatoin that respects extensionality.
+		 * That is, a == b implies f(a) == f(b).
+		 */
 		eq?: true,
 
-		/// A `transitive` function respects transitivity:
-		/// f(a, b) and f(b, a) implies f(a, c).
-		/// (This need not be specified for `eq` functions)
+		/**
+		 * A `transitive` function respects transitivity:
+		 * f(a, b) and f(b, c) implies f(a, c).
+		 * (This need not be specified for `eq` functions)
+		 */
 		transitive?: true,
 
-		/// A `transitiveAcyclic` function is a `transitive` function which does not
-		/// admit cycles (a < b < c < d < ... < a). This implies that the relation
-		/// is anti-reflexive.
+		/**
+		 * A `transitiveAcyclic` function is a `transitive` function which does
+		 * not admit cycles (a < b < c < d < ... < a). This implies that the
+		 * relation is anti-reflexive.
+		 */
 		transitiveAcyclic?: true,
 
 		/**
@@ -482,8 +489,8 @@ export interface VTableFactory {
 	/**
 	 * `closures` is the list of constraint parameters that must be captured at
 	 * the construction time of this v-table, and which is available to entries
-	 * in this v-table. 
-	 * 
+	 * in this v-table.
+	 *
 	 * These constraints may reference type variables in the `for_any` of this
 	 * `VTableFactory`.
 	 */
@@ -504,7 +511,7 @@ export interface VTableFactoryEntry {
 	 * `constraint_parameters` has one element for each of the
 	 * `constraint_parameters` in the `FunctionSignature` of the implementing
 	 * function.
-	 * 
+	 *
 	 * Each entry indicates where to find the v-table at runtime; either the
 	 * `closures` of this v-table, or the `constraint_parameters` of the
 	 * interface (not implementation) `FunctionSignature`.

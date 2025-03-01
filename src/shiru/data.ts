@@ -22,7 +22,14 @@ export function sortedBy<T, K extends unknown[]>(
 	return ranks.map(x => array[x.i]);
 }
 
-function leastSignificantBit16(n: bigint): number {
+export type BitSet = bigint & { __brand: "solver.BitSet" };
+export type BitSet16 = BitSet & { __brand2: "solver.BitSet16" };
+
+export function bitsetLeast16(n: bigint): BitSet16 {
+	return BigInt.asUintN(16, n) as BitSet16;
+}
+
+export function bitset16LeastSignificantBit(n: BitSet16): number {
 	if (n & 0b0000_0000_0000_0001n) return 0;
 	if (n & 0b0000_0000_0000_0010n) return 1;
 	if (n & 0b0000_0000_0000_0100n) return 2;
@@ -41,19 +48,36 @@ function leastSignificantBit16(n: bigint): number {
 	return 15;
 }
 
-export function leastSignificantBit(n: bigint): number {
-	if (n <= 0n) {
+export function bitsetIntersect(a: BitSet, b: BitSet): BitSet {
+	return (a & b) as BitSet;
+}
+
+export function bitsetUnion(a: BitSet, b: BitSet): BitSet {
+	return (a | b) as BitSet;
+}
+
+export function bitsetSingleton(index: number): BitSet {
+	return 1n << BigInt(index) as BitSet;
+}
+
+export function bitsetMinus(a: BitSet, b: BitSet): BitSet {
+	return (a & ~b) as BitSet;
+}
+
+export const bitsetEmpty = 0n as BitSet;
+
+export function bitsetLeastSignificantBit(n: BitSet): number {
+	if (n <= bitsetEmpty) {
 		return -1;
 	}
 
-	let limbStart = 0;
-	while (true) {
-		const masked = BigInt.asUintN(16, n);
+	let shifting: bigint = n;
+	for (let limbStart = 0; true; limbStart += 16) {
+		const masked = bitsetLeast16(shifting);
 		if (masked !== 0n) {
-			return limbStart + leastSignificantBit16(BigInt.asUintN(16, masked));
+			return limbStart + bitset16LeastSignificantBit(masked);
 		}
-		n = n >> 16n;
-		limbStart += 16;
+		shifting = shifting >> 16n;
 	}
 }
 
@@ -114,7 +138,7 @@ export class TrieMap<KS extends readonly unknown[], V> {
 
 	/**
 	 * Iterate over [K[], V] pairs in this map.
-	 * 
+	 *
 	 * Warning: The key array is retained and mutate by this generator, so it
 	 * should not be retained or modified by the caller.
 	 */
@@ -186,7 +210,7 @@ export class DisjointSet<E, Data> {
 	 * representative returns a "representative" element of the given object's
 	 * equivalence class, such that two elements are members of the same
 	 * equivalence class if and only if their representatives are the same.
-	 * 
+	 *
 	 * After a union is performed, the new representative will be the
 	 * former representative of the unioned elements.
 	 */
@@ -241,7 +265,7 @@ export class DisjointSet<E, Data> {
 	/**
 	 * union updates this data-structure to merge the equivalence classes of a
 	 * and b.
-	 * 
+	 *
 	 * returns false when the objects were already members of the same
 	 * equivalence class.
 	 */
@@ -356,4 +380,41 @@ export function measureCommonPrefix<T>(a: T[], b: T[]): number {
 		}
 	}
 	return length;
+}
+
+export function nonEmptyPath<Node, E>(
+	digraphOutEdges: DefaultMap<Node, { arrowTruth: E[], target: Node }[]>,
+	source: Node,
+	target: Node,
+): E[] | null {
+	const reached = new Map<Node, { parent: Node, arrowTruth: E[] }>();
+	const frontier = [source];
+
+	while (frontier.length !== 0) {
+		const top = frontier.pop()!;
+		const outEdges = digraphOutEdges.get(top);
+		for (const outEdge of outEdges) {
+			if (reached.has(outEdge.target)) {
+				continue;
+			}
+			reached.set(outEdge.target, { parent: top, arrowTruth: outEdge.arrowTruth });
+			if (outEdge.target === target) {
+				// Follow the path backwards to construct the full set of
+				// inequalities that were followed.
+				const out: E[] = [...outEdge.arrowTruth];
+				let cursor: Node = top;
+				while (cursor !== source) {
+					const parent = reached.get(cursor);
+					if (parent === undefined) {
+						break;
+					}
+					out.push(...parent.arrowTruth);
+					cursor = parent.parent;
+				}
+				return out;
+			}
+			frontier.push(outEdge.target);
+		}
+	}
+	return null;
 }

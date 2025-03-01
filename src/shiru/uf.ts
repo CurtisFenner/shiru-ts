@@ -1,5 +1,19 @@
 import { Components } from "./components.js";
-import { DefaultMap, TreeBag, TrieMap, leastSignificantBit, sortedBy, zipMaps } from "./data.js";
+import {
+	BitSet,
+	bitsetEmpty,
+	bitsetIntersect,
+	bitsetLeastSignificantBit,
+	bitsetMinus,
+	bitsetSingleton,
+	bitsetUnion,
+	DefaultMap,
+	nonEmptyPath,
+	sortedBy,
+	TreeBag,
+	TrieMap,
+	zipMaps,
+} from "./data.js";
 import * as egraph from "./egraph.js";
 import * as ir from "./ir.js";
 import * as smt from "./smt.js";
@@ -52,41 +66,6 @@ export interface Semantics<Reason> {
 	) => "change" | "no-change",
 }
 
-function transitivitySearch<Node>(
-	digraphOutEdges: DefaultMap<Node, { arrowTruth: Equality[], target: Node }[]>,
-	source: Node,
-	target: Node,
-): Equality[] | null {
-	const reached = new Map<Node, { parent: Node, arrowTruth: Equality[] }>();
-	const frontier = [source];
-
-	while (frontier.length !== 0) {
-		const top = frontier.pop()!;
-		const outEdges = digraphOutEdges.get(top);
-		for (const outEdge of outEdges) {
-			if (!reached.has(outEdge.target)) {
-				reached.set(outEdge.target, { parent: top, arrowTruth: outEdge.arrowTruth });
-				if (outEdge.target === target) {
-					// Follow the path backwards to construct the full set of
-					// inequalities that were followed.
-					const out: Equality[] = [...outEdge.arrowTruth];
-					let cursor: Node = top;
-					while (cursor !== source) {
-						const parent = reached.get(cursor);
-						if (parent === undefined) {
-							break;
-						}
-						out.push(...parent.arrowTruth);
-						cursor = parent.parent;
-					}
-					return out;
-				}
-				frontier.push(outEdge.target);
-			}
-		}
-	}
-	return null;
-}
 
 export interface Assumption<Reason> {
 	constraint: ValueID,
@@ -143,7 +122,7 @@ type MiniComponentData = {
 	 * that this component is targeted by one of the operands of the
 	 * disequality.
 	 */
-	disequalityBitSet: bigint,
+	disequalityBitSet: BitSet,
 
 	constant: { token: ValueToken, constant: unknown } | null,
 };
@@ -212,21 +191,21 @@ class FastSolver<Reason> {
 				return {
 					simplestComplexity: 0,
 					simplestDefinition: a,
-					disequalityBitSet: 0n,
+					disequalityBitSet: bitsetEmpty,
 					constant: { token: a, constant: a.constant },
 				};
 			} else if (a.tag === "var") {
 				return {
 					simplestComplexity: 1,
 					simplestDefinition: a,
-					disequalityBitSet: 0n,
+					disequalityBitSet: bitsetEmpty,
 					constant: null,
 				};
 			}
 			return {
 				simplestComplexity,
 				simplestDefinition: a,
-				disequalityBitSet: 0n,
+				disequalityBitSet: bitsetEmpty,
 				constant: null,
 			};
 		},
@@ -236,7 +215,7 @@ class FastSolver<Reason> {
 				simplestDefinition: a.simplestComplexity < b.simplestComplexity
 					? a.simplestDefinition
 					: b.simplestDefinition,
-				disequalityBitSet: a.disequalityBitSet | b.disequalityBitSet,
+				disequalityBitSet: bitsetUnion(a.disequalityBitSet, b.disequalityBitSet),
 				constant: a.constant || b.constant,
 			};
 		}
@@ -354,7 +333,7 @@ class FastSolver<Reason> {
 		reason: Reason,
 	}[] = [];
 
-	private disequalityListAlreadyHandled: bigint = 0n;
+	private disequalityListAlreadyHandled: BitSet = bitsetEmpty;
 
 	private addCongruence(
 		leftValue: SimplifiedValue,
@@ -393,11 +372,14 @@ class FastSolver<Reason> {
 			hasConflictingConstants = true;
 		}
 
-		const disequalities = leftData.disequalityBitSet & rightData.disequalityBitSet & ~this.disequalityListAlreadyHandled;
-		if (!hasConflictingConstants && disequalities !== 0n) {
-			const disequalityIndex = leastSignificantBit(disequalities);
+		const disequalities = bitsetMinus(
+			bitsetIntersect(leftData.disequalityBitSet, rightData.disequalityBitSet),
+			this.disequalityListAlreadyHandled
+		);
+		if (!hasConflictingConstants && disequalities !== bitsetEmpty) {
+			const disequalityIndex = bitsetLeastSignificantBit(disequalities);
 			const disequality = this.disequalityList[disequalityIndex];
-			this.disequalityListAlreadyHandled |= 1n << BigInt(disequalityIndex);
+			this.disequalityListAlreadyHandled = bitsetUnion(this.disequalityListAlreadyHandled, bitsetSingleton(disequalityIndex));
 
 			const distinctA = disequality.left;
 			const distinctB = disequality.right;
@@ -460,7 +442,7 @@ class FastSolver<Reason> {
 			this.recordInconsistency(new Set(inconsistency));
 		}
 
-		const disequalityBit = 1n << BigInt(this.disequalityList.length);
+		const disequalityBit = bitsetSingleton(this.disequalityList.length);
 		this.disequalityList.push({
 			left: this.simplifyValue(disequality.left),
 			right: this.simplifyValue(disequality.right),
@@ -823,14 +805,14 @@ export class UFSolver<Reason> {
 	 * `refuteUsingTheory(assumptions, queries)` returns a set of facts which
 	 * the solver has determined are inconsistent, or a model ("counterexample")
 	 * when the facts appear to be consistent.
-	 * 
+	 *
 	 * The model will include boolean assignments for any `queries` that are
 	 * known.
 	 *
 	 * `refuteUsingTheory` is _sound with respect to refutation_; when
 	 * `"inconsistent"` is returned, the theory-solver has proven that the
 	 * assumptions are definitely inconsistent.
-	 * 
+	 *
 	 * @param queriesNeedReasons indicates that `answers` should indicate the
 	 * reason for the truth, and not just the truth value.
 	 */
@@ -1249,7 +1231,7 @@ export class UFSolver<Reason> {
 
 			// Naively performs a DFS on the set of `<` edges, searching for
 			// a contradiction.
-			const transitiveChain = transitivitySearch(digraph, sourceRep, targetRep);
+			const transitiveChain = nonEmptyPath(digraph, sourceRep, targetRep);
 			if (transitiveChain !== null) {
 				this.pendingInconsistencies.push({
 					equalityConstraints: [
@@ -1266,7 +1248,7 @@ export class UFSolver<Reason> {
 		if (fnDefinition.transitiveAcyclic === true) {
 			trace.start("transitiveAcyclic");
 			for (const [source, _] of digraph) {
-				const transitiveChain = transitivitySearch(digraph, source, source);
+				const transitiveChain = nonEmptyPath(digraph, source, source);
 				if (transitiveChain !== null) {
 					this.pendingInconsistencies.push({
 						equalityConstraints: transitiveChain,

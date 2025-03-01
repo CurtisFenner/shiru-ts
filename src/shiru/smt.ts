@@ -16,7 +16,7 @@ export abstract class SMTSolver<E, Model> {
 	 * Update this SMT instance so that all subsequent solves within the
 	 * containing scope must also ensure that `constraint` is satisfied by a
 	 * model.
-	 * 
+	 *
 	 * @see pushScope
 	 * @see popScope
 	 */
@@ -314,9 +314,12 @@ export abstract class SMTSolver<E, Model> {
 	): { tag: "implied", impliedClauses: sat.Literal[][], model: Model }
 		| { tag: "unsatisfiable", conflictClauses: sat.Literal[][] };
 
-	/// clausify returns a set of clauses to add to the underlying SAT solver.
-	/// This modifies state, associating literals (and other internal variables)
-	/// with the pieces of this constraint, possibly for instantiation.
+	/**
+	 * `clausify` returns a set of clauses to add to the underlying SAT solver.
+	 * This modifies state, associating literals (and other internal variables)
+	 * with the pieces of this constraint, possibly for insantiation.
+	 * @param constraint is a disjunction of constraints
+	 */
 	protected abstract clausify(constraint: E): sat.Literal[][];
 
 	/// TODO: Instantiation of quantifiers, which is sometimes done in the place

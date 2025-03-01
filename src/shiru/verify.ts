@@ -25,7 +25,7 @@ class CallGraph<T> implements DirectedGraph<CallGraphCall<T>, CallGraphNode> {
 	/**
 	 * `initialize(node)` adds the given node to this graph so that it is
 	 * included in subsequent calls to `this.getVertexes()`.
-	 * 
+	 *
 	 * It also returns the canonical instance of the given `CallGraphNode`,
 	 * enabling comparisons by identity.
 	 */
@@ -123,7 +123,7 @@ class GlobalContext {
 	getForeignInterpreters(
 		operation: string,
 		state: VerificationState,
-	): Pick<uf.Semantics<number>, "interpreter" | "generalInterpreter"> | undefined {
+	): Pick<uf.Semantics, "interpreter"> | undefined {
 		const definition = builtin.foreignOperations[operation];
 		if (definition === undefined) {
 			throw new Error("GlobalContext.getForeignInterpreters: unknown operation `" + operation + "`");
@@ -596,7 +596,7 @@ interface VerificationContext {
 	/**
 	 * `nonDecreasingCallSource` indicates the function to attribute
 	 * non-decreasing calls to.
-	 * 
+	 *
 	 * It is `null` when non-decreasingness ned not be checked (for example,
 	 * when traversing a recursive contract, or when checking the body of a
 	 * "partial" function).
@@ -913,7 +913,6 @@ class VerificationState {
 			out.push(this.smt.createFunction(r, {
 				eq: signature.semantics?.eq,
 				interpreter: interpreters?.interpreter,
-				generalInterpreter: interpreters?.generalInterpreter,
 				transitive: signature.semantics?.transitive,
 				transitiveAcyclic: signature.semantics?.transitiveAcyclic,
 				not: signature.semantics?.not,
@@ -1164,7 +1163,7 @@ class VerificationState {
 		for (const pathConstraint of this.pathConstraints) {
 			this.smt.addConstraint([pathConstraint]);
 		}
-		trace.mark([reason]);
+		trace.mark([reason.tag]);
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
 		trace.stop("checkReachable");
@@ -1872,7 +1871,7 @@ interface DirectedGraph<E, V> {
 	/**
 	 * `getOutgoing(from)` returns the set of edges originating at vertex
 	 * `from`.
-	 * 
+	 *
 	 * Each `to` is guaranteed to have the same identity when representing the
 	 * same vertex.
 	 */

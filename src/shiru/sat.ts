@@ -1,11 +1,13 @@
-
-/// `Literal` represents a Boolean literal. A `Literal` is a non-zero integer.
-/// The positive integer `a` is satisfied by an assignment of `true` to variable
-/// `a`; a negative integer `-b` is satisfied by an assignment of `false` to
-/// variable `b`.
+/**
+ * `Literal` represents a Boolean literal. A `Literal` is a non-zero integer.
+ *
+ * The positive integer `a` is satisfied by an assignment of `true` to variable
+ * `a`; a negative integer `-b` is satisfied by an assignment of `false` to
+ * variable `b`.
+ */
 export type Literal = number;
 
-/// `ClauseID` represents an index into the `clauses` field of a `SATSolver`.
+/** `ClauseID` represents an index into the `clauses` field of a `SATSolver`. */
 type ClauseID = number;
 
 function swap<T>(array: T[], a: number, b: number) {
@@ -94,10 +96,10 @@ export class SATSolver {
 
 	/**
 	 * `assignments[n]` is the assignment of term `n`.
-	 * 
+	 *
 	 * * `0`: the term is unassigned.
 	 * * `1`: the term is assigned "true".
-	 * * `-1`: the temr is assigned "false".
+	 * * `-1`: the term is assigned "false".
 	 */
 	private assignments: (-1 | 0 | 1)[] = [];
 
@@ -159,7 +161,7 @@ export class SATSolver {
 	/**
 	 * `simplifyClauses(clauses)` returns the given set of clauses "simplified"
 	 * by the current assignment.
-	 * 
+	 *
 	 * Only unsatisfied clauses are returned, and only unrefuted literals in
 	 * those clauses are included.
 	 */

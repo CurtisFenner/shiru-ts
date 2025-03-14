@@ -1,4 +1,4 @@
-type Tail<T extends readonly unknown[]> = T extends [unknown, ... infer Tail]
+type Tail<T extends readonly unknown[]> = T extends [unknown, ...infer Tail]
 	? Tail
 	: never;
 
@@ -30,14 +30,16 @@ export function bitsetLeast16(n: bigint): BitSet16 {
 }
 
 export function bitset16LeastSignificantBit(n: BitSet16): number {
-	if (n & 0b0000_0000_0000_0001n) return 0;
-	if (n & 0b0000_0000_0000_0010n) return 1;
-	if (n & 0b0000_0000_0000_0100n) return 2;
-	if (n & 0b0000_0000_0000_1000n) return 3;
-	if (n & 0b0000_0000_0001_0000n) return 4;
-	if (n & 0b0000_0000_0010_0000n) return 5;
-	if (n & 0b0000_0000_0100_0000n) return 6;
-	if (n & 0b0000_0000_1000_0000n) return 7;
+	if (n & 0b0000_0000_1111_1111n) {
+		if (n & 0b0000_0000_0000_0001n) return 0;
+		if (n & 0b0000_0000_0000_0010n) return 1;
+		if (n & 0b0000_0000_0000_0100n) return 2;
+		if (n & 0b0000_0000_0000_1000n) return 3;
+		if (n & 0b0000_0000_0001_0000n) return 4;
+		if (n & 0b0000_0000_0010_0000n) return 5;
+		if (n & 0b0000_0000_0100_0000n) return 6;
+		return 7;
+	}
 	if (n & 0b0000_0001_0000_0000n) return 8;
 	if (n & 0b0000_0010_0000_0000n) return 9;
 	if (n & 0b0000_0100_0000_0000n) return 10;
@@ -192,18 +194,22 @@ export class DisjointSet<E, Data> {
 		private mergeDataFor: (childData: Data, parentData: Data) => Data,
 	) { }
 
-	reset() {
+	reset(): void {
 		this.parents.clear();
 		this.ranks.clear();
 		this.data.clear();
 	}
 
-	init(e: E) {
+	init(e: E): void {
 		if (!this.parents.has(e)) {
 			this.parents.set(e, e);
 			this.ranks.set(e, 0);
 			this.data.set(e, this.initialDataFor(e));
 		}
+	}
+
+	hasInitialized(e: E): boolean {
+		return this.parents.has(e);
 	}
 
 	/**
@@ -266,7 +272,7 @@ export class DisjointSet<E, Data> {
 	 * union updates this data-structure to merge the equivalence classes of a
 	 * and b.
 	 *
-	 * returns false when the objects were already members of the same
+	 * returns `false` when the objects were already members of the same
 	 * equivalence class.
 	 */
 	union(a: E, b: E): boolean {

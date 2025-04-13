@@ -1,4 +1,4 @@
-import { BitSet, bitsetEmpty, bitsetIntersect, bitsetSingleton, bitsetUnion, DisjointSet, TrieMap } from "./data.js";
+import { BitSet, bitsetEmpty, bitsetIntersect, bitsetSingleton, bitsetToIndexes, bitsetUnion, DisjointSet, TrieMap } from "./data.js";
 import * as ir from "./ir.js";
 import * as sat from "./sat.js";
 import * as smt from "./smt.js";
@@ -43,7 +43,15 @@ type ECData = {
 	constant?: unknown,
 	distinct: BitSet,
 	value: ValueID,
+
+	/** A set of reasons which together explain why all elements in this
+	 * equivalence class are equal to each other.
+	 */
+	reason: Reason,
 };
+
+/** A set of indexes in to a `partialAssignment` */
+type Reason = BitSet & { __brandReason: "Reason" };
 
 class TheoryState {
 	private nextDistinctBit = 1;
@@ -55,9 +63,14 @@ class TheoryState {
 					constant: definition.constant,
 					distinct: bitsetSingleton(0),
 					value,
+					reason: bitsetEmpty as Reason,
 				};
 			}
-			return { distinct: bitsetEmpty, value };
+			return {
+				distinct: bitsetEmpty,
+				value,
+				reason: bitsetEmpty as Reason,
+			};
 		},
 		(child, parent) => {
 			return {
@@ -66,13 +79,18 @@ class TheoryState {
 				value: (parent.constant ?? false)
 					? parent.value
 					: child.value,
+				reason: bitsetUnion(parent.reason, child.reason) as Reason,
 			};
 		},
 	);
 
 	constructor(private theory: UFTheory) { }
 
-	private union(a: ValueID, b: ValueID): null | "contradiction" {
+	private attemptUnion(
+		a: ValueID,
+		b: ValueID,
+		reason: Reason,
+	): null | { conflictReason: Reason } {
 		if (this.ds.compareEqual(a, b)) {
 			return null;
 		}
@@ -80,15 +98,20 @@ class TheoryState {
 		const dataA = this.ds.getData(a);
 		const dataB = this.ds.getData(b);
 		if (bitsetIntersect(dataA.distinct, dataB.distinct)) {
-			return "contradiction";
+			return {
+				conflictReason: bitsetUnion(
+					bitsetUnion(dataA.reason, dataB.reason),
+					reason,
+				) as Reason
+			};
 		}
 
 		this.ds.union(a, b);
 		return null;
 	}
 
-	evaluateBoolean(value: ValueID): boolean | "unknown" {
-		const simplified = this.simplifyValue(value);
+	evaluateBoolean(value: ValueID): { value: boolean, antecedent: Reason } | "unknown" {
+		const { simplified, reason } = this.simplifyValue(value);
 		if (!this.ds.hasInitialized(simplified)) {
 			return "unknown";
 		}
@@ -96,29 +119,55 @@ class TheoryState {
 		if (typeof data.constant !== "boolean") {
 			return "unknown";
 		}
-		return data.constant;
+		return {
+			value: data.constant,
+			antecedent: reason,
+		};
 	}
 
-	assumeValue(unsimplifiedValue: ValueID, truth: boolean): null | "contradiction" {
+	private reasonEqual(a: ValueID, b: ValueID): null | Reason {
+		const aData = this.ds.getData(a);
+		const bData = this.ds.getData(b);
+		if (aData === bData) {
+			return aData.reason;
+		}
+		return null;
+	}
+
+	assumeValue(
+		unsimplifiedValue: ValueID,
+		truth: boolean,
+		reason: Reason,
+	): null | Reason {
 		const boolean = truth
 			? this.theory.trueConstant
 			: this.theory.falseConstant;
 
-		const simplified = this.simplifyValue(unsimplifiedValue);
-		const booleanUnion = this.union(simplified, boolean);
+		const simplification = this.simplifyValue(unsimplifiedValue);
+		reason = bitsetUnion(reason, simplification.reason) as Reason;
+		const booleanUnion = this.attemptUnion(simplification.simplified, boolean, reason);
+		if (booleanUnion !== null) {
+			return booleanUnion.conflictReason;
+		}
 
-		const definition = this.theory.valueMap.get(simplified)!;
+		const definition = this.theory.valueMap.get(simplification.simplified)!;
 
-		let unionResult: null | "contradiction" = null;
 		if (definition.tag === "application") {
 			const semantics = this.theory.fnMap.get(definition.fn)!.semantics;
 			const operands = definition.operands;
 			if (semantics.eq) {
 				if (truth) {
-					unionResult = this.union(operands[0], operands[1]);
+					const unionResult = this.attemptUnion(operands[0], operands[1], reason);
+					if (unionResult !== null) {
+						return unionResult.conflictReason;
+					}
 				} else {
-					if (this.ds.compareEqual(operands[0], operands[1])) {
-						unionResult = "contradiction";
+					const equalReason = this.reasonEqual(operands[0], operands[1]);
+					if (equalReason !== null) {
+						return bitsetUnion(
+							equalReason,
+							reason,
+						) as Reason;
 					} else {
 						const distinctBit = this.nextDistinctBit;
 						this.nextDistinctBit += 1;
@@ -126,39 +175,48 @@ class TheoryState {
 						this.ds.unionData(operands[0], {
 							value: operands[0],
 							distinct: distinctSet,
+							reason: 0n as Reason,
 						});
 						this.ds.unionData(operands[1], {
 							value: operands[1],
 							distinct: distinctSet,
+							reason: 0n as Reason,
 						});
 					}
 				}
 			}
 		}
 
-		return booleanUnion || unionResult;
+		return null;
 	}
 
-	simplifyValue(value: ValueID): ValueID {
+	simplifyValue(value: ValueID): { simplified: ValueID, reason: Reason } {
 		const definition = this.theory.valueMap.get(value)!;
 		if (definition.tag === "constant") {
-			return value;
+			return { simplified: value, reason: 0n as Reason };
 		}
 		let simplified = value;
+		let reason = 0n as Reason;
 		if (definition.tag === "application") {
-			const operands = definition.operands.map(x => this.simplifyValue(x));
+			const operands = [];
+			for (const operandSimplification of definition.operands.map(x => this.simplifyValue(x))) {
+				operands.push(operandSimplification.simplified);
+				reason = bitsetUnion(reason, operandSimplification.reason) as Reason;
+			}
 			simplified = this.theory.createApplication(definition.fn, operands);
 			const fnData = this.theory.fnMap.get(definition.fn)!;
 			const semantics = fnData.semantics;
 			if (semantics.eq) {
-				if (this.ds.compareEqual(operands[0], operands[1])) {
-					return this.theory.trueConstant;
-				}
 				const data0 = this.ds.getData(operands[0]);
 				const data1 = this.ds.getData(operands[1]);
-				if (bitsetIntersect(data0.distinct, data1.distinct)) {
-					return this.theory.falseConstant;
-				} else if (operands[0] === this.theory.trueConstant) {
+				if (data0 === data1) {
+					return {
+						simplified: this.theory.trueConstant,
+						reason: bitsetUnion(reason, data0.reason) as Reason,
+					};
+				}
+
+				if (operands[0] === this.theory.trueConstant) {
 					simplified = operands[1];
 				} else if (operands[1] === this.theory.trueConstant) {
 					simplified = operands[0];
@@ -175,9 +233,13 @@ class TheoryState {
 		}
 
 		if (this.ds.hasInitialized(simplified)) {
-			return this.ds.representative(simplified)
+			const data = this.ds.getData(simplified);
+			return {
+				simplified: data.value,
+				reason: bitsetUnion(reason, data.reason) as Reason,
+			};
 		}
-		return simplified;
+		return { simplified, reason };
 	}
 }
 
@@ -269,7 +331,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		unassignedLiterals: sat.Literal[],
 	): { tag: "implied", impliedClauses: sat.Literal[][], model: UFCounterexample }
 		| { tag: "unsatisfiable", conflictClauses: sat.Literal[][] } {
-		const before = performance.now();
 		// TODO: Sort assignment literals in a logical way.
 		const truths = [];
 		for (const literal of partialAssignment) {
@@ -280,16 +341,17 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 				literal,
 				value,
 				truthAssignment,
+				reason: bitsetSingleton(truths.length) as Reason,
 			});
 		}
 
 		const state = new TheoryState(this);
 		for (let i = 0; i < truths.length; i++) {
-			const result = state.assumeValue(truths[i].value, truths[i].truthAssignment);
-			if (result === "contradiction") {
-				const contradictoryAssigment = truths.slice(0, i + 1).map(x => x.literal);
-				const conflictClause = contradictoryAssigment.map(x => -x);
-				const after = performance.now();
+			const result = state.assumeValue(truths[i].value, truths[i].truthAssignment, truths[i].reason);
+			if (result !== null) {
+				const resultSet = new Set(bitsetToIndexes(result));
+				const contradictoryAssignment = partialAssignment.filter((_, index) => resultSet.has(index));
+				const conflictClause = contradictoryAssignment.map(x => -x);
 				return {
 					tag: "unsatisfiable",
 					conflictClauses: [conflictClause],
@@ -301,21 +363,21 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		for (const literal of unassignedLiterals) {
 			const truthAssignment = literal > 0;
 			const term = truthAssignment ? literal : -literal;
-			const value = this.termMap.get(term)!;
-			const simplified = state.simplifyValue(value);
-			let termValue = null;
-			if (simplified === this.trueConstant) {
-				termValue = true;
-			} else if (simplified === this.falseConstant) {
-				termValue = false;
+			const termValue = this.termMap.get(term)!;
+			const termSimplified = state.simplifyValue(termValue);
+			let learnedReason = new Set(bitsetToIndexes(termSimplified.reason));
+			let learnedTermAssignment = null;
+			if (termSimplified.simplified === this.trueConstant) {
+				learnedTermAssignment = true;
+			} else if (termSimplified.simplified === this.falseConstant) {
+				learnedTermAssignment = false;
 			}
 
-			if (termValue !== null) {
+			if (learnedTermAssignment !== null) {
+				const antecedent = partialAssignment.filter((_, index) => learnedReason.has(index));
 				impliedClauses.push([
-					...partialAssignment.map(x => -x),
-					termValue === truthAssignment
-						? literal
-						: -literal,
+					...antecedent.map(x => -x),
+					learnedTermAssignment ? term : -term,
 				]);
 			}
 		}

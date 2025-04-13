@@ -83,6 +83,19 @@ export function bitsetLeastSignificantBit(n: BitSet): number {
 	}
 }
 
+export function bitsetToIndexes(n: BitSet): number[] {
+	const out = [];
+	let index = 0;
+	while (n !== 0n) {
+		if ((n & 1n) !== 0n) {
+			out.push(index);
+		}
+		n = (n >> 1n) as BitSet;
+		index += 1;
+	}
+	return out;
+}
+
 /**
  * TrieMap implements a map where keys are arrays (or tuples).
  * This is implemented using a "trie" of ES6 Map objects.

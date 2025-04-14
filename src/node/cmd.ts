@@ -1,12 +1,13 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as process from "process";
-import { codegenJs } from "./codegen_js.js";
-import * as diagnostics from "./diagnostics.js";
-import * as grammar from "./grammar.js";
-import * as ir from "./ir.js";
-import * as lexer from "./lexer.js";
-import * as library from "./library.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as process from "node:process";
+
+import { codegenJs } from "../shiru/codegen_js.js";
+import * as diagnostics from "../shiru/diagnostics.js";
+import * as grammar from "../shiru/grammar.js";
+import * as ir from "../shiru/ir.js";
+import * as lexer from "../shiru/lexer.js";
+import * as library from "../shiru/library.js";
 
 export function processCommands(args: string[]): number {
 	if (args[0] === "interpret") {
@@ -124,6 +125,4 @@ function compileSourcePaths(sourcePaths: string[]): number | ir.Program {
 	return compiled;
 }
 
-if (require.main === module) {
-	processCommands(process.argv.slice(2));
-}
+processCommands(process.argv.slice(2));

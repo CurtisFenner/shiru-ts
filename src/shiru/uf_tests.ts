@@ -1,6 +1,6 @@
 import * as ir from "./ir.js";
 import * as uf from "./uf.js";
-import { assert, specIterableContainingOnly } from "./test.js";
+import { assert } from "./test.js";
 
 export const tests = {
 	"UFTheory-basic-equality-refuted"() {

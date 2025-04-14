@@ -1,10 +1,6 @@
 name: Run SAT regression tests
 
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+on: [push, pull_request]
 
 jobs:
   run-sat-regression-tests:
@@ -12,10 +8,10 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install dependencies
-      run: yarn install --frozen-lockfile
+      run: npm ci
     - name: Build
-      run: yarn build
+      run: npm run build
     - name: Install reference SAT solver (logic-solver@2.0.1)
-      run: yarn add logic-solver@2.0.1
+      run: npm install logic-solver@2.0.1
     - name: Run regression test
-      run: yarn test-satchecker
+      run: npm run test-satchecker

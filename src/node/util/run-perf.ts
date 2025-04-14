@@ -1,7 +1,7 @@
-import * as child_process from "child_process";
-import * as os from "os";
-import * as fs from "fs";
-import * as path from "path";
+import * as child_process from "node:child_process";
+import * as os from "node:os";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const TMP = os.tmpdir();
 
@@ -41,10 +41,10 @@ try {
 		child_process.execSync("git checkout " + sha, {
 			cwd: wd,
 		});
-		child_process.execSync("yarn build", {
+		child_process.execSync("npm run build", {
 			cwd: wd,
 		});
-		child_process.execSync("yarn test", {
+		child_process.execSync("npm run test", {
 			cwd: wd,
 		});
 		const epochTimeString = child_process.execSync("git show -s --format=%ct", {
@@ -66,7 +66,7 @@ try {
 		for (const { wd, sha } of workingDirectories) {
 			for (let j = 0; j < STRIPE_RUNS; j++) {
 				const perfFile = "perf-" + i + "-" + j + ".json";
-				child_process.execSync("yarn test perf=" + perfFile, {
+				child_process.execSync("npm run test perf=" + perfFile, {
 					cwd: wd,
 				});
 				const content = fs.readFileSync(path.join(wd, perfFile), { encoding: "utf-8" });

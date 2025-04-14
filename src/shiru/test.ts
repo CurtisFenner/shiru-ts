@@ -1,19 +1,5 @@
-import * as components_tests from "./components_tests.js";
-import * as data_tests from "./data_tests.js";
-import * as egraph_tests from "./egraph_tests.js";
-import * as grammar_tests from "./grammar_tests.js";
-import * as interpreter_tests from "./interpreter_tests.js";
-import * as lexer_tests from "./lexer_tests.js";
-import * as parser_tests from "./parser_tests.js";
-import * as sat_tests from "./sat_tests.js";
-import * as semantics_tests from "./semantics_tests.js";
-import * as smt_tests from "./smt_tests.js";
-import * as uf_tests from "./uf_tests.js";
-import * as verify_tests from "./verify_tests.js";
-import * as ir_tests from "./ir_tests.js";
+import * as util from "node:util";
 
-import * as util from "util";
-import * as fs from "fs";
 import * as trace from "./trace.js";
 
 export type Run = PassRun | FailRun;
@@ -32,8 +18,8 @@ export interface FailRun {
 }
 
 export class TestRunner {
-	runs: Run[] = [];
-	traces: trace.TraceBranch[] = [];
+	public readonly runs: Run[] = [];
+	public readonly traces: trace.TraceBranch[] = [];
 
 	constructor(private testNameFilters: string[]) { }
 
@@ -68,51 +54,6 @@ export class TestRunner {
 		for (let k in obj) {
 			this.runTest(title + "." + k, obj[k]);
 		}
-	}
-
-	printReport() {
-		const passed = this.runs.filter(x => x.type == "pass");
-		const failed: FailRun[] = this.runs.filter(x => x.type == "fail") as FailRun[];
-
-		for (let pass of passed) {
-			console.log("  pass  " + pass.name);
-		}
-
-		for (let failure of failed) {
-			console.log("\u{25be}".repeat(80));
-			console.log("  FAIL! " + failure.name);
-			const indent = "      ";
-			let exception: string;
-			if (failure.exception instanceof Error) {
-				exception = failure.exception.stack + "";
-			} else {
-				exception = failure.exception + "";
-			}
-			if (failure.exception.constructor && failure.exception.constructor.name) {
-				exception = `(${failure.exception.constructor.name}) ${exception}`;
-			}
-			console.log(indent + exception.replace(/\t/g, "    ").replace(/\n/g, "\n" + indent));
-			console.log("\u{25b4}".repeat(80));
-		}
-
-		console.log("");
-		console.log("Passed: " + passed.length + ".");
-		console.log("Failed: " + failed.length + (failed.length == 0 ? "." : "!"));
-
-		if (this.runs.length !== 0) {
-			let slowest = this.runs[0];
-			for (let i = 1; i < this.runs.length; i++) {
-				if (this.runs[i].elapsedMillis > slowest.elapsedMillis) {
-					slowest = this.runs[i];
-				}
-			}
-			console.log("Slowest: " + slowest.name + " took " + slowest.elapsedMillis.toFixed(0) + " ms");
-		}
-
-		if (passed.length === 0 || failed.length !== 0) {
-			return 1;
-		}
-		return 0;
 	}
 }
 
@@ -341,60 +282,4 @@ export function assert<A, B extends A>(...args: [A, "is equal to", B] | [any, "i
 		const _: never = args;
 		throw new Error("unhandled assertion type `" + JSON.stringify(args[1]) + "`");
 	}
-}
-
-const commandArguments: Record<string, string[]> = {};
-const bare = "filter";
-for (let i = 2; i < process.argv.length; i++) {
-	const argument = process.argv[i];
-	const m = argument.match(/^([a-z0-9-]+)=(.*)/);
-	let key: string;
-	let value: string;
-	if (m !== null) {
-		key = m[1];
-		value = m[2];
-	} else {
-		key = bare;
-		value = argument;
-	}
-
-	if (!(key in commandArguments)) {
-		commandArguments[key] = [];
-	}
-	commandArguments[key].push(value);
-}
-
-if ("trace" in commandArguments) {
-	trace.setSlow(true);
-}
-
-const testRunner = new TestRunner(commandArguments.filter || []);
-
-testRunner.runTests("components_tests", components_tests.tests);
-testRunner.runTests("data_tests", data_tests.tests);
-testRunner.runTests("ir_tests", ir_tests.tests);
-testRunner.runTests("egraph_tests", egraph_tests.tests);
-testRunner.runTests("grammar_tests", grammar_tests.tests);
-testRunner.runTests("interpreter_tests", interpreter_tests.tests);
-testRunner.runTests("lexer_tests", lexer_tests.tests);
-testRunner.runTests("parser_tests", parser_tests.tests);
-testRunner.runTests("sat_tests", sat_tests.tests);
-testRunner.runTests("semantics_tests", semantics_tests.tests);
-testRunner.runTests("smt_tests", smt_tests.tests);
-testRunner.runTests("uf_tests", uf_tests.tests);
-testRunner.runTests("verify_tests", verify_tests.tests);
-testRunner.printReport();
-
-
-if ("trace" in commandArguments) {
-	fs.writeFileSync(commandArguments.trace.at(-1)!, await trace.render(testRunner.traces));
-}
-
-if ("perf" in commandArguments) {
-	const dictionary: any = {};
-	for (const run of testRunner.runs) {
-		dictionary[run.name] = { elapsedMillis: run.elapsedMillis };
-	}
-	const body = JSON.stringify({ version: "0.1", tests: dictionary }, null, "    ");
-	fs.writeFileSync(commandArguments.perf.at(-1)!, body);
 }

@@ -9,7 +9,7 @@ import * as trace from "./trace.js";
  * refutations definitely refute the instance in the given theory.
  */
 export abstract class SMTSolver<E, Model> {
-	protected clauses: sat.Literal[][] = [];
+	private clauses: sat.Literal[][] = [];
 	private scopes: { clauseCount: number }[] = [];
 
 	/**
@@ -22,17 +22,17 @@ export abstract class SMTSolver<E, Model> {
 	 */
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
-			this.addClausified(clause, this.clauses);
+			this.addClausified(clause);
 		}
 	}
 
-	protected addClausified(clause: sat.Literal[], target: sat.Literal[][]) {
+	protected addClausified(clause: sat.Literal[]) {
 		let maxTerm = 0;
 		for (let literal of clause) {
 			const term = literal > 0 ? literal : -literal;
 			maxTerm = Math.max(maxTerm, term);
 		}
-		target.push(clause);
+		this.clauses.push(clause);
 	}
 
 	pushScope() {

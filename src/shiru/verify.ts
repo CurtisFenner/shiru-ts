@@ -897,8 +897,8 @@ class VerificationState {
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
-	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
-	branchF = this.smt.createFunction(ir.T_ANY, {}, "ifthenelse");
+	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "boundedBy");
+	branchF = this.smt.createFunction(ir.T_ANY, {}, "if_then_else");
 
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
 		const signature = this.context.program.foreign[op];
@@ -914,7 +914,7 @@ class VerificationState {
 				eq: signature.semantics?.eq,
 				interpreter: interpreters?.interpreter,
 				transitive: signature.semantics?.transitive,
-				transitiveAcyclic: signature.semantics?.transitiveAcyclic,
+				irreflexive: signature.semantics?.irreflexive,
 				not: signature.semantics?.not,
 			}, op));
 		}

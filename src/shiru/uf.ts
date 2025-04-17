@@ -26,11 +26,12 @@ export interface Semantics {
 	 */
 	transitive?: true,
 
-	/** A `transitiveAcyclic` function is a `transitive` function which does not
-	 * admit cycles (a < b < c < d < ... < a). This implies that the relation
-	 * is anti-reflexive.
+	/** An `irreflexive` function is one which `f(a, a)` is always false.
+	 *
+	 * For a `transitive` function `≺`, this means there are no "cycles":
+	 * `a ≺ b ≺ c ≺ d ≺ ... ⊀ a`.
 	 */
-	transitiveAcyclic?: true,
+	irreflexive?: true,
 
 	interpreter?: (...args: (unknown | null)[]) => unknown | null,
 }
@@ -346,16 +347,19 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		}
 
 		const state = new TheoryState(this);
-		for (let i = 0; i < truths.length; i++) {
-			const result = state.assumeValue(truths[i].value, truths[i].truthAssignment, truths[i].reason);
-			if (result !== null) {
-				const resultSet = new Set(bitsetToIndexes(result));
-				const contradictoryAssignment = partialAssignment.filter((_, index) => resultSet.has(index));
-				const conflictClause = contradictoryAssignment.map(x => -x);
-				return {
-					tag: "unsatisfiable",
-					conflictClauses: [conflictClause],
-				};
+		for (let pass = 0; pass < 2; pass++) {
+			for (let i = 0; i < truths.length; i++) {
+				const result = state.assumeValue(truths[i].value, truths[i].truthAssignment, truths[i].reason);
+				if (result !== null) {
+					const resultSet = new Set(bitsetToIndexes(result));
+					const contradictoryAssignment = partialAssignment.filter((_, index) => resultSet.has(index));
+					const conflictClause = contradictoryAssignment.map(x => -x);
+
+					return {
+						tag: "unsatisfiable",
+						conflictClauses: [conflictClause],
+					};
+				}
 			}
 		}
 

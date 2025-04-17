@@ -342,7 +342,7 @@ export const tests = {
 		const smt = new uf.UFTheory();
 
 		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
-		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "f");
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "f");
 
 		const a = smt.createVariable(ir.T_INT, "a");
 		const b = smt.createVariable(ir.T_INT, "b");
@@ -362,7 +362,7 @@ export const tests = {
 
 		assert(smt.attemptRefutation(), "is equal to", "refuted");
 	},
-	"UFTheory-antireflexive-interpreter"() {
+	"UFTheory-irreflexive-interpreter"() {
 		const smt = new uf.UFTheory();
 		smt.addConstraint([
 			smt.createConstant(ir.T_BOOLEAN, true),

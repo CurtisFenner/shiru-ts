@@ -236,7 +236,7 @@ export const foreignOperations: Record<string, {
 			],
 			semantics: {
 				transitive: true,
-				transitiveAcyclic: true,
+				irreflexive: true,
 			},
 		},
 		getInterpreter(foreignFns) {

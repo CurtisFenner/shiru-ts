@@ -417,7 +417,7 @@ export const tests = {
 		interface I[#T] { }
 
 		record A {}
-		
+
 		impl A is I {}
 		`;
 		const ast = grammar.parseSource(source, "test-file");
@@ -426,7 +426,7 @@ export const tests = {
 				"The interface `example.I` was given ",
 				"0 ",
 				"type parameters at",
-				{ fileID: "test-file", offset: 73, length: 1 },
+				{ fileID: "test-file", offset: 71, length: 1 },
 				"but 1 ",
 				"type parameter was ",
 				"expected at",
@@ -837,7 +837,7 @@ export const tests = {
 		record R {
 			var f: Int;
 		}
-		
+
 		record Main {
 			fn main(): R {
 				return R{
@@ -852,9 +852,9 @@ export const tests = {
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"The field `f` was initialized a second time at",
-				{ fileID: "test-file", offset: 121, length: 1 },
+				{ fileID: "test-file", offset: 119, length: 1 },
 				"The first initialization was at",
-				{ fileID: "test-file", offset: 109, length: 1 },
+				{ fileID: "test-file", offset: 107, length: 1 },
 			],
 		});
 	},
@@ -865,7 +865,7 @@ export const tests = {
 		enum E {
 			var f: Int;
 		}
-		
+
 		record Main {
 			fn main(): E {
 				return E{
@@ -880,9 +880,9 @@ export const tests = {
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"The variant `f` was initialized a second time at",
-				{ fileID: "test-file", offset: 119, length: 1 },
+				{ fileID: "test-file", offset: 117, length: 1 },
 				"The first initialization was at",
-				{ fileID: "test-file", offset: 107, length: 1 },
+				{ fileID: "test-file", offset: 105, length: 1 },
 			],
 		});
 	},
@@ -894,7 +894,7 @@ export const tests = {
 			var a: Int;
 			var b: Int;
 		}
-		
+
 		record Main {
 			fn main(): E {
 				return E{
@@ -910,9 +910,9 @@ export const tests = {
 			message: [
 				"The initialization of enum type `example.E` ",
 				"includes a second variant `b` at",
-				{ fileID: "test-file", offset: 134, length: 1 },
+				{ fileID: "test-file", offset: 132, length: 1 },
 				"The first variant `a` is included at",
-				{ fileID: "test-file", offset: 122, length: 1 },
+				{ fileID: "test-file", offset: 120, length: 1 },
 			],
 		});
 	},
@@ -924,7 +924,7 @@ export const tests = {
 			var a: Int;
 			var b: Int;
 		}
-		
+
 		record Main {
 			fn main(): E {
 				return E{
@@ -940,7 +940,7 @@ export const tests = {
 				"The enum type `example.E` ",
 				"does not have a variant called `c`, ",
 				"so the initialization is illegal at",
-				{ fileID: "test-file", offset: 122, length: 1 },
+				{ fileID: "test-file", offset: 120, length: 1 },
 			],
 		});
 	},
@@ -951,7 +951,7 @@ export const tests = {
 		record R {
 			var f: Int;
 		}
-		
+
 		record Main {
 			fn main(): Boolean {
 				return R{f = 1} is f;
@@ -964,7 +964,7 @@ export const tests = {
 			message: [
 				"The type `example.R` is not an enum type, ",
 				"so the `is` test is illegal at",
-				{ fileID: "test-file", offset: 116, length: 4 },
+				{ fileID: "test-file", offset: 114, length: 4 },
 			],
 		});
 	},
@@ -975,7 +975,7 @@ export const tests = {
 		enum E {
 			var f: Int;
 		}
-		
+
 		record Main {
 			fn two(): E, E {
 				return E{f = 1}, E{f = 1};
@@ -992,14 +992,14 @@ export const tests = {
 			message: [
 				"An expression has 2 values and so cannot be grouped ",
 				"by an `is` test at",
-				{ fileID: "test-file", offset: 162, length: 10 },
+				{ fileID: "test-file", offset: 160, length: 10 },
 			],
 		});
 	},
 	"attempt-assert-non-integer"() {
 		const source = `
 		package example;
-		
+
 		record Main {
 			fn main(): Boolean {
 				assert 10;
@@ -1012,7 +1012,7 @@ export const tests = {
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A contract expression with type `Int` at",
-				{ fileID: "test-file", offset: 74, length: 2 },
+				{ fileID: "test-file", offset: 72, length: 2 },
 				"cannot be converted to the type `Boolean` as required of ",
 				"`assert` conditions.",
 			],
@@ -1021,7 +1021,7 @@ export const tests = {
 	"attempt-assert-tuple"() {
 		const source = `
 		package example;
-		
+
 		record Main {
 			fn twoBooleans(): Boolean, Boolean {
 				return true, true;
@@ -1039,14 +1039,14 @@ export const tests = {
 			message: [
 				"An expression has 2 values and so cannot be grouped ",
 				"by a `assert` operation at",
-				{ fileID: "test-file", offset: 143, length: 18 },
+				{ fileID: "test-file", offset: 141, length: 18 },
 			],
 		});
 	},
 	"attempt-ensure-non-boolean-in-unused-interface"() {
 		const source = `
 		package example;
-		
+
 		interface I {
 			fn f(): Int
 			ensures 5;
@@ -1057,7 +1057,7 @@ export const tests = {
 		assert(() => semantics.compileSources({ ast }), "throws", {
 			message: [
 				"A contract expression with type `Int` at",
-				{ fileID: "test-file", offset: 65, length: 1 },
+				{ fileID: "test-file", offset: 63, length: 1 },
 				"cannot be converted to the type `Boolean` as required of ",
 				"`ensures` conditions.",
 			],
@@ -1321,7 +1321,7 @@ export const tests = {
 	"impl-cannot-refer-to-interface-type-parameter"() {
 		const source = `
 			package example;
-	
+
 			interface Consumer[#X] {
 				fn consume(t: #X): Int;
 			}
@@ -1347,7 +1347,7 @@ export const tests = {
 		}, "throws", {
 			message: [
 				"Type variable `#X` has not been defined, but it was referenced at",
-				{ fileID: "test-file", offset: 266, length: 2 },
+				{ fileID: "test-file", offset: 265, length: 2 },
 			],
 		});
 	},
@@ -1358,20 +1358,20 @@ export const tests = {
 		interface Show {
 			fn show(t: This): String;
 		}
-		
+
 		record Empty {
 		}
-		
+
 		impl Empty is Show {
 			fn show(s: Empty): String {
 				return "Empty{}";
 			}
 		}
-		
+
 		record Box[#T] {
 			var boxed: #T;
 		}
-		
+
 		impl [#T | #T is Show] Box[#T] is Show {
 			fn show(s: Box[#T]): String {
 				return "Box{boxed = " ++ ((#T is Show).show(s.boxed) ++ "}");

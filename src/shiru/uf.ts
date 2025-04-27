@@ -139,7 +139,7 @@ class TheoryState {
 		unsimplifiedValue: ValueID,
 		truth: boolean,
 		reason: Reason,
-	): null | Reason {
+	): null | { conflictReason: Reason } {
 		const boolean = truth
 			? this.theory.trueConstant
 			: this.theory.falseConstant;
@@ -148,7 +148,7 @@ class TheoryState {
 		reason = bitsetUnion(reason, simplification.reason) as Reason;
 		const booleanUnion = this.attemptUnion(simplification.simplified, boolean, reason);
 		if (booleanUnion !== null) {
-			return booleanUnion.conflictReason;
+			return booleanUnion;
 		}
 
 		const definition = this.theory.valueMap.get(simplification.simplified)!;
@@ -158,36 +158,64 @@ class TheoryState {
 			const operands = definition.operands;
 			if (semantics.eq) {
 				if (truth) {
-					const unionResult = this.attemptUnion(operands[0], operands[1], reason);
-					if (unionResult !== null) {
-						return unionResult.conflictReason;
-					}
+					return this.assumeEquality(
+						operands[0],
+						operands[1],
+						bitsetUnion(reason, simplification.reason) as Reason,
+					);
 				} else {
-					const equalReason = this.reasonEqual(operands[0], operands[1]);
-					if (equalReason !== null) {
-						return bitsetUnion(
-							equalReason,
-							reason,
-						) as Reason;
-					} else {
-						const distinctBit = this.nextDistinctBit;
-						this.nextDistinctBit += 1;
-						const distinctSet = bitsetSingleton(distinctBit);
-						this.ds.unionData(operands[0], {
-							value: operands[0],
-							distinct: distinctSet,
-							reason: 0n as Reason,
-						});
-						this.ds.unionData(operands[1], {
-							value: operands[1],
-							distinct: distinctSet,
-							reason: 0n as Reason,
-						});
-					}
+					return this.assumeDisequality(
+						operands[0],
+						operands[1],
+						bitsetUnion(reason, simplification.reason) as Reason,
+					);
 				}
 			}
 		}
 
+		return null;
+	}
+
+	assumeEquality(
+		left: ValueID,
+		right: ValueID,
+		reason: Reason,
+	): null | { conflictReason: Reason } {
+		const unionResult = this.attemptUnion(left, right, reason);
+		if (unionResult !== null) {
+			return unionResult;
+		}
+		return null;
+	}
+
+	assumeDisequality(
+		left: ValueID,
+		right: ValueID,
+		reason: Reason,
+	): null | { conflictReason: Reason } {
+		const equalReason = this.reasonEqual(left, right);
+		if (equalReason !== null) {
+			return {
+				conflictReason: bitsetUnion(
+					equalReason,
+					reason,
+				) as Reason,
+			};
+		}
+
+		const distinctBit = this.nextDistinctBit;
+		this.nextDistinctBit += 1;
+		const distinctSet = bitsetSingleton(distinctBit);
+		this.ds.unionData(left, {
+			value: left,
+			distinct: distinctSet,
+			reason: bitsetEmpty as Reason,
+		});
+		this.ds.unionData(right, {
+			value: right,
+			distinct: distinctSet,
+			reason: bitsetEmpty as Reason,
+		});
 		return null;
 	}
 
@@ -234,10 +262,10 @@ class TheoryState {
 		}
 
 		if (this.ds.hasInitialized(simplified)) {
-			const data = this.ds.getData(simplified);
+			const dataOfSimplified = this.ds.getData(simplified);
 			return {
-				simplified: data.value,
-				reason: bitsetUnion(reason, data.reason) as Reason,
+				simplified: dataOfSimplified.value,
+				reason: bitsetUnion(reason, dataOfSimplified.reason) as Reason,
 			};
 		}
 		return { simplified, reason };
@@ -351,7 +379,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			for (let i = 0; i < truths.length; i++) {
 				const result = state.assumeValue(truths[i].value, truths[i].truthAssignment, truths[i].reason);
 				if (result !== null) {
-					const resultSet = new Set(bitsetToIndexes(result));
+					const resultSet = new Set(bitsetToIndexes(result.conflictReason));
 					const contradictoryAssignment = partialAssignment.filter((_, index) => resultSet.has(index));
 					const conflictClause = contradictoryAssignment.map(x => -x);
 

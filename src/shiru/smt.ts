@@ -17,8 +17,10 @@ export abstract class SMTSolver<E, Model> {
 	 * containing scope must also ensure that `constraint` is satisfied by a
 	 * model.
 	 *
-	 * @see pushScope
-	 * @see popScope
+	 * @param constraint is interpreted as a disjunction ("OR") of booleans;
+	 * at least one of which must be `true` for this formula to be satisfied
+	 * @see {@link pushScope}
+	 * @see {@link popScope}
 	 */
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
@@ -205,54 +207,28 @@ export abstract class SMTSolver<E, Model> {
 		});
 
 		trace.start("solving");
-		let lastUndeterminedBooleanModel: sat.Literal[] = [];
 		while (true) {
-			const booleanModel = solver.solve();
-			if (booleanModel === "unsatisfiable") {
+			const partialBooleanModel = solver.solve();
+			if (partialBooleanModel === "unsatisfiable") {
 				trace.stop("solving");
 				return "refuted";
 			}
 
-			const instantiationBooleanModel = booleanModel.filter(literal => {
-				const term = literal > 0 ? +literal : -literal;
-				return instantiationTerms.has(term);
-			});
-			const undeterminedBooleanModel = booleanModel.filter(literal => {
-				const term = literal > 0 ? +literal : -literal;
-				return termsRequiringAssignment.has(term);
-			});
+			const fullBooleanModel = solver.getAssignmentMapDefaulting(true);
 			trace.start([
-				"booleanModel (not passed to theory) size:",
-				booleanModel.length,
-				"=",
-				instantiationBooleanModel.length,
-				"instantiation",
-				"+",
-				undeterminedBooleanModel.length,
-				"undetermined",
+				"fullBooleanModel size:",
+				fullBooleanModel.size,
 			]);
+			const fullBooleanModelAsLiterals = [...fullBooleanModel]
+				.map(([term, assignment]) => {
+					return assignment ? +term : -term;
+				});
+
 			trace.mark("full booleanModel", () => {
-				return booleanModel.map(x => this.showLiteral(x)).join("\n");
+				return fullBooleanModelAsLiterals.map(x => this.showLiteral(x)).join("\n");
 			});
 
-			const commonWithLast = data.measureCommonPrefix(
-				lastUndeterminedBooleanModel,
-				undeterminedBooleanModel,
-			);
-			lastUndeterminedBooleanModel = undeterminedBooleanModel.slice(0);
-			const notCommon = lastUndeterminedBooleanModel.length - commonWithLast;
-			const partialModelSize = commonWithLast + notCommon / 1.5;
-
-			// Attempt to reject using a smaller boolean model
-			const partialModel = undeterminedBooleanModel.slice(0, partialModelSize);
-			const smallerTheoryClauses = this.learnTheoryClauses(partialModel, []);
-
-			const theoryClauses = smallerTheoryClauses.tag === "unsatisfiable"
-				? smallerTheoryClauses
-				: this.learnTheoryClauses(
-					instantiationBooleanModel.concat(undeterminedBooleanModel),
-					[],
-				);
+			const theoryClauses = this.learnTheoryClauses(fullBooleanModelAsLiterals, []);
 
 			if (theoryClauses.tag === "unsatisfiable") {
 				// Completely undo the assignment.
@@ -299,7 +275,6 @@ export abstract class SMTSolver<E, Model> {
 				trace.stop("solving");
 				return theoryClauses.model;
 			}
-
 		}
 	}
 

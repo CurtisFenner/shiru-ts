@@ -532,4 +532,31 @@ export const tests = {
 		assert(response4, "is equal to", "refuted");
 		smt.popScope();
 	},
+	"UFTheory-boolean-must-be-true-or-false"() {
+		const smt = new uf.UFTheory();
+
+		const cTrue = smt.createConstant(ir.T_BOOLEAN, true);
+		const cFalse = smt.createConstant(ir.T_BOOLEAN, false);
+		const bool = smt.createVariable(ir.T_BOOLEAN, "bool");
+		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
+		const not = smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
+		const f = smt.createFunction(ir.T_INT, {}, "f");
+
+		const fTrue = smt.createApplication(f, [cTrue]);
+		const fFalse = smt.createApplication(f, [cFalse]);
+		const fBool = smt.createApplication(f, [bool]);
+
+		const fsEqForTrue = smt.createApplication(eq, [fBool, fTrue]);
+		const fsEqForFalse = smt.createApplication(eq, [fBool, fFalse]);
+
+		smt.addConstraint([
+			smt.createApplication(not, [fsEqForFalse]),
+		]);
+		smt.addConstraint([
+			smt.createApplication(not, [fsEqForTrue]),
+		]);
+
+		const refutation = smt.attemptRefutation();
+		assert(refutation, "is equal to", "refuted");
+	},
 };

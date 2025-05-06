@@ -77,7 +77,7 @@ class TheoryState {
 			return {
 				constant: parent.constant ?? child.constant,
 				distinct: bitsetUnion(child.distinct, parent.distinct),
-				value: (parent.constant ?? false)
+				value: (parent.constant !== undefined)
 					? parent.value
 					: child.value,
 				reason: bitsetUnion(parent.reason, child.reason) as Reason,
@@ -312,7 +312,12 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		if (literal < 0) {
 			return "NOT " + this.showLiteral(-literal);
 		}
-		throw new Error("Method not implemented.");
+		const term = literal;
+		const valueID = this.termMap.get(term);
+		if (!valueID) {
+			throw new Error("invalid literal");
+		}
+		return valueID.description ?? String(valueID);
 	}
 
 	override learnTheoryClauses(
@@ -490,6 +495,8 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			tag: "variable",
 			t,
 		});
+
+		this.createSATTermForBoolean(value, t);
 		return value;
 	}
 
@@ -499,6 +506,11 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		if (existing) {
 			return existing;
 		}
+		const fnDefinition = this.fnMap.get(fn);
+		if (!fnDefinition) {
+			throw new Error("invalid fn");
+		}
+
 		const description =
 			(fn.description || "?") + "(" + operands.map(x => x.description || "?").join(", ") + ")";
 		const application = Symbol(description) as ValueID;
@@ -508,6 +520,16 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 			fn,
 			operands,
 		});
+
+		this.createSATTermForBoolean(application, fnDefinition.returnType);
 		return application;
+	}
+
+	private createSATTermForBoolean(value: ValueID, t: ir.Type): void {
+		if (ir.equalTypes(ir.T_BOOLEAN, t)) {
+			// Create a term, forcing an assignment to true or false within the
+			// theory solver.
+			this.toSatLiteral(value);
+		}
 	}
 }

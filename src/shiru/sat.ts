@@ -163,7 +163,9 @@ export class SATSolver {
 		}
 	}
 
-	/** @returns the current assignment stack */
+	/**
+	 * @returns the current (partial) assignment stack as an array of `Literal`s
+	 */
 	getAssignment() {
 		return this.assignmentStack.slice(0);
 	}
@@ -177,6 +179,15 @@ export class SATSolver {
 	 */
 	getAssignmentMap(): (-1 | 0 | 1)[] {
 		return this.assignments.slice(0);
+	}
+
+	getAssignmentMapDefaulting(defaultingTo: boolean): Map<Term, boolean> {
+		const out = new Map<Term, boolean>();
+		for (let i = 1; i < this.assignments.length; i++) {
+			const assignment = this.assignments[i];
+			out.set(i, (assignment || defaultingTo) === 1);
+		}
+		return out;
 	}
 
 	/**
@@ -245,9 +256,10 @@ export class SATSolver {
 	 * `solve()` searches for a satisfying assignment (given the current
 	 * partial assignment).
 	 *
-	 * `solve()` returns `"unsatisfiable"` when the solver has proven that this
-	 * instance has no satisfying assignment which contains the partial
-	 * assignment the solver had at the time `solve()` was invoked.
+	 * @returns a satisfying partial assignment (as a set of literals), or
+	 * `"unsatisfiable"` when the solver has proven that this instance has no
+	 * satisfying assignment which contains the partial assignment the solver
+	 * had at the time `solve()` was invoked.
 	 *
 	 * **Requires** that the current decision level is 0.
 	 */

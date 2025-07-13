@@ -1,10 +1,6 @@
 name: Run tests
 
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+on: [push, pull_request]
 
 jobs:
   run-tests:
@@ -12,8 +8,8 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install dependencies
-      run: yarn install --frozen-lockfile
+      run: npm ci
     - name: Build
-      run: yarn build
+      run: npm run build
     - name: Run tests
-      run: yarn test
+      run: npm run test

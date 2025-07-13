@@ -15,18 +15,18 @@ git clone https://github.com/CurtisFenner/shiru-ts.git
 cd shiru-ts
 ```
 
-If you have `yarn` installed, you can use it to run the scripts in
-`package.json`.
+Use `npm` to install dependencies, build the compiler, and run the compiler's tests:
 
 ```bash
-yarn run build # builds the compiler
-yarn run test # tests the newly built compiler
+npm ci
+npm run build # builds the compiler
+npm run test # tests the newly built compiler
 ```
 
-When developing, you can use `yarn build --watch` to automatically recompile
+When developing, you can use `npm run build --watch` to automatically recompile
 files as they are modified.
 
 ## Contributions
 
-The compiler and language is currently unstable and early in developement. I am
+The compiler and language is currently unstable and early in development. I am
 not seeking contributions at this time.

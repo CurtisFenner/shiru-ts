@@ -1,21 +1,22 @@
 {
 	"scripts": {
-		"test": "node --trace-sigint --enable-source-maps built/shiru/test.js",
-		"cmd": "node --enable-source-maps built/shiru/cmd.js",
+		"test": "node --trace-sigint --enable-source-maps built/node/test_run.js",
+		"cmd": "node --enable-source-maps built/node/cmd.js",
+		"prebuild": "node -e \" require('node:fs').rmSync('built/', {recursive: true, force: true}); \"",
 		"build": "tsc",
 		"pack-es6": "tsc --project tsconfig-es6.json",
 		"prepack-es6": "node -e \" require('node:fs').rmSync('dist/shiru-es6', {recursive: true, force: true}); \"",
-		"test-satchecker": "node --enable-source-maps built/shiru/satchecker/checker.js"
+		"test-satchecker": "node --enable-source-maps built/node/satchecker/checker.js"
 	},
 	"dependencies": {
-		"@types/node": "^16.6.0"
+		"@types/node": "^22"
 	},
 	"license": "LGPL-3.0-only",
 	"devDependencies": {
 		"typescript": "^5.0.0"
 	},
 	"engines": {
-		"node": ">=16.6.0"
+		"node": ">=22"
 	},
 	"type": "module"
 }

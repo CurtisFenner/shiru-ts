@@ -12,11 +12,16 @@
     "types": [
       "node"
     ],
-    "rootDir": "src/"
+    "rootDir": "src/",
+    "paths": {
+      "undici-types": [
+        "./node_modules/undici-types/index.d.ts"
+      ]
+    }
   },
   "include": [
     "src/*.d.ts",
     "src/shiru/**/*.ts",
-    "src/util/**/*.ts"
+    "src/node/**/*.ts"
   ]
 }

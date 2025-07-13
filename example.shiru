@@ -1,0 +1,8 @@
+package main;
+
+record Main {
+	// npm run cmd interpret main.Main.main - example.shiru
+	fn main(): Int {
+		return 42;
+	}
+}

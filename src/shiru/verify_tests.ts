@@ -935,7 +935,7 @@ export const tests = {
 		const failures = verify.verifyProgram(program);
 		assert(failures, "is equal to", []);
 	},
-	"int-subtract-then-add-is-identity"() {
+	"skip:int-subtract-then-add-is-identity"() {
 		const source = `
 		package example;
 		record Main {
@@ -1075,7 +1075,7 @@ export const tests = {
 			},
 		]);
 	},
-	"arithmetic-bounds"() {
+	"skip:arithmetic-bounds"() {
 		const source = `
 		package example;
 

@@ -43,10 +43,10 @@ type ValueDefinition = { tag: "application", fn: FnID, operands: ValueID[] }
 type ECData = {
 	constant?: unknown,
 	distinct: BitSet,
-	value: ValueID,
+	selectedValue: ValueID,
 
 	/** A set of reasons which together explain why all elements in this
-	 * equivalence class are equal to each other.
+	 * equivalence class are equal to each other / the `selectedValue`.
 	 */
 	reason: Reason,
 };
@@ -63,13 +63,13 @@ class TheoryState {
 				return {
 					constant: definition.constant,
 					distinct: bitsetSingleton(0),
-					value,
+					selectedValue: value,
 					reason: bitsetEmpty as Reason,
 				};
 			}
 			return {
 				distinct: bitsetEmpty,
-				value,
+				selectedValue: value,
 				reason: bitsetEmpty as Reason,
 			};
 		},
@@ -77,9 +77,9 @@ class TheoryState {
 			return {
 				constant: parent.constant ?? child.constant,
 				distinct: bitsetUnion(child.distinct, parent.distinct),
-				value: (parent.constant !== undefined)
-					? parent.value
-					: child.value,
+				selectedValue: (parent.constant !== undefined)
+					? parent.selectedValue
+					: child.selectedValue,
 				reason: bitsetUnion(parent.reason, child.reason) as Reason,
 			};
 		},
@@ -108,6 +108,11 @@ class TheoryState {
 		}
 
 		this.ds.union(a, b);
+		this.ds.unionData(a, {
+			selectedValue: a,
+			distinct: bitsetEmpty,
+			reason,
+		});
 		return null;
 	}
 
@@ -207,12 +212,12 @@ class TheoryState {
 		this.nextDistinctBit += 1;
 		const distinctSet = bitsetSingleton(distinctBit);
 		this.ds.unionData(left, {
-			value: left,
+			selectedValue: left,
 			distinct: distinctSet,
 			reason: bitsetEmpty as Reason,
 		});
 		this.ds.unionData(right, {
-			value: right,
+			selectedValue: right,
 			distinct: distinctSet,
 			reason: bitsetEmpty as Reason,
 		});
@@ -264,7 +269,7 @@ class TheoryState {
 		if (this.ds.hasInitialized(simplified)) {
 			const dataOfSimplified = this.ds.getData(simplified);
 			return {
-				simplified: dataOfSimplified.value,
+				simplified: dataOfSimplified.selectedValue,
 				reason: bitsetUnion(reason, dataOfSimplified.reason) as Reason,
 			};
 		}

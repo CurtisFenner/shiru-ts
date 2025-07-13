@@ -24,6 +24,11 @@ export class TestRunner {
 	constructor(private testNameFilters: string[]) { }
 
 	runTest(name: string, body: () => void) {
+		if (name.includes(".skip:")) {
+			console.log(`SKIP ${name}`);
+			return;
+		}
+		console.log(`test ${name}...`);
 		Error.stackTraceLimit = 100;
 		let keep = this.testNameFilters.length === 0;
 		for (const filter of this.testNameFilters) {

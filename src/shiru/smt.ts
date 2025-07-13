@@ -1,4 +1,3 @@
-import * as data from "./data.js";
 import * as sat from "./sat.js";
 import * as trace from "./trace.js";
 

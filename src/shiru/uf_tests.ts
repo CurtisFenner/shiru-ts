@@ -452,29 +452,25 @@ export const tests = {
 		const alpha = smt.createVariable(ir.T_BOOLEAN, "alpha");
 		const gamma = smt.createVariable(ir.T_BOOLEAN, "gamma");
 		const p0eq1 = smt.createApplication(eq, [c0, c1]);
-		const gammaIsKindaFalse = smt.createApplication(eq, [gamma, p0eq1]);
-		const gammaIsTrue = smt.createApplication(eq, [gamma, cTrue]);
-		const alphaIsKindaFalse = smt.createApplication(eq, [alpha, p0eq1]);
 
-		// Scoped constraints
 		smt.addConstraint([
 			alpha,
 		]);
 		smt.addConstraint([
-			p0eq1,
-			alpha,
+			p0eq1 /* false: 0 != 1 */,
+			alpha /* true */,
 		]);
 		smt.addConstraint([
-			smt.createApplication(notFn, [p0eq1]),
-			gammaIsKindaFalse,
+			smt.createApplication(notFn, [p0eq1]) /* true: 0 != 1 */,
+			smt.createApplication(eq, [gamma, p0eq1]) /* gamma = false */,
 		]);
 		smt.addConstraint([
-			p0eq1,
-			gammaIsTrue,
+			p0eq1 /* false */,
+			smt.createApplication(eq, [gamma, cTrue]) /* gamma = true */,
 		]);
 		smt.addConstraint([
-			smt.createApplication(notFn, [p0eq1]),
-			alphaIsKindaFalse,
+			smt.createApplication(notFn, [p0eq1]) /* true: 0 != 1 */,
+			smt.createApplication(eq, [alpha, p0eq1]) /* false: alpha != false */,
 		]);
 
 		const response = smt.attemptRefutation();

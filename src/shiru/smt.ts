@@ -1,5 +1,5 @@
-import * as sat from "./sat.js";
-import * as trace from "./trace.js";
+import * as sat from "./sat.ts";
+import * as trace from "./trace.ts";
 
 /**
  * `SMTSolver` represents a "satisfiability modulo theories" instance.

@@ -1,4 +1,4 @@
-import { DefaultMap, DisjointSet } from "./data.js";
+import { DefaultMap, DisjointSet } from "./data.ts";
 
 type Dependency<T> = {
 	left: T,

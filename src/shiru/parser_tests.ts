@@ -1,5 +1,5 @@
-import { assert } from "./test.js";
-import * as parser from "./parser.js";
+import { assert } from "./test.ts";
+import * as parser from "./parser.ts";
 
 interface OpenParen { }
 

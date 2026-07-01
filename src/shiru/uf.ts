@@ -1,6 +1,6 @@
-import { Components } from "./components.js";
+import { Components } from "./components.ts";
 import {
-	BitSet,
+	type BitSet,
 	bitsetEmpty,
 	bitsetIntersect,
 	bitsetLeastSignificantBit,
@@ -13,11 +13,11 @@ import {
 	TreeBag,
 	TrieMap,
 	zipMaps,
-} from "./data.js";
-import * as egraph from "./egraph.js";
-import * as ir from "./ir.js";
-import * as smt from "./smt.js";
-import * as trace from "./trace.js";
+} from "./data.ts";
+import * as egraph from "./egraph.ts";
+import * as ir from "./ir.ts";
+import * as smt from "./smt.ts";
+import * as trace from "./trace.ts";
 
 export interface UFCounterexample { model: {} }
 

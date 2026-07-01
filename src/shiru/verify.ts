@@ -1,10 +1,10 @@
-import * as builtin from "./builtin.js";
-import { DefaultMap, TrieMap } from "./data.js";
-import * as diagnostics from "./diagnostics.js";
-import * as ir from "./ir.js";
-import { displayType } from "./semantics.js";
-import * as trace from "./trace.js";
-import * as uf from "./uf.js";
+import * as builtin from "./builtin.ts";
+import { DefaultMap, TrieMap } from "./data.ts";
+import * as diagnostics from "./diagnostics.ts";
+import * as ir from "./ir.ts";
+import { displayType } from "./semantics.ts";
+import * as trace from "./trace.ts";
+import * as uf from "./uf.ts";
 
 type CallEdge<T> = {
 	from: CallGraphNode;

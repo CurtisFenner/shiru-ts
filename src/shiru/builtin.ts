@@ -1,5 +1,5 @@
-import * as ir from "./ir.js";
-import * as uf from "./uf.js";
+import * as ir from "./ir.ts";
+import * as uf from "./uf.ts";
 
 function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 	return {

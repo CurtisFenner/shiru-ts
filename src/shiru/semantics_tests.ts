@@ -1,7 +1,7 @@
-import { SemanticError } from "./diagnostics.js";
-import * as grammar from "./grammar.js";
-import * as semantics from "./semantics.js";
-import { assert } from "./test.js";
+import { SemanticError } from "./diagnostics.ts";
+import * as grammar from "./grammar.ts";
+import * as semantics from "./semantics.ts";
+import { assert } from "./test.ts";
 
 export const tests = {
 	"redefine-class-same-source"() {

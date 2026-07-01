@@ -1,6 +1,6 @@
 import * as util from "node:util";
 
-import * as trace from "./trace.js";
+import * as trace from "./trace.ts";
 
 export type Run = PassRun | FailRun;
 

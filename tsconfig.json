@@ -1,8 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
-    "outDir": "built",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
     "strict": true,
     "noImplicitOverride": true,
     "allowJs": true,
@@ -14,6 +15,8 @@
     ],
     "rootDir": "src/",
     "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
   },
   "include": [
     "src/*.d.ts",

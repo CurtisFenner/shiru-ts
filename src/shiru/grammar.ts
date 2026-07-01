@@ -1,35 +1,35 @@
-import { SourceLocation } from "./ir.js";
+import type { SourceLocation } from "./ir.ts";
 import {
-	ErrorElement,
-	IdenToken,
-	KeywordToken,
-	NumberLiteralToken,
-	OperatorToken,
+	type ErrorElement,
+	type IdenToken,
+	type KeywordToken,
+	type NumberLiteralToken,
+	type OperatorToken,
 	PUNCTUATION,
-	PunctuationToken,
-	StringLiteralToken,
-	Token,
+	type PunctuationToken,
+	type StringLiteralToken,
+	type Token,
 	tokenize,
-	TypeIdenToken,
-	TypeKeywordToken,
-	TypeVarToken,
-} from "./lexer.js";
+	type TypeIdenToken,
+	type TypeKeywordToken,
+	type TypeVarToken,
+} from "./lexer.ts";
 import {
 	choice,
 	ChoiceParser,
 	ConstParser,
-	DebugContext,
-	FailHandler,
+	type DebugContext,
+	type FailHandler,
 	Parser,
-	ParseResult,
-	ParsersFor,
+	type ParseResult,
+	type ParsersFor,
 	PeekParser,
 	RecordParser,
-	RecordParserDescription,
+	type RecordParserDescription,
 	RepeatParser,
 	TokenParser,
-	TokenSpan,
-} from "./parser.js";
+	type TokenSpan,
+} from "./parser.ts";
 
 function keywordParser<K extends KeywordToken["keyword"]>(keyword: K): Parser<Token, KeywordToken & { keyword: K }> {
 	return new TokenParser((t) => {

@@ -1,19 +1,19 @@
-import * as components_tests from "../shiru/components_tests.js";
-import * as data_tests from "../shiru/data_tests.js";
-import * as egraph_tests from "../shiru/egraph_tests.js";
-import * as grammar_tests from "../shiru/grammar_tests.js";
-import * as interpreter_tests from "../shiru/interpreter_tests.js";
-import * as ir_tests from "../shiru/ir_tests.js";
-import * as lexer_tests from "../shiru/lexer_tests.js";
-import * as parser_tests from "../shiru/parser_tests.js";
-import * as sat_tests from "../shiru/sat_tests.js";
-import * as semantics_tests from "../shiru/semantics_tests.js";
-import * as smt_tests from "../shiru/smt_tests.js";
-import * as uf_tests from "../shiru/uf_tests.js";
-import * as verify_tests from "../shiru/verify_tests.js";
+import * as components_tests from "../shiru/components_tests.ts";
+import * as data_tests from "../shiru/data_tests.ts";
+import * as egraph_tests from "../shiru/egraph_tests.ts";
+import * as grammar_tests from "../shiru/grammar_tests.ts";
+import * as interpreter_tests from "../shiru/interpreter_tests.ts";
+import * as ir_tests from "../shiru/ir_tests.ts";
+import * as lexer_tests from "../shiru/lexer_tests.ts";
+import * as parser_tests from "../shiru/parser_tests.ts";
+import * as sat_tests from "../shiru/sat_tests.ts";
+import * as semantics_tests from "../shiru/semantics_tests.ts";
+import * as smt_tests from "../shiru/smt_tests.ts";
+import * as uf_tests from "../shiru/uf_tests.ts";
+import * as verify_tests from "../shiru/verify_tests.ts";
 
-import * as test from "../shiru/test.js";
-import * as trace from "../shiru/trace.js";
+import * as test from "../shiru/test.ts";
+import * as trace from "../shiru/trace.ts";
 
 import * as fs from "node:fs/promises";
 

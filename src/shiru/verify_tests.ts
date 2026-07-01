@@ -1,11 +1,11 @@
-import * as grammar from "./grammar.js";
-import * as ir from "./ir.js";
-import * as semantics from "./semantics.js";
-import * as uf from "./uf.js";
-import * as verify from "./verify.js";
-import { assert, specDescribe } from "./test.js";
-import { printProgram } from "./interpreter.js";
-import * as trace from "./trace.js";
+import * as grammar from "./grammar.ts";
+import * as ir from "./ir.ts";
+import * as semantics from "./semantics.ts";
+import * as uf from "./uf.ts";
+import * as verify from "./verify.ts";
+import { assert, specDescribe } from "./test.ts";
+import { printProgram } from "./interpreter.ts";
+import * as trace from "./trace.ts";
 
 export const tests = {
 	"empty-verification"() {

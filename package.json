@@ -1,10 +1,9 @@
 {
 	"scripts": {
-		"test": "node --trace-sigint --enable-source-maps built/node/test_run.js",
-		"cmd": "node --enable-source-maps built/node/cmd.js",
-		"prebuild": "node -e \" require('node:fs').rmSync('built/', {recursive: true, force: true}); \"",
+		"test": "node --trace-sigint --enable-source-maps src/node/test_run.ts",
+		"cmd": "node --enable-source-maps src/node/cmd.ts",
 		"build": "tsc",
-		"test-satchecker": "node --enable-source-maps built/node/satchecker/checker.js"
+		"test-satchecker": "node --enable-source-maps src/node/satchecker/checker.ts"
 	},
 	"license": "LGPL-3.0-only",
 	"devDependencies": {

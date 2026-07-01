@@ -2,12 +2,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as process from "node:process";
 
-import { codegenJs } from "../shiru/codegen_js.js";
-import * as diagnostics from "../shiru/diagnostics.js";
-import * as grammar from "../shiru/grammar.js";
-import * as ir from "../shiru/ir.js";
-import * as lexer from "../shiru/lexer.js";
-import * as library from "../shiru/library.js";
+import { codegenJs } from "../shiru/codegen_js.ts";
+import * as diagnostics from "../shiru/diagnostics.ts";
+import * as grammar from "../shiru/grammar.ts";
+import * as ir from "../shiru/ir.ts";
+import * as lexer from "../shiru/lexer.ts";
+import * as library from "../shiru/library.ts";
 
 export function processCommands(args: string[]): number {
 	if (args[0] === "interpret") {

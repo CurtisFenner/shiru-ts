@@ -188,39 +188,40 @@ function encodeBase64(bytes: Uint8Array): string {
 	return Buffer.from(bytes).toString("base64")
 }
 
-declare class CompressionStream {
-	constructor(format: "gzip");
-	readable: any;
-	writable: any;
-}
-
-async function compressAndBase64Encode(bytes: Uint8Array): Promise<string> {
+async function compressAndBase64Encode(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 	const cs = new CompressionStream("gzip");
-	const writer = cs.writable.getWriter();
-	await writer.write(bytes);
-	await writer.close();
 
-	const reader = cs.readable.getReader();
-	const chunks: BlobPart[] = [];
-	while (true) {
-		const { value, done } = await reader.read();
+	const write = async (): Promise<void> => {
+		const writable = cs.writable;
+		const writer = writable.getWriter();
 
-		if (value) {
-			chunks.push(value);
-		}
-		if (done) {
-			break;
+		try {
+			await writer.write(bytes);
+		} finally {
+			await writer.close();
 		}
 	}
 
-	const buffer = await new Blob(chunks).arrayBuffer();
-	return encodeBase64(new Uint8Array(buffer));
+	const read = async (): Promise<ArrayBuffer> => {
+		const readable = cs.readable;
+		const buffer = await new Response(readable).arrayBuffer()
+		return buffer;
+	}
+
+	// Run the read and write flows in parallel to ensure the internal buffer
+	// can be drained.
+	const [readResult, _writeResult] = await Promise.all([read(), write()]);
+	return encodeBase64(new Uint8Array(readResult));
 }
 
+/**
+ * @returns a self-contained HTML document including the trace data inline.
+ */
 export async function render(branches: TraceBranch[]): Promise<string> {
 	const data = JSON.stringify(branches.map(serialize));
+	console.log("data:", data.length);
 	const toEmbed = await compressAndBase64Encode(new TextEncoder().encode(data));
-
+	console.log("toEmbed.length:", toEmbed.length);
 	return `
 <meta charset="utf-8">
 <style>

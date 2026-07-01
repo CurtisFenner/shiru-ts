@@ -423,31 +423,38 @@ export interface FunctionSignature {
 	semantics?: {
 		/**
 		 * Indicates that this is a congruence relation, which is an
-		 * equivalent relatoin that respects extensionality.
+		 * equivalent relation that respects extensionality.
 		 * That is, a == b implies f(a) == f(b).
 		 */
-		eq?: true,
+		eq?: boolean,
 
 		/**
 		 * A `transitive` function respects transitivity:
 		 * f(a, b) and f(b, c) implies f(a, c).
 		 * (This need not be specified for `eq` functions)
 		 */
-		transitive?: true,
+		transitive?: boolean,
 
-		/**
-		 * A `transitiveAcyclic` function is a `transitive` function which does
-		 * not admit cycles (a < b < c < d < ... < a). This implies that the
-		 * relation is anti-reflexive.
+		/** An `irreflexive` function is one which `f(a, a)` is always false.
+		 *
+		 * For a `transitive` function `≺`, this means there are no "cycles":
+		 * `a ≺ b ≺ c ≺ d ≺ ... ⊀ a`.
 		 */
-		transitiveAcyclic?: true,
+		irreflexive?: boolean,
 
 		/**
 		 * Indicates that this has the definition
 		 * f(true) == false
 		 * f(false) == true
 		 */
-		not?: true,
+		not?: boolean,
+
+		/**
+		 * Indicates that this function is associative:
+		 *
+		 * `f(a, f(b, c))` is congruent to `f(f(a, b), c)`.
+		 */
+		associative?: boolean,
 	},
 };
 

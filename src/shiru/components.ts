@@ -15,7 +15,7 @@ type Neighbor<T, R> = {
 
 /**
  * Components is a disjoint-set data-structure augmented with path information.
- * 
+ *
  * These paths can be used to "explain" how two elements came to be in the same
  * equivalence class.
  */

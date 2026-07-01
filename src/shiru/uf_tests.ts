@@ -507,7 +507,7 @@ export const tests = {
 	"UFSolver-transitiveAcyclic-is-anti-reflexive"() {
 		const solver = new uf.UFSolver<number>();
 
-		const f = solver.createFn(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "f");
+		const f = solver.createFn(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "f");
 		const eq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
 
 		const a = solver.createVariable(ir.T_INT, "a");
@@ -551,7 +551,7 @@ export const tests = {
 		const smt = new uf.UFTheory();
 
 		const eq = smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
-		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "f");
+		const f = smt.createFunction(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "f");
 
 		const a = smt.createVariable(ir.T_INT, "a");
 		const b = smt.createVariable(ir.T_INT, "b");
@@ -804,7 +804,7 @@ export const tests = {
 		const zero = solver.createConstant(0n);
 
 		const fEq = solver.createFn(ir.T_BOOLEAN, { eq: true }, "==");
-		const fLt = solver.createFn(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "<");
+		const fLt = solver.createFn(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "<");
 		const fLeq = solver.createFn(ir.T_BOOLEAN, { transitive: true }, "<=");
 		const fPlus = solver.createFn(ir.T_INT, {}, "+");
 		const eq = (a: uf.ValueID, b: uf.ValueID) => solver.createApplication(fEq, [a, b]);

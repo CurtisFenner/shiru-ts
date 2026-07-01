@@ -4,8 +4,6 @@
 		"cmd": "node --enable-source-maps built/node/cmd.js",
 		"prebuild": "node -e \" require('node:fs').rmSync('built/', {recursive: true, force: true}); \"",
 		"build": "tsc",
-		"pack-es6": "tsc --project tsconfig-es6.json",
-		"prepack-es6": "node -e \" require('node:fs').rmSync('dist/shiru-es6', {recursive: true, force: true}); \"",
 		"test-satchecker": "node --enable-source-maps built/node/satchecker/checker.js"
 	},
 	"license": "LGPL-3.0-only",

@@ -1,6 +1,5 @@
-import * as data from "./data.js";
-import * as sat from "./sat.js";
-import * as trace from "./trace.js";
+import * as sat from "./sat.ts";
+import * as trace from "./trace.ts";
 
 /**
  * `SMTSolver` represents a "satisfiability modulo theories" instance.
@@ -9,30 +8,32 @@ import * as trace from "./trace.js";
  * refutations definitely refute the instance in the given theory.
  */
 export abstract class SMTSolver<E, Model> {
-	protected clauses: sat.Literal[][] = [];
+	private clauses: sat.Literal[][] = [];
 	private scopes: { clauseCount: number }[] = [];
 
 	/**
 	 * Update this SMT instance so that all subsequent solves within the
 	 * containing scope must also ensure that `constraint` is satisfied by a
 	 * model.
-	 * 
-	 * @see pushScope
-	 * @see popScope
+	 *
+	 * @param constraint is interpreted as a disjunction ("OR") of booleans;
+	 * at least one of which must be `true` for this formula to be satisfied
+	 * @see {@link pushScope}
+	 * @see {@link popScope}
 	 */
 	addConstraint(constraint: E) {
 		for (let clause of this.clausify(constraint)) {
-			this.addClausified(clause, this.clauses);
+			this.addClausified(clause);
 		}
 	}
 
-	protected addClausified(clause: sat.Literal[], target: sat.Literal[][]) {
+	protected addClausified(clause: sat.Literal[]) {
 		let maxTerm = 0;
 		for (let literal of clause) {
 			const term = literal > 0 ? literal : -literal;
 			maxTerm = Math.max(maxTerm, term);
 		}
-		target.push(clause);
+		this.clauses.push(clause);
 	}
 
 	pushScope() {
@@ -130,37 +131,38 @@ export abstract class SMTSolver<E, Model> {
 			solver.addClause(clause);
 		}
 
-		trace.start("partial-theory-simplification");
-		while (true) {
-			// Before attempting a full CDCL(T) search loop, perform BCP to get a
-			// partial assignment and ask the theory solver if it is satisfiable.
-			const initial = solver.fastPartialSolve();
-			if (initial === "unsatisfiable") {
-				trace.stop("partial-theory-simplification");
-				return "refuted";
-			}
-			const partialAssignment = solver.getAssignment();
-			const unassigned = [];
-			const partialAssignmentMap = solver.getAssignmentMap();
-			for (let term = 1; term < partialAssignmentMap.length; term += 1) {
-				if (partialAssignmentMap[term] === 0) {
-					unassigned.push(term);
+		try {
+			trace.start("partial-theory-simplification");
+			while (true) {
+				// Before attempting a full CDCL(T) search loop, perform BCP to get a
+				// partial assignment and ask the theory solver if it is satisfiable.
+				const initial = solver.fastPartialSolve();
+				if (initial === "unsatisfiable") {
+					return "refuted";
+				}
+				const partialAssignment = solver.getAssignment();
+				const unassigned = [];
+				const partialAssignmentMap = solver.getAssignmentMap();
+				for (let term = 1; term < partialAssignmentMap.length; term += 1) {
+					if (partialAssignmentMap[term] === 0) {
+						unassigned.push(term);
+					}
+				}
+				const additionalClauses = this.learnTheoryClauses(partialAssignment, unassigned);
+				if (additionalClauses.tag === "unsatisfiable") {
+					return "refuted";
+				} else if (additionalClauses.impliedClauses.length === 0) {
+					// No clauses were learned.
+					break;
+				}
+				for (const clause of additionalClauses.impliedClauses) {
+					// Add additional clauses that are implied by the theory.
+					solver.addClause(clause);
 				}
 			}
-			const additionalClauses = this.learnTheoryClauses(partialAssignment, unassigned);
-			if (additionalClauses.tag === "unsatisfiable") {
-				trace.stop("partial-theory-simplification");
-				return "refuted";
-			} else if (additionalClauses.impliedClauses.length === 0) {
-				// No clauses were learned.
-				break;
-			}
-			for (const clause of additionalClauses.impliedClauses) {
-				// Add additional clauses that are implied by the theory.
-				solver.addClause(clause);
-			}
+		} finally {
+			trace.stop("partial-theory-simplification");
 		}
-		trace.stop("partial-theory-simplification");
 
 		trace.mark("Partial solving boolean assignment", () => {
 			const assignment = solver.getAssignment();
@@ -205,54 +207,28 @@ export abstract class SMTSolver<E, Model> {
 		});
 
 		trace.start("solving");
-		let lastUndeterminedBooleanModel: sat.Literal[] = [];
 		while (true) {
-			const booleanModel = solver.solve();
-			if (booleanModel === "unsatisfiable") {
+			const partialBooleanModel = solver.solve();
+			if (partialBooleanModel === "unsatisfiable") {
 				trace.stop("solving");
 				return "refuted";
 			}
 
-			const instantiationBooleanModel = booleanModel.filter(literal => {
-				const term = literal > 0 ? +literal : -literal;
-				return instantiationTerms.has(term);
-			});
-			const undeterminedBooleanModel = booleanModel.filter(literal => {
-				const term = literal > 0 ? +literal : -literal;
-				return termsRequiringAssignment.has(term);
-			});
+			const fullBooleanModel = solver.getAssignmentMapDefaulting(true);
 			trace.start([
-				"booleanModel (not passed to theory) size:",
-				booleanModel.length,
-				"=",
-				instantiationBooleanModel.length,
-				"instantiation",
-				"+",
-				undeterminedBooleanModel.length,
-				"undetermined",
+				"fullBooleanModel size:",
+				fullBooleanModel.size,
 			]);
+			const fullBooleanModelAsLiterals = [...fullBooleanModel]
+				.map(([term, assignment]) => {
+					return assignment ? +term : -term;
+				});
+
 			trace.mark("full booleanModel", () => {
-				return booleanModel.map(x => this.showLiteral(x)).join("\n");
+				return fullBooleanModelAsLiterals.map(x => this.showLiteral(x)).join("\n");
 			});
 
-			const commonWithLast = data.measureCommonPrefix(
-				lastUndeterminedBooleanModel,
-				undeterminedBooleanModel,
-			);
-			lastUndeterminedBooleanModel = undeterminedBooleanModel.slice(0);
-			const notCommon = lastUndeterminedBooleanModel.length - commonWithLast;
-			const partialModelSize = commonWithLast + notCommon / 1.5;
-
-			// Attempt to reject using a smaller boolean model
-			const partialModel = undeterminedBooleanModel.slice(0, partialModelSize);
-			const smallerTheoryClauses = this.learnTheoryClauses(partialModel, []);
-
-			const theoryClauses = smallerTheoryClauses.tag === "unsatisfiable"
-				? smallerTheoryClauses
-				: this.learnTheoryClauses(
-					instantiationBooleanModel.concat(undeterminedBooleanModel),
-					[],
-				);
+			const theoryClauses = this.learnTheoryClauses(fullBooleanModelAsLiterals, []);
 
 			if (theoryClauses.tag === "unsatisfiable") {
 				// Completely undo the assignment.
@@ -299,7 +275,6 @@ export abstract class SMTSolver<E, Model> {
 				trace.stop("solving");
 				return theoryClauses.model;
 			}
-
 		}
 	}
 
@@ -314,10 +289,26 @@ export abstract class SMTSolver<E, Model> {
 	): { tag: "implied", impliedClauses: sat.Literal[][], model: Model }
 		| { tag: "unsatisfiable", conflictClauses: sat.Literal[][] };
 
-	/// clausify returns a set of clauses to add to the underlying SAT solver.
-	/// This modifies state, associating literals (and other internal variables)
-	/// with the pieces of this constraint, possibly for instantiation.
+	/**
+	 * `clausify` returns a set of clauses to add to the underlying SAT solver.
+	 * This modifies state, associating literals (and other internal variables)
+	 * with the pieces of this constraint, possibly for insantiation.
+	 * @param constraint is a disjunction of constraints
+	 */
 	protected abstract clausify(constraint: E): sat.Literal[][];
+
+	protected printClause(clause: number[], lines: string[]): void {
+		for (let i = 0; i < clause.length; i++) {
+			lines.push((i === 0 ? "and" : "") + "\tor\t" + this.showLiteral(clause[i]));
+		}
+	}
+
+	printInstance(lines: string[] = []): string[] {
+		for (const clause of this.clauses) {
+			this.printClause(clause, lines);
+		}
+		return lines;
+	}
 
 	/// TODO: Instantiation of quantifiers, which is sometimes done in the place
 	/// of making decisions in the SATSolver.

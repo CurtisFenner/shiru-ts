@@ -1,22 +1,26 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "ES2022",
-    "outDir": "built",
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
     "strict": true,
-    "noImplicitAny": true,
     "noImplicitOverride": true,
     "allowJs": true,
     "sourceMap": true,
     "inlineSources": true,
+    "skipLibCheck": true,
     "types": [
       "node"
     ],
-    "rootDir": "src/"
+    "rootDir": "src/",
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
   },
   "include": [
     "src/*.d.ts",
     "src/shiru/**/*.ts",
-    "src/util/**/*.ts"
+    "src/node/**/*.ts"
   ]
 }

@@ -1,4 +1,4 @@
-type Tail<T extends readonly unknown[]> = T extends [unknown, ... infer Tail]
+type Tail<T extends readonly unknown[]> = T extends [unknown, ...infer Tail]
 	? Tail
 	: never;
 
@@ -30,14 +30,16 @@ export function bitsetLeast16(n: bigint): BitSet16 {
 }
 
 export function bitset16LeastSignificantBit(n: BitSet16): number {
-	if (n & 0b0000_0000_0000_0001n) return 0;
-	if (n & 0b0000_0000_0000_0010n) return 1;
-	if (n & 0b0000_0000_0000_0100n) return 2;
-	if (n & 0b0000_0000_0000_1000n) return 3;
-	if (n & 0b0000_0000_0001_0000n) return 4;
-	if (n & 0b0000_0000_0010_0000n) return 5;
-	if (n & 0b0000_0000_0100_0000n) return 6;
-	if (n & 0b0000_0000_1000_0000n) return 7;
+	if (n & 0b0000_0000_1111_1111n) {
+		if (n & 0b0000_0000_0000_0001n) return 0;
+		if (n & 0b0000_0000_0000_0010n) return 1;
+		if (n & 0b0000_0000_0000_0100n) return 2;
+		if (n & 0b0000_0000_0000_1000n) return 3;
+		if (n & 0b0000_0000_0001_0000n) return 4;
+		if (n & 0b0000_0000_0010_0000n) return 5;
+		if (n & 0b0000_0000_0100_0000n) return 6;
+		return 7;
+	}
 	if (n & 0b0000_0001_0000_0000n) return 8;
 	if (n & 0b0000_0010_0000_0000n) return 9;
 	if (n & 0b0000_0100_0000_0000n) return 10;
@@ -64,6 +66,18 @@ export function bitsetMinus(a: BitSet, b: BitSet): BitSet {
 	return (a & ~b) as BitSet;
 }
 
+export function bitsetPopCount(a: BitSet): number {
+	let count = 0;
+	while (a > 0n) {
+		count += Number((a & 0b0001n) !== 0n);
+		count += Number((a & 0b0010n) !== 0n);
+		count += Number((a & 0b0100n) !== 0n);
+		count += Number((a & 0b1000n) !== 0n);
+		a = a >> 4n as BitSet;
+	}
+	return count;
+}
+
 export const bitsetEmpty = 0n as BitSet;
 
 export function bitsetLeastSignificantBit(n: BitSet): number {
@@ -79,6 +93,19 @@ export function bitsetLeastSignificantBit(n: BitSet): number {
 		}
 		shifting = shifting >> 16n;
 	}
+}
+
+export function bitsetToIndexes(n: BitSet): number[] {
+	const out = [];
+	let index = 0;
+	while (n !== 0n) {
+		if ((n & 1n) !== 0n) {
+			out.push(index);
+		}
+		n = (n >> 1n) as BitSet;
+		index += 1;
+	}
+	return out;
 }
 
 /**
@@ -155,8 +182,11 @@ export class TrieMap<KS extends readonly unknown[], V> {
 }
 
 export class DefaultMap<K, V> {
+	private defaulter: (k: K) => V;
 	private map = new Map<K, V>();
-	constructor(private defaulter: (k: K) => V) { }
+	constructor(defaulter: (k: K) => V) {
+		this.defaulter = defaulter;
+	}
 
 	get(key: K): V {
 		if (this.map.has(key)) {
@@ -183,27 +213,37 @@ export class DefaultMap<K, V> {
  * edges are added.
  */
 export class DisjointSet<E, Data> {
+	private initialDataFor: (e: E) => Data;
+	private mergeDataFor: (childData: Data, parentData: Data) => Data;
+
 	private parents: Map<E, E> = new Map();
 	private ranks: Map<E, number> = new Map();
 	private data: Map<E, Data> = new Map();
 
 	constructor(
-		private initialDataFor: (e: E) => Data,
-		private mergeDataFor: (childData: Data, parentData: Data) => Data,
-	) { }
+		initialDataFor: (e: E) => Data,
+		mergeDataFor: (childData: Data, parentData: Data) => Data,
+	) {
+		this.initialDataFor = initialDataFor;
+		this.mergeDataFor = mergeDataFor;
+	}
 
-	reset() {
+	reset(): void {
 		this.parents.clear();
 		this.ranks.clear();
 		this.data.clear();
 	}
 
-	init(e: E) {
+	init(e: E): void {
 		if (!this.parents.has(e)) {
 			this.parents.set(e, e);
 			this.ranks.set(e, 0);
 			this.data.set(e, this.initialDataFor(e));
 		}
+	}
+
+	hasInitialized(e: E): boolean {
+		return this.parents.has(e);
 	}
 
 	/**
@@ -266,7 +306,7 @@ export class DisjointSet<E, Data> {
 	 * union updates this data-structure to merge the equivalence classes of a
 	 * and b.
 	 *
-	 * returns false when the objects were already members of the same
+	 * returns `false` when the objects were already members of the same
 	 * equivalence class.
 	 */
 	union(a: E, b: E): boolean {
@@ -321,8 +361,14 @@ export class DisjointSet<E, Data> {
 }
 
 export class TreeBag<T> {
+	private list: T[];
+	private children: TreeBag<T>[] | null;
+
 	readonly size: number;
-	private constructor(private list: T[], private children: TreeBag<T>[] | null) {
+	private constructor(list: T[], children: TreeBag<T>[] | null) {
+		this.list = list;
+		this.children = children;
+
 		let childrenSizes = 0;
 		if (children !== null) {
 			for (const child of children) {

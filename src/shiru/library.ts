@@ -1,10 +1,10 @@
-import * as diagnostics from "./diagnostics.js";
-import * as grammar from "./grammar.js";
-import * as interpreter from "./interpreter.js";
-import * as ir from "./ir.js";
-import * as lexer from "./lexer.js";
-import * as semantics from "./semantics.js";
-import * as verify from "./verify.js";
+import * as diagnostics from "./diagnostics.ts";
+import * as grammar from "./grammar.ts";
+import * as interpreter from "./interpreter.ts";
+import * as ir from "./ir.ts";
+import * as lexer from "./lexer.ts";
+import * as semantics from "./semantics.ts";
+import * as verify from "./verify.ts";
 
 export interface SourceFile {
 	path: string,
@@ -143,7 +143,12 @@ export function formatVerificationFailure(
 
 export class TextDocument {
 	public lines: { content: string, offset: number }[] = [];
-	constructor(private path: string, private content: string) {
+	private path: string;
+	private content: string;
+
+	constructor(path: string, content: string) {
+		this.path = path;
+		this.content = content;
 		let offset = 0;
 		for (let line of content.split("\n")) {
 			this.lines.push({

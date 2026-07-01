@@ -2,11 +2,13 @@ const SOLID_BLOCK = "#";
 const EMPTY_BLOCK = "_";
 
 export class Histogram {
+	private bucketSize: number;
 	private buckets: number[] = [];
 	private sum: number = 0;
 	private count: number = 0;
 
-	constructor(private bucketSize: number, bucketCount: number) {
+	constructor(bucketSize: number, bucketCount: number) {
+		this.bucketSize = bucketSize;
 		for (let i = 0; i < bucketCount; i++) {
 			this.buckets.push(0);
 		}

@@ -1,12 +1,12 @@
 import {
-	BitSet,
+	type BitSet,
 	bitsetLeastSignificantBit,
 	bitsetSingleton,
 	bitsetUnion,
 	DisjointSet,
 	TrieMap,
-} from "./data.js";
-import { assert } from "./test.js";
+} from "./data.ts";
+import { assert } from "./test.ts";
 
 export const tests = {
 	"bitsetLeastSignificantBit"() {

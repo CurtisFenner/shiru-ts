@@ -1,9 +1,9 @@
-import { assert } from "./test.js";
-import * as ir from "./ir.js";
-import type { Value } from "./interpreter.js"
-import { interpret } from "./interpreter.js";
-import * as grammar from "./grammar.js";
-import * as semantics from "./semantics.js";
+import { assert } from "./test.ts";
+import * as ir from "./ir.ts";
+import type { Value } from "./interpreter.ts"
+import { interpret } from "./interpreter.ts";
+import * as grammar from "./grammar.ts";
+import * as semantics from "./semantics.ts";
 
 export const UNKNOWN_LOCATION: ir.SourceLocation = { fileID: "unknown", offset: 0, length: 0 };
 

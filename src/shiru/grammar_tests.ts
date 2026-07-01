@@ -1,7 +1,6 @@
-import * as grammar from "./grammar.js";
-import { Token, tokenize } from "./lexer.js";
-import { assert } from "./test.js";
-
+import * as grammar from "./grammar.ts";
+import { type Token, tokenize } from "./lexer.ts";
+import { assert } from "./test.ts";
 
 export const tests = {
 	"lex-error"() {
@@ -170,7 +169,7 @@ export const tests = {
 			fn multiple(): Int, String, Boolean {
 				return 1, "hi", false;
 			}
-				
+
 			fn main(): Int {
 				var a: Int, b: String, c: Boolean = Main.multiple();
 				return 1;
@@ -181,7 +180,7 @@ export const tests = {
 		assert(() => grammar.parseSource(source, "test-file"), "throws", {
 			message: [
 				"Expected another `var` variable declaration at",
-				{ fileID: "test-file", offset: 151, length: 1 },
+				{ fileID: "test-file", offset: source.indexOf("b: String"), length: 1 },
 			],
 		});
 	},

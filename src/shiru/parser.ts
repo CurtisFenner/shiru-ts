@@ -70,8 +70,10 @@ export class EndOfStreamParser<T> extends Parser<T, {}> {
 }
 
 export class ConstParser<T, R> extends Parser<T, R> {
-	constructor(private value: R) {
+	private value: R;
+	constructor(value: R) {
 		super();
+		this.value = value;
 	}
 
 	parse(stream: T[], from: number): { object: R, rest: number } {
@@ -133,11 +135,15 @@ export class RepeatParser<T, R> extends Parser<T, R[]> {
 	}
 };
 
-/// PeekParser applies a subparser to the stream, but does not consume any
-/// tokens.
+/**
+ * `PeekParser` applies a subparser to the stream, but does not consume any
+ * tokens.
+ */
 export class PeekParser<T, R> extends Parser<T, R> {
-	constructor(private subparser: Parser<T, R>) {
+	private subparser: Parser<T, R>;
+	constructor(subparser: Parser<T, R>) {
 		super();
+		this.subparser = subparser;
 	}
 
 	parse(stream: T[], from: number, debugContext: DebugContext<T>): ParseResult<R> {
@@ -226,8 +232,10 @@ export function choice<T, As, K extends keyof As>(grammar: () => ParsersFor<T, A
 export type FailHandler<T, Q> = (stream: T[], from: number, context: DebugContext<T>) => Q;
 
 export class FailParser<T> extends Parser<T, never> {
-	constructor(private f: FailHandler<T, unknown>) {
+	private f: FailHandler<T, unknown>;
+	constructor(f: FailHandler<T, unknown>) {
 		super();
+		this.f = f;
 	}
 
 	parse(stream: T[], from: number, debugContext: Record<string, TokenSpan<T>>): ParseResult<never> {

@@ -1,10 +1,10 @@
-import * as builtin from "./builtin.js";
-import { DefaultMap, TrieMap } from "./data.js";
-import * as diagnostics from "./diagnostics.js";
-import * as ir from "./ir.js";
-import { displayType } from "./semantics.js";
-import * as trace from "./trace.js";
-import * as uf from "./uf.js";
+import * as builtin from "./builtin.ts";
+import { DefaultMap, TrieMap } from "./data.ts";
+import * as diagnostics from "./diagnostics.ts";
+import * as ir from "./ir.ts";
+import { displayType } from "./semantics.ts";
+import * as trace from "./trace.ts";
+import * as uf from "./uf.ts";
 
 type CallEdge<T> = {
 	from: CallGraphNode;
@@ -25,7 +25,7 @@ class CallGraph<T> implements DirectedGraph<CallGraphCall<T>, CallGraphNode> {
 	/**
 	 * `initialize(node)` adds the given node to this graph so that it is
 	 * included in subsequent calls to `this.getVertexes()`.
-	 * 
+	 *
 	 * It also returns the canonical instance of the given `CallGraphNode`,
 	 * enabling comparisons by identity.
 	 */
@@ -123,7 +123,7 @@ class GlobalContext {
 	getForeignInterpreters(
 		operation: string,
 		state: VerificationState,
-	): Pick<uf.Semantics<number>, "interpreter" | "generalInterpreter"> | undefined {
+	): Pick<uf.Semantics, "interpreter"> | undefined {
 		const definition = builtin.foreignOperations[operation];
 		if (definition === undefined) {
 			throw new Error("GlobalContext.getForeignInterpreters: unknown operation `" + operation + "`");
@@ -596,7 +596,7 @@ interface VerificationContext {
 	/**
 	 * `nonDecreasingCallSource` indicates the function to attribute
 	 * non-decreasing calls to.
-	 * 
+	 *
 	 * It is `null` when non-decreasingness ned not be checked (for example,
 	 * when traversing a recursive contract, or when checking the body of a
 	 * "partial" function).
@@ -661,6 +661,9 @@ interface VerificationScope {
 }
 
 class DynamicFunctionMap {
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
 	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, uf.FnID[]>>(
 		i => new DefaultMap(s => {
 			const interfaceIR = this.program.interfaces[i];
@@ -681,10 +684,13 @@ class DynamicFunctionMap {
 			return fnIDs;
 		}));
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	/**
-	 * Retreives the UF-theory representation of the given call of an interface
+	 * Retrieves the UF-theory representation of the given call of an interface
 	 * function.
 	 */
 	call(
@@ -722,7 +728,13 @@ class StaticFunctionMap {
 		return out;
 	});
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	call(
 		fn: ir.FunctionID,
@@ -767,7 +779,13 @@ class RecordMap {
 		};
 	});
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	construct(recordID: ir.RecordID, initialization: Record<string, uf.ValueID>): uf.ValueID {
 		const info = this.map.get(recordID);
@@ -839,10 +857,13 @@ class EnumMap {
 		};
 	});
 
-	constructor(
-		private program: ir.Program,
-		private smt: uf.UFTheory,
-	) { }
+
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	hasTag(
 		enumID: ir.EnumID,
@@ -897,8 +918,8 @@ class VerificationState {
 	smt: uf.UFTheory = new uf.UFTheory();
 	notF = this.smt.createFunction(ir.T_BOOLEAN, { not: true }, "not");
 	eqF = this.smt.createFunction(ir.T_BOOLEAN, { eq: true }, "==");
-	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, transitiveAcyclic: true }, "boundedBy");
-	branchF = this.smt.createFunction(ir.T_ANY, {}, "ifthenelse");
+	boundedByF = this.smt.createFunction(ir.T_BOOLEAN, { transitive: true, irreflexive: true }, "boundedBy");
+	branchF = this.smt.createFunction(ir.T_ANY, {}, "if_then_else");
 
 	foreign = new DefaultMap<string, uf.FnID[]>(op => {
 		const signature = this.context.program.foreign[op];
@@ -913,9 +934,9 @@ class VerificationState {
 			out.push(this.smt.createFunction(r, {
 				eq: signature.semantics?.eq,
 				interpreter: interpreters?.interpreter,
-				generalInterpreter: interpreters?.generalInterpreter,
 				transitive: signature.semantics?.transitive,
-				transitiveAcyclic: signature.semantics?.transitiveAcyclic,
+				irreflexive: signature.semantics?.irreflexive,
+				associative: signature.semantics?.associative,
 				not: signature.semantics?.not,
 			}, op));
 		}
@@ -1164,7 +1185,7 @@ class VerificationState {
 		for (const pathConstraint of this.pathConstraints) {
 			this.smt.addConstraint([pathConstraint]);
 		}
-		trace.mark([reason]);
+		trace.mark([reason.tag]);
 		const model = this.smt.attemptRefutation();
 		this.smt.popScope();
 		trace.stop("checkReachable");
@@ -1872,7 +1893,7 @@ interface DirectedGraph<E, V> {
 	/**
 	 * `getOutgoing(from)` returns the set of edges originating at vertex
 	 * `from`.
-	 * 
+	 *
 	 * Each `to` is guaranteed to have the same identity when representing the
 	 * same vertex.
 	 */

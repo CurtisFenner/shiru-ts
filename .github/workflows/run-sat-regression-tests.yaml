@@ -1,21 +1,18 @@
 name: Run SAT regression tests
 
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+on: [push, pull_request]
 
 jobs:
   run-sat-regression-tests:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v6
+    - uses: pnpm/action-setup@v6
     - name: Install dependencies
-      run: yarn install --frozen-lockfile
+      run: pnpm install --frozen-lockfile
     - name: Build
-      run: yarn build
+      run: pnpm run build
     - name: Install reference SAT solver (logic-solver@2.0.1)
-      run: yarn add logic-solver@2.0.1
+      run: pnpm install logic-solver@2.0.1
     - name: Run regression test
-      run: yarn test-satchecker
+      run: pnpm run test-satchecker

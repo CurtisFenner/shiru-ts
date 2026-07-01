@@ -1,5 +1,5 @@
-import { Histogram } from "./histogram.js";
-import * as sat from "../sat.js";
+import { Histogram } from "./histogram.ts";
+import * as sat from "../../shiru/sat.ts";
 
 // @ts-expect-error
 import { default as logic } from "logic-solver";

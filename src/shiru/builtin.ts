@@ -1,5 +1,5 @@
-import * as ir from "./ir.js";
-import * as uf from "./uf.js";
+import * as ir from "./ir.ts";
+import * as uf from "./uf.ts";
 
 function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 	return {
@@ -12,12 +12,7 @@ function varDef(name: string, t: ir.Type): ir.VariableDefinition {
 export const foreignOperations: Record<string, {
 	signature: ir.FunctionSignature,
 	getInterpreter?(foreignFns: (name: string) => uf.FnID[]): {
-		interpreter?: (...args: (unknown | null)[]) => unknown | null,
-		generalInterpreter?: (
-			matcher: uf.UFSolver<number>,
-			id: uf.ValueID,
-			operands: uf.ValueID[],
-		) => "change" | "no-change",
+		interpreter?: (...args: (unknown | null)[]) => NonNullable<unknown> | null,
 	},
 }> = {
 	// Integer equality function.
@@ -241,12 +236,12 @@ export const foreignOperations: Record<string, {
 			],
 			semantics: {
 				transitive: true,
-				transitiveAcyclic: true,
+				irreflexive: true,
 			},
 		},
 		getInterpreter(foreignFns) {
 			return {
-				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				interpreter(a: unknown | null, b: unknown | null): NonNullable<unknown> | null {
 					if (a === null || b === null) {
 						return null;
 					} else if (typeof a !== "bigint") {
@@ -255,54 +250,6 @@ export const foreignOperations: Record<string, {
 						return null;
 					}
 					return (a as bigint) < (b as bigint);
-				},
-
-				generalInterpreter(
-					matcher: uf.UFSolver<number>,
-					id: uf.ValueID,
-					operands: uf.ValueID[],
-				): "change" | "no-change" {
-					const sum = foreignFns("Int+")[0];
-					const lt = foreignFns("Int<")[0];
-					const left = operands[0];
-					const right = operands[1];
-
-					const leftSums = matcher.matchAsApplication(left, sum);
-					const rightSums = matcher.matchAsApplication(right, sum);
-
-					// TODO: Improve performance by indexing sums by their terms
-					// instead of doing a quadratic scan when many are equal.
-					// Search for the pattern 
-					// a + k1 < b + k2 where k1 = k2.
-					let change: "change" | "no-change" = "no-change";
-					for (const leftSum of leftSums) {
-						for (const rightSum of rightSums) {
-							const leftK = leftSum.operands[1];
-							const rightK = rightSum.operands[1];
-							if (matcher.areCongruent(leftK, rightK)) {
-								// Equate this with `a < b`, using the reason
-								// which is why
-								// left == (a+k1) and right == (b+k2)
-								// and k1 == k2.
-								const newLt = matcher.hasApplication(lt, [
-									leftSum.operands[0],
-									rightSum.operands[0],
-								]);
-								if (newLt === null) {
-									continue;
-								}
-
-								const leftOperands = [left, right, leftK];
-								const rightOperands = [leftSum.id, rightSum.id, rightK];
-								const fresh = matcher.mergeBecauseCongruent(id, newLt, leftOperands, rightOperands);
-								if (fresh) {
-									change = "change";
-								}
-							}
-						}
-					}
-
-					return change;
 				},
 			};
 		},
@@ -376,7 +323,7 @@ export const foreignOperations: Record<string, {
 		},
 		getInterpreter(foreignFns) {
 			return {
-				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				interpreter(a: unknown | null, b: unknown | null): NonNullable<unknown> | null {
 					if (a === null || b === null) {
 						return null;
 					} else if (typeof a !== "bigint") {
@@ -396,6 +343,9 @@ export const foreignOperations: Record<string, {
 				varDef("left", ir.T_INT),
 				varDef("right", ir.T_INT),
 			],
+			semantics: {
+				associative: true,
+			},
 			return_types: [ir.T_INT],
 			type_parameters: [],
 			constraint_parameters: [],
@@ -553,7 +503,7 @@ export const foreignOperations: Record<string, {
 		},
 		getInterpreter(foreignFns) {
 			return {
-				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				interpreter(a: unknown | null, b: unknown | null): NonNullable<unknown> | null {
 					if (a === null || b === null) {
 						return null;
 					} else if (typeof a !== "bigint") {
@@ -564,51 +514,6 @@ export const foreignOperations: Record<string, {
 
 					return (a as bigint) + (b as bigint);
 				},
-
-				generalInterpreter(
-					matcher: uf.UFSolver<number>,
-					id: uf.ValueID,
-					operands: uf.ValueID[],
-				): "change" | "no-change" {
-					const sum = foreignFns("Int+")[0];
-					const left = operands[0];
-					const right = operands[1];
-
-					let change: "change" | "no-change" = "no-change";
-
-					// Resolve commutativity by swapping all sums.
-					const swapped = matcher.hasApplication(sum, [right, left]);
-					if (swapped !== null) {
-						let freshCommutative = matcher.mergeBecauseCongruent(id, swapped, [], []);
-						if (freshCommutative) {
-							change = "change";
-						}
-					}
-
-					// Resolve associativity by canonicalizing all left sums to
-					// be left-leaning.
-					const rightSums = matcher.matchAsApplication(right, sum);
-					for (const rightSum of rightSums) {
-						const a = rightSum.operands[0];
-						const b = rightSum.operands[1];
-
-						const leftASum = matcher.hasApplication(sum, [left, a]);
-						if (leftASum !== null) {
-							const leftLeaning = matcher.hasApplication(sum, [
-								leftASum, b,
-							]);
-
-							if (leftLeaning !== null) {
-								const freshAssociative = matcher.mergeBecauseCongruent(id, leftLeaning, [right], [rightSum.id]);
-								if (freshAssociative) {
-									change = "change";
-								}
-							}
-						}
-					}
-
-					return change;
-				}
 			};
 		},
 	},
@@ -659,7 +564,7 @@ export const foreignOperations: Record<string, {
 		},
 		getInterpreter(foreignFns) {
 			return {
-				interpreter(a: unknown | null, b: unknown | null): unknown | null {
+				interpreter(a: unknown | null, b: unknown | null): NonNullable<unknown> | null {
 					if (a === null || b === null) {
 						return null;
 					} else if (typeof a !== "bigint") {
@@ -719,7 +624,7 @@ export const foreignOperations: Record<string, {
 		},
 		getInterpreter(foreignFns) {
 			return {
-				interpreter(a: unknown): unknown | null {
+				interpreter(a: unknown): NonNullable<unknown> | null {
 					if (a === null) {
 						return null;
 					} else if (typeof a !== "bigint") {
@@ -742,10 +647,13 @@ export const foreignOperations: Record<string, {
 			constraint_parameters: [],
 			postconditions: [],
 			preconditions: [],
+			semantics: {
+				associative: true,
+			},
 		},
 		getInterpreter() {
 			return {
-				interpreter(a: unknown, b: unknown): unknown | null {
+				interpreter(a: unknown, b: unknown): NonNullable<unknown> | null {
 					if (typeof a === "string" && typeof b === "string") {
 						return a + b;
 					}

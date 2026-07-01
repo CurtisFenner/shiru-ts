@@ -1,5 +1,5 @@
-import * as ir from "./ir.js";
-import { ErrorElement } from "./lexer.js";
+import * as ir from "./ir.ts";
+import type { ErrorElement } from "./lexer.ts";
 
 export type Value = RecordValue | EnumValue | BooleanValue | BytesValue | IntValue;
 
@@ -513,7 +513,11 @@ function* interpretOp(
 }
 
 export class RuntimeErr {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 }
 
 function showType(t: ir.Type): string {

@@ -1,4 +1,4 @@
-import { DefaultMap, DisjointSet } from "./data.js";
+import { DefaultMap, DisjointSet } from "./data.ts";
 
 type Dependency<T> = {
 	left: T,
@@ -15,7 +15,7 @@ type Neighbor<T, R> = {
 
 /**
  * Components is a disjoint-set data-structure augmented with path information.
- * 
+ *
  * These paths can be used to "explain" how two elements came to be in the same
  * equivalence class.
  */

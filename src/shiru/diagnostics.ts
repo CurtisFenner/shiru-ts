@@ -1,5 +1,5 @@
-import { SourceLocation } from "./ir.js";
-import { ErrorElement } from "./lexer.js";
+import type { SourceLocation } from "./ir.ts";
+import type { ErrorElement } from "./lexer.ts";
 
 function pluralize(n: number, singular: string, plural = singular + "s"): string {
 	if (n === 1) {
@@ -26,7 +26,11 @@ function nth(n: number): string {
 }
 
 export class SemanticError {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 
 	toString() {
 		return JSON.stringify(this.message);

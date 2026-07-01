@@ -1,6 +1,6 @@
-import { Components } from "./components.js";
+import { Components } from "./components.ts";
 import {
-	BitSet,
+	type BitSet,
 	bitsetEmpty,
 	bitsetIntersect,
 	bitsetLeastSignificantBit,
@@ -13,11 +13,11 @@ import {
 	TreeBag,
 	TrieMap,
 	zipMaps,
-} from "./data.js";
-import * as egraph from "./egraph.js";
-import * as ir from "./ir.js";
-import * as smt from "./smt.js";
-import * as trace from "./trace.js";
+} from "./data.ts";
+import * as egraph from "./egraph.ts";
+import * as ir from "./ir.ts";
+import * as smt from "./smt.ts";
+import * as trace from "./trace.ts";
 
 export interface UFCounterexample { model: {} }
 
@@ -36,34 +36,41 @@ interface ConstantValue {
 	type: ir.Type | "unknown",
 }
 
-// A (boolean) variable ID.
+/** A (boolean) variable ID. */
 type ReasonSatLiteral = number;
 
 export type ValueID = egraph.EObject & { __uf: "uf.ValueID" };
 
-export interface Semantics<Reason> {
-	/// An `eq` function respects congruence: a == b implies f(a) == f(b).
-	eq?: true,
+export interface Semantics {
+	/**
+	 * An `eq` function respects congruence: `a == b` implies `f(a) == f(b)`.
+	*/
+	eq?: boolean,
 
-	not?: true,
+	not?: boolean,
 
-	/// A `transitive` function respects transitivity:
-	/// f(a, b) and f(b, a) implies f(a, c).
-	/// (This need not be specified for `eq` functions)
-	transitive?: true,
+	/**
+	 * A `transitive` function respects transitivity:
+	 * `f(a, b) and f(b, c)` implies `f(a, c)`.
+	 * (This need not be specified for `eq` functions)
+	 */
+	transitive?: boolean,
 
-	/// A `transitiveAcyclic` function is a `transitive` function which does not
-	/// admit cycles (a < b < c < d < ... < a). This implies that the relation
-	/// is anti-reflexive.
-	transitiveAcyclic?: true,
+	/** An `irreflexive` function is one which `f(a, a)` is always false.
+	 *
+	 * For a `transitive` function `≺`, this means there are no "cycles":
+	 * `a ≺ b ≺ c ≺ d ≺ ... ⊀ a`.
+	 */
+	irreflexive?: boolean,
+
+	/**
+	 * Indicates that this function is associative:
+	 *
+	 * `f(a, f(b, c))` is congruent to `f(f(a, b), c)`.
+	 */
+	associative?: boolean,
 
 	interpreter?: (...args: (unknown | null)[]) => unknown | null,
-
-	generalInterpreter?: (
-		matcher: UFSolver<Reason>,
-		id: ValueID,
-		operands: ValueID[],
-	) => "change" | "no-change",
 }
 
 
@@ -133,7 +140,10 @@ type SimplifiedValue = {
 };
 
 class FastSolver<Reason> {
-	constructor(private originalSolver: UFSolver<Reason>) { }
+	private originalSolver: UFSolver<Reason>;
+	constructor(originalSolver: UFSolver<Reason>) {
+		this.originalSolver = originalSolver;
+	}
 
 	private getDefinition(valueID: ValueID): {
 		tag: "application",
@@ -146,7 +156,7 @@ class FastSolver<Reason> {
 		return this.originalSolver.getDefinition(valueID);
 	}
 
-	private getFnSemantics(fnID: FnID): Semantics<Reason> {
+	private getFnSemantics(fnID: FnID): Semantics {
 		return this.originalSolver.getFnSemantics(fnID);
 	}
 
@@ -250,12 +260,28 @@ class FastSolver<Reason> {
 			}
 		}
 
+		const semantics = this.getFnSemantics(definition.fn);
+
 		const assumptions = [];
-		const simplifiedOperands: ValueToken[] = [];
+		let simplifiedOperands: ValueToken[] = [];
 		for (const operand of definition.operands) {
 			const simplifiedOperand = this.simplifyValue(operand);
 			assumptions.push(...simplifiedOperand.assumptions);
 			simplifiedOperands.push(simplifiedOperand.result);
+		}
+
+		if (semantics.associative) {
+			// "Flatten" the application, treating the function symbol as
+			// variadic.
+			const flattenedOperands = [];
+			for (const operand of simplifiedOperands) {
+				if (operand.tag === "application" && operand.fn === definition.fn) {
+					flattenedOperands.push(...operand.operands);
+				} else {
+					flattenedOperands.push(operand);
+				}
+			}
+			simplifiedOperands = flattenedOperands;
 		}
 
 		const applicationToken = this.findApplicationToken(definition.fn, ...simplifiedOperands);
@@ -264,7 +290,6 @@ class FastSolver<Reason> {
 			assumptions,
 		};
 
-		const semantics = this.getFnSemantics(definition.fn);
 		if (semantics.interpreter) {
 			const constantOperands = [];
 			const constantReasons = [];
@@ -549,7 +574,7 @@ class FastSolver<Reason> {
 }
 
 export class UFSolver<Reason> {
-	private fns = new Map<FnID, { returnType: ir.Type, semantics: Semantics<Reason> }>();
+	private fns = new Map<FnID, { returnType: ir.Type, semantics: Semantics }>();
 	private egraph: egraph.EGraph<VarID | FnID, UFTags, Reason>;
 
 	// Create symbolic constants for the two boolean values.
@@ -603,11 +628,8 @@ export class UFSolver<Reason> {
 		return object;
 	}
 
-	createFn(returnType: ir.Type, semantics: Semantics<Reason>, debugName: string): FnID {
+	createFn(returnType: ir.Type, semantics: Semantics, debugName: string): FnID {
 		const fnID = Symbol(debugName || "unknown-fn") as FnID;
-		if (semantics.transitiveAcyclic && !semantics.transitive) {
-			throw new Error("UFSolver.createFn: semantics.transitiveAcyclic requires semantics.transitive");
-		}
 		this.fns.set(fnID, { returnType, semantics });
 		if (semantics.eq || semantics.not) {
 			this.egraph.excludeCongruenceIndexing.add(fnID);
@@ -668,7 +690,7 @@ export class UFSolver<Reason> {
 		return definition.returnType;
 	}
 
-	getFnSemantics(fnID: FnID): Semantics<Reason> {
+	getFnSemantics(fnID: FnID): Semantics {
 		const definition = this.fns.get(fnID);
 		if (definition === undefined) {
 			throw new Error("UFSolver.getFnSemantics: no such fn");
@@ -1119,19 +1141,12 @@ export class UFSolver<Reason> {
 			let iterationMadeChanges = false;
 			for (const [fn, { semantics }] of this.fns) {
 				const simpleInterpreter = semantics.interpreter;
-				const generalInterpreter = semantics.generalInterpreter;
-				if (simpleInterpreter !== undefined || generalInterpreter !== undefined) {
+				if (simpleInterpreter !== undefined) {
 					const applications = this.egraph.getAllApplications(fn) as
 						{ id: ValueID, operands: ValueID[] }[];
 					for (const application of applications) {
 						if (simpleInterpreter !== undefined) {
 							const changeMade = this.propagateSimpleInterpreter(application, simpleInterpreter);
-							if (changeMade === "change") {
-								iterationMadeChanges = true;
-							}
-						}
-						if (generalInterpreter !== undefined) {
-							const changeMade = generalInterpreter(this, application.id, application.operands);
 							if (changeMade === "change") {
 								iterationMadeChanges = true;
 							}
@@ -1198,7 +1213,7 @@ export class UFSolver<Reason> {
 	}
 
 	private handleTransitiveApplications(
-		fnDefinition: Semantics<Reason>,
+		fnDefinition: Semantics,
 		trueApplications: { id: ValueID, operands: [ValueID, ValueID] }[],
 		falseApplications: { id: ValueID, operands: [ValueID, ValueID] }[],
 	): void {
@@ -1245,7 +1260,7 @@ export class UFSolver<Reason> {
 		}
 		trace.stop();
 
-		if (fnDefinition.transitiveAcyclic === true) {
+		if (fnDefinition.irreflexive === true && fnDefinition.transitive === true) {
 			trace.start("transitiveAcyclic");
 			for (const [source, _] of digraph) {
 				const transitiveChain = nonEmptyPath(digraph, source, source);
@@ -1315,7 +1330,7 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 
 	createFunction(
 		returnType: ir.Type,
-		semantics: Semantics<ReasonSatLiteral>,
+		semantics: Semantics,
 		debugName: string,
 	): FnID {
 		if (semantics.not) {
@@ -1463,19 +1478,6 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return (match && match[1]) || String(object);
 	}
 
-	private printClause(clause: number[], lines: string[]): void {
-		for (let i = 0; i < clause.length; i++) {
-			lines.push((i === 0 ? "and" : "") + "\tor\t" + this.showLiteral(clause[i]));
-		}
-	}
-
-	printInstance(lines: string[] = []): string[] {
-		for (const clause of this.clauses) {
-			this.printClause(clause, lines);
-		}
-		return lines;
-	}
-
 	override learnTheoryClauses(
 		partialAssignment: number[],
 		unassigned: number[],
@@ -1542,131 +1544,8 @@ export class UFTheory extends smt.SMTSolver<ValueID[], UFCounterexample> {
 		return { tag: "implied", impliedClauses, model: result.model };
 	}
 
-	generateTestCode(): string {
-		const defs: string[] = [
-			"const smt = new uf.UFTheory();",
-		];
-		const showType = (t: ir.Type) => {
-			if (ir.equalTypes(ir.T_BOOLEAN, t)) {
-				return "ir.T_BOOLEAN";
-			} else if (ir.equalTypes(ir.T_BYTES, t)) {
-				return "ir.T_BYTES";
-			} else if (ir.equalTypes(ir.T_INT, t)) {
-				return "ir.T_INT";
-			} else if (ir.equalTypes(ir.T_UNIT, t)) {
-				return "ir.T_UNIT";
-			}
-			return JSON.stringify(t);
-		};
-
-		let uniqued: Record<string, true> = {};
-		const makeUnique = (name: string): string => {
-			if (name in uniqued) {
-				for (let i = 1; true; i++) {
-					const d = name + "_" + i.toFixed(0);
-					if (d in uniqued) continue;
-					return d;
-				}
-			}
-			uniqued[name] = true;
-			return name;
-		}
-
-		const fs = new DefaultMap<FnID, string>(value => {
-			const name = makeUnique("f" + String(value)
-				.replace(/=/g, "eq")
-				.replace(/</g, "lt")
-				.replace(/>/g, "gt")
-				.replace(/\+/g, "pl")
-				.replace(/-/g, "mn")
-				.replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
-			const returnType = showType(this.solver.getFnReturnType(value));
-
-			const semantics = this.solver.getFnSemantics(value);
-			let semanticsCode = Object.entries(semantics).map(([key, value]) => {
-				if (value === undefined) {
-					return "";
-				}
-				let shown: string = value.toString();
-				if (typeof value === "function" && !shown.startsWith("function ")) {
-					shown = "function " + shown;
-				}
-				return "\t" + JSON.stringify(key) + ": " + shown + "," + "\n";
-			}).join("");
-			if (semanticsCode === "") {
-				semanticsCode = "{}";
-			} else {
-				semanticsCode = "{\n" + semanticsCode + "}";
-			}
-
-
-			const hint = JSON.stringify(value.description);
-			defs.push(`const ${name} = smt.createFunction(${returnType}, ${semanticsCode}, ${hint});`);
-			return name;
-		});
-		const exprs = new DefaultMap<ValueID, string>(value => {
-			const def = this.solver.getDefinition(value);
-			if (def.tag === "atom") {
-				if (def.extra.tag === "var") {
-					const name = makeUnique("v" + String(value).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
-					const type = showType(this.solver.getType(value) as ir.Type);
-					const hint = JSON.stringify(String(value));
-					defs.push(`const ${name} = smt.createVariable(${type}, ${hint});`);
-					return name;
-				} else {
-					const constant = def.extra.constant;
-					const name = makeUnique("c" + String(constant).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
-					const value = (typeof constant === "bigint")
-						? "BigInt(" + JSON.stringify(constant.toString()) + ")"
-						: JSON.stringify(constant);
-					defs.push(`const ${name} = smt.createConstant(ir.T_INT, ${value});`);
-					return name;
-				}
-			} else {
-				const f = fs.get(def.fn);
-				const name = makeUnique("a" + String(def.fn).replace(/[^a-zA-Z0-9]+/g, "") + "_" + defs.length);
-				const args = def.operands.map(x => exprs.get(x));
-				defs.push(`const ${name} = smt.createApplication(${f}, [${args.join(", ")}]);`);
-				return name;
-			}
-		});
-
-		const showLiteral = (literal: number) => {
-			const term = Math.abs(literal);
-			const value = this.objectByTerm.get(term)!;
-			const showValue = exprs.get(value);
-			return literal < 0
-				? "smt.createApplication(smt.notFn, [" + showValue + "])"
-				: showValue;
-		};
-
-		const out = [];
-
-		// Scoped constraints
-		out.push("// Scoped constraints");
-		out.push("");
-		for (const clause of this.clauses) {
-			out.push(`smt.addConstraint([`);
-			for (const literal of clause) {
-				out.push("\t" + showLiteral(literal) + ",");
-			}
-			out.push(`]);`);
-		}
-
-		return [
-			...defs,
-			"",
-			...out,
-			"",
-			"const response = smt.attemptRefutation();",
-		].join("\n");
-	}
-
 	override attemptRefutation(): "refuted" | UFCounterexample {
 		// Run the solver.
-		trace.mark("test case source", () => {
-			return this.generateTestCode();
-		});
 		const output = super.attemptRefutation();
 		return output;
 	}

@@ -1,5 +1,4 @@
-import * as fs from "fs";
-
+import * as fs from "node:fs";
 
 const commandArguments = process.argv.slice(2);
 
@@ -58,7 +57,7 @@ function format2(n: number) {
 	}
 }
 
-const output = [];
+const output: string[] = [];
 output.push("<!doctype html>");
 output.push("<html>");
 output.push("<head>");

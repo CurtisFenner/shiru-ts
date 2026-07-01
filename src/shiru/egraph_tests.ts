@@ -1,5 +1,5 @@
-import * as egraph from "./egraph.js";
-import { assert, specSupersetOf } from "./test.js";
+import * as egraph from "./egraph.ts";
+import { assert, specSupersetOf } from "./test.ts";
 
 export const tests = {
 	"EGraph-basic"() {

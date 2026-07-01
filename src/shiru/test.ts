@@ -20,8 +20,9 @@ export interface FailRun {
 export class TestRunner {
 	public readonly runs: Run[] = [];
 	public readonly traces: trace.TraceBranch[] = [];
-
-	constructor(private testNameFilters: string[]) {
+	private testNameFilters: string[];
+	constructor(testNameFilters: string[]) {
+		this.testNameFilters = testNameFilters;
 	}
 
 	runTest(name: string, body: () => void) {

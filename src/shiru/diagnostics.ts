@@ -26,7 +26,11 @@ function nth(n: number): string {
 }
 
 export class SemanticError {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 
 	toString() {
 		return JSON.stringify(this.message);

@@ -16,6 +16,10 @@ type PendingCongruence = {
 };
 
 class TagTracker<Key, TagValues extends Record<string, unknown>> {
+	private merge: {
+		[K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]
+	};
+
 	private tags = new Map<
 		keyof TagValues,
 		Map<Key, TagValues[keyof TagValues]>
@@ -26,9 +30,10 @@ class TagTracker<Key, TagValues extends Record<string, unknown>> {
 		{ original: Key, value: TagValues[keyof TagValues] }[]
 	>();
 
-	constructor(private merge: {
+	constructor(merge: {
 		[K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]
 	}) {
+		this.merge = merge;
 		this.clear();
 	}
 
@@ -140,7 +145,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 
 	/**
 	 * Applications with at least one operand are recorded in this map.
-	 * 
+	 *
 	 * Keys are the representatives of each operand. Only one application is
 	 * recorded for each canonicalized operands tuple.
 	 */
@@ -156,15 +161,23 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	 * Applications of function terms in this set *may* (but not necessarily
 	 * will) have their congruence maintenance skipped as part of
 	 * `this.updateCongruence()`.
-	 * 
+	 *
 	 * This can be used for performance for applications which won't benefit
 	 * from congruence (for example, due to a small input size or well-defined
 	 * semantics)
 	 */
 	public excludeCongruenceIndexing: Set<Term> = new Set();
 
+	private preMergeCallback: (
+		a: EObject,
+		b: EObject,
+		simpleReason: Reason | null,
+		lefts: EObject[],
+		rights: EObject[],
+	) => null | "cancel";
+
 	constructor(
-		private preMergeCallback: (
+		preMergeCallback: (
 			a: EObject,
 			b: EObject,
 			simpleReason: Reason | null,
@@ -173,13 +186,15 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 		) => null | "cancel",
 		tagTrackingMerges: { [K in keyof TagValues]: (child: TagValues[K], parent: TagValues[K]) => TagValues[K]; },
 	) {
+		this.preMergeCallback = preMergeCallback;
+
 		this.tagTracker = new TagTracker(tagTrackingMerges);
 	}
 
 	/**
 	 * Restores the invariants for applicationCanonicalization with respect to
 	 * the given application.
-	 * 
+	 *
 	 * This method must be called on each application with an operand whose
 	 * representative has changed.
 	 */
@@ -285,7 +300,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	 * definition, returning it if it was already created using
 	 * `add(term, operands)`. The search is based on object identity, and not by
 	 * equalities tracked by this `EGraph`.
-	 * 
+	 *
 	 * `hasStructure` returns `null` when `add(term, operands)` has not already
 	 * been invoked with the given term and operand objects.
 	 */
@@ -349,7 +364,7 @@ export class EGraph<Term, TagValues extends Record<string, unknown>, Reason> {
 	/**
 	 * The "reason" that this congruence is being added is the conjunction of
 	 * `simpleReason` and the equalities `lefts[0] == rights[0] & ...`.
-	 * 
+	 *
 	 * @returns false when this fact was already present in this egraph.
 	 */
 	mergeApplications(

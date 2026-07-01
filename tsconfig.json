@@ -13,6 +13,7 @@
       "node"
     ],
     "rootDir": "src/",
+    "erasableSyntaxOnly": true,
   },
   "include": [
     "src/*.d.ts",

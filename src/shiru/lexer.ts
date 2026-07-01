@@ -479,7 +479,10 @@ function findWordBreak(blob: string, from: number, fileID: string) {
 }
 
 export class LexError {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 
 	toString() {
 		return JSON.stringify(this.message);

@@ -143,7 +143,12 @@ export function formatVerificationFailure(
 
 export class TextDocument {
 	public lines: { content: string, offset: number }[] = [];
-	constructor(private path: string, private content: string) {
+	private path: string;
+	private content: string;
+
+	constructor(path: string, content: string) {
+		this.path = path;
+		this.content = content;
 		let offset = 0;
 		for (let line of content.split("\n")) {
 			this.lines.push({

@@ -63,13 +63,15 @@ function punctuationParser<K extends keyof typeof PUNCTUATION>(symbol: K): Parse
 
 const eofParser: Parser<Token, SourceLocation> = new TokenParser(t => t.tag === "eof" ? t.location : null);
 
-/// `TrailingCommaParser` is a combinator that parses a comma-separated sequence
-/// of elements, with an optional trailing comma.
+/**
+ * `TrailingCommaParser` is a combinator that parses a comma-separated sequence
+ * of elements, with an optional trailing comma.
+ */
 class TrailingCommaParser<T> extends Parser<Token, T[]> {
-	constructor(
-		private element: Parser<Token, T>,
-	) {
+	private element: Parser<Token, T>;
+	constructor(element: Parser<Token, T>) {
 		super();
+		this.element = element;
 	}
 
 	parse(stream: Token[], from: number,
@@ -92,14 +94,23 @@ class TrailingCommaParser<T> extends Parser<Token, T[]> {
 	}
 }
 
-/// `CommaParser` is a combinator that parses a comma-separated sequence of
-/// elements.
+/**
+ * `CommaParser` is a combinator that parses a comma-separated sequence of
+ * elements.
+ */
 class CommaParser<T> extends Parser<Token, T[]> {
+	private element: Parser<Token, T>;
+	private expected: string;
+	private min = 0;
 	constructor(
-		private element: Parser<Token, T>,
-		private expected: string,
-		private min = 0) {
+		element: Parser<Token, T>,
+		expected: string,
+		min = 0,
+	) {
 		super();
+		this.element = element;
+		this.expected = expected;
+		this.min = min;
 	}
 
 	parse(stream: Token[], from: number, debugContext: Record<string, TokenSpan<Token>>): ParseResult<T[]> {
@@ -197,7 +208,11 @@ function parseProblem(...message: (ErrorElement | FailHandler<Token, ErrorElemen
 }
 
 export class ParseError {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 
 	toString() {
 		return JSON.stringify(this.message);

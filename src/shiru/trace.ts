@@ -18,7 +18,10 @@ export type TraceBranch = {
 };
 
 export class Stopwatch {
-	constructor(private internalClock: () => number) { }
+	private internalClock: () => number;
+	constructor(internalClock: () => number) {
+		this.internalClock = internalClock;
+	}
 
 	state: {
 		tag: "paused",

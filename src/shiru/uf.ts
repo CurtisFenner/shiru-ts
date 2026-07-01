@@ -140,7 +140,10 @@ type SimplifiedValue = {
 };
 
 class FastSolver<Reason> {
-	constructor(private originalSolver: UFSolver<Reason>) { }
+	private originalSolver: UFSolver<Reason>;
+	constructor(originalSolver: UFSolver<Reason>) {
+		this.originalSolver = originalSolver;
+	}
 
 	private getDefinition(valueID: ValueID): {
 		tag: "application",

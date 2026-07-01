@@ -513,7 +513,11 @@ function* interpretOp(
 }
 
 export class RuntimeErr {
-	constructor(public message: ErrorElement[]) { }
+	public message: ErrorElement[];
+
+	constructor(message: ErrorElement[]) {
+		this.message = message;
+	}
 }
 
 function showType(t: ir.Type): string {

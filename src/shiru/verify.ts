@@ -661,6 +661,9 @@ interface VerificationScope {
 }
 
 class DynamicFunctionMap {
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
 	private map = new DefaultMap<ir.InterfaceID, DefaultMap<ir.FunctionID, uf.FnID[]>>(
 		i => new DefaultMap(s => {
 			const interfaceIR = this.program.interfaces[i];
@@ -681,7 +684,10 @@ class DynamicFunctionMap {
 			return fnIDs;
 		}));
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	/**
 	 * Retrieves the UF-theory representation of the given call of an interface
@@ -722,7 +728,13 @@ class StaticFunctionMap {
 		return out;
 	});
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	call(
 		fn: ir.FunctionID,
@@ -767,7 +779,13 @@ class RecordMap {
 		};
 	});
 
-	constructor(private program: ir.Program, private smt: uf.UFTheory) { }
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	construct(recordID: ir.RecordID, initialization: Record<string, uf.ValueID>): uf.ValueID {
 		const info = this.map.get(recordID);
@@ -839,10 +857,13 @@ class EnumMap {
 		};
 	});
 
-	constructor(
-		private program: ir.Program,
-		private smt: uf.UFTheory,
-	) { }
+
+	private program: ir.Program;
+	private smt: uf.UFTheory;
+	constructor(program: ir.Program, smt: uf.UFTheory) {
+		this.program = program;
+		this.smt = smt;
+	}
 
 	hasTag(
 		enumID: ir.EnumID,

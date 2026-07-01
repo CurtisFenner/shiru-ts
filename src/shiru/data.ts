@@ -182,8 +182,11 @@ export class TrieMap<KS extends readonly unknown[], V> {
 }
 
 export class DefaultMap<K, V> {
+	private defaulter: (k: K) => V;
 	private map = new Map<K, V>();
-	constructor(private defaulter: (k: K) => V) { }
+	constructor(defaulter: (k: K) => V) {
+		this.defaulter = defaulter;
+	}
 
 	get(key: K): V {
 		if (this.map.has(key)) {
@@ -210,14 +213,20 @@ export class DefaultMap<K, V> {
  * edges are added.
  */
 export class DisjointSet<E, Data> {
+	private initialDataFor: (e: E) => Data;
+	private mergeDataFor: (childData: Data, parentData: Data) => Data;
+
 	private parents: Map<E, E> = new Map();
 	private ranks: Map<E, number> = new Map();
 	private data: Map<E, Data> = new Map();
 
 	constructor(
-		private initialDataFor: (e: E) => Data,
-		private mergeDataFor: (childData: Data, parentData: Data) => Data,
-	) { }
+		initialDataFor: (e: E) => Data,
+		mergeDataFor: (childData: Data, parentData: Data) => Data,
+	) {
+		this.initialDataFor = initialDataFor;
+		this.mergeDataFor = mergeDataFor;
+	}
 
 	reset(): void {
 		this.parents.clear();
@@ -352,8 +361,14 @@ export class DisjointSet<E, Data> {
 }
 
 export class TreeBag<T> {
+	private list: T[];
+	private children: TreeBag<T>[] | null;
+
 	readonly size: number;
-	private constructor(private list: T[], private children: TreeBag<T>[] | null) {
+	private constructor(list: T[], children: TreeBag<T>[] | null) {
+		this.list = list;
+		this.children = children;
+
 		let childrenSizes = 0;
 		if (children !== null) {
 			for (const child of children) {

@@ -1,10 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "ES2022",
     "outDir": "built",
     "strict": true,
-    "noImplicitAny": true,
     "noImplicitOverride": true,
     "allowJs": true,
     "sourceMap": true,
@@ -12,11 +11,16 @@
     "types": [
       "node"
     ],
-    "rootDir": "src/"
+    "rootDir": "src/",
+    "paths": {
+      "undici-types": [
+        "./node_modules/undici-types/index.d.ts"
+      ]
+    }
   },
   "include": [
     "src/*.d.ts",
     "src/shiru/**/*.ts",
-    "src/util/**/*.ts"
+    "src/node/**/*.ts"
   ]
 }

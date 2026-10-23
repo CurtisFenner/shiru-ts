@@ -59,7 +59,7 @@ export interface Semantics {
 	/** An `irreflexive` function is one which `f(a, a)` is always false.
 	 *
 	 * For a `transitive` function `≺`, this means there are no "cycles":
-	 * `a ≺ b ≺ c ≺ d ≺ ... ⊀ a`.
+	 * `a ≺ ... ≺ z` implies that `z ⊀ a`.
 	 */
 	irreflexive?: boolean,
 
@@ -72,7 +72,6 @@ export interface Semantics {
 
 	interpreter?: (...args: (unknown | null)[]) => unknown | null,
 }
-
 
 export interface Assumption<Reason> {
 	constraint: ValueID,
@@ -106,7 +105,6 @@ type UFTags = {
 	 */
 	indexByFn: Map<FnID, TreeBag<{ id: ValueID, operands: ValueID[] }>>,
 };
-
 
 type ValueToken = {
 	tag: "var",
@@ -317,7 +315,6 @@ class FastSolver<Reason> {
 		return applicationResult;
 	}
 
-
 	private originalSimplifications = new Map<ValueID, ValueToken>();
 
 	simplifyValue(value: ValueID) {
@@ -339,7 +336,10 @@ class FastSolver<Reason> {
 			result: simplestDefinition,
 			assumptions: simplified.result === simplestDefinition
 				? simplified.assumptions
-				: [...simplified.assumptions, { left: simplified.result, right: simplestDefinition }],
+				: [
+					...simplified.assumptions,
+					{ left: simplified.result, right: simplestDefinition },
+				],
 		};
 	};
 
@@ -530,6 +530,15 @@ class FastSolver<Reason> {
 					definition,
 				});
 			}
+
+			this.addCongruence(
+				{
+					result: this.findConstantToken(assumption.assignment),
+					assumptions: [],
+				},
+				this.simplifyValue(assumption.constraint),
+				assumption.reason,
+			);
 		}
 		trace.stop();
 

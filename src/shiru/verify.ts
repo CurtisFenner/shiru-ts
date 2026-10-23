@@ -1303,15 +1303,54 @@ function traverse(
 			const falsePhi = falsePhis[i];
 			let phi: uf.ValueID;
 			if (truePhi !== null && falsePhi !== null) {
-				phi = state.createIfThenElseValue(symbolicCondition, truePhi, falsePhi, destination.type);
-				state.addDisjunctionInPath([
-					state.negate(symbolicCondition),
-					state.eq(phi, truePhi),
-				]);
-				state.addDisjunctionInPath([
+				phi = state.createIfThenElseValue(
 					symbolicCondition,
-					state.eq(phi, falsePhi),
-				]);
+					truePhi,
+					falsePhi,
+					destination.type,
+				);
+
+				if (destination.type.tag === "type-primitive" && destination.type.primitive === "Boolean") {
+					// condition implies (phi ifandonlyif truePhi)
+					// ~condition or (phi ifandonlyif truePhi)
+					// ~condition or (phi and truePhi) or (~phi and ~truePhi)
+					// (~condition or phi or ~truePhi) and (~condition or ~phi or truePhi)
+					state.addDisjunctionInPath([
+						state.negate(symbolicCondition),
+						phi,
+						state.negate(truePhi),
+					]);
+					state.addDisjunctionInPath([
+						state.negate(symbolicCondition),
+						state.negate(phi),
+						truePhi,
+					]);
+
+					// ~condition implies (phi ifandonlyif falsePhi)
+					// condition or (phi ifandonlyif falsePhi)
+					// (condition or phi or ~falsePhi) and (condition or ~phi or falsePhi)
+					state.addDisjunctionInPath([
+						symbolicCondition,
+						phi,
+						state.negate(falsePhi),
+					]);
+					state.addDisjunctionInPath([
+						symbolicCondition,
+						state.negate(phi),
+						falsePhi,
+					]);
+				} else {
+					// condition implies (phi = falsePhi)
+					state.addDisjunctionInPath([
+						state.negate(symbolicCondition),
+						state.eq(phi, truePhi),
+					]);
+					// ~condition implies (phi = falsePhi)
+					state.addDisjunctionInPath([
+						symbolicCondition,
+						state.eq(phi, falsePhi),
+					]);
+				}
 			} else if (truePhi !== null) {
 				phi = truePhi;
 			} else if (falsePhi !== null) {
